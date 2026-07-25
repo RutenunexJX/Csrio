@@ -1,0 +1,3222 @@
+#include "main_window.hpp"
+
+#include "bitfield_view.hpp"
+#include "source_navigation.hpp"
+
+#include "regmap/core/model_tokens.hpp"
+#include "regmap/core/sync_diff.hpp"
+#include "regmap/core/unsigned_value.hpp"
+#include "regmap/core/workspace_store.hpp"
+
+#include <QAbstractItemView>
+#include <QAction>
+#include <QApplication>
+#include <QBrush>
+#include <QCloseEvent>
+#include <QColor>
+#include <QComboBox>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QFont>
+#include <QFrame>
+#include <QHBoxLayout>
+#include <QHeaderView>
+#include <QIcon>
+#include <QInputDialog>
+#include <QItemSelectionModel>
+#include <QKeySequence>
+#include <QLabel>
+#include <QLineEdit>
+#include <QListWidget>
+#include <QMenu>
+#include <QMenuBar>
+#include <QMessageBox>
+#include <QModelIndex>
+#include <QMouseEvent>
+#include <QPaintEvent>
+#include <QPainter>
+#include <QPixmap>
+#include <QPushButton>
+#include <QRegularExpression>
+#include <QScopedValueRollback>
+#include <QScreen>
+#include <QSignalBlocker>
+#include <QSplitter>
+#include <QStandardItem>
+#include <QStandardItemModel>
+#include <QStatusBar>
+#include <QStringList>
+#include <QTabWidget>
+#include <QTableView>
+#include <QTimer>
+#include <QToolBar>
+#include <QToolButton>
+#include <QTreeView>
+#include <QVBoxLayout>
+#include <QWidget>
+
+#include <algorithm>
+#include <cstdint>
+#include <cstdlib>
+#include <functional>
+#include <iterator>
+#include <limits>
+#include <optional>
+#include <set>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+namespace {
+
+constexpr std::uint32_t maximumEditableWidth = 65536;
+
+enum RegisterColumn {
+    registerNameColumn = 0,
+    registerOffsetColumn,
+    registerAddressColumn,
+    registerWidthColumn,
+    registerTypeColumn,
+    registerRangeColumn,
+    registerInitialColumn,
+    registerResetColumn,
+    registerAccessColumn,
+    registerTagsColumn,
+    registerDescriptionColumn,
+};
+
+enum FieldColumn {
+    fieldNameColumn = 0,
+    fieldParentColumn,
+    fieldMsbColumn,
+    fieldLsbColumn,
+    fieldWidthColumn,
+    fieldTypeColumn,
+    fieldMinimumColumn,
+    fieldMaximumColumn,
+    fieldSoftwareAccessColumn,
+    fieldHardwareAccessColumn,
+    fieldResetColumn,
+    fieldResetDomainColumn,
+    fieldReadEffectColumn,
+    fieldWriteEffectColumn,
+    fieldDescriptionColumn,
+};
+
+enum EnumColumn {
+    enumNameColumn = 0,
+    enumValueColumn,
+    enumDescriptionColumn,
+};
+
+[[nodiscard]] QString fromUtf8(std::string_view value)
+{
+    return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size()));
+}
+
+[[nodiscard]] QString fromPath(const std::filesystem::path& path)
+{
+    return QString::fromStdWString(path.wstring());
+}
+
+[[nodiscard]] QString hex(std::uint64_t value)
+{
+    return fromUtf8(regmap::UnsignedValue(value).toHexString());
+}
+
+[[nodiscard]] QString valueText(const std::optional<regmap::UnsignedValue>& value)
+{
+    return value ? fromUtf8(value->toHexString()) : QString{};
+}
+
+[[nodiscard]] QString sourceText(const regmap::SourceLocation& source)
+{
+    if (source.empty()) {
+        return {};
+    }
+    QString result = fromPath(source.workbook);
+    if (!source.sheet.empty()) {
+        result += QStringLiteral(" / ") + fromUtf8(source.sheet);
+    }
+    if (!source.cell.empty()) {
+        result += QStringLiteral("!") + fromUtf8(source.cell);
+    } else if (source.row.has_value()) {
+        result += QStringLiteral(":%1").arg(*source.row);
+    }
+    return result;
+}
+
+[[nodiscard]] QString accessText(regmap::AccessMode access)
+{
+    switch (access) {
+    case regmap::AccessMode::none:
+        return QStringLiteral("none");
+    case regmap::AccessMode::readOnly:
+        return QStringLiteral("ro");
+    case regmap::AccessMode::writeOnly:
+        return QStringLiteral("wo");
+    case regmap::AccessMode::readWrite:
+        return QStringLiteral("rw");
+    }
+    return QStringLiteral("unknown");
+}
+
+[[nodiscard]] QString valueTypeText(regmap::FieldType type, std::uint64_t width)
+{
+    switch (type) {
+    case regmap::FieldType::bits:
+        return QStringLiteral("bits");
+    case regmap::FieldType::boolean:
+        return QStringLiteral("bool");
+    case regmap::FieldType::unsignedInteger:
+        return QStringLiteral("uint%1").arg(width);
+    case regmap::FieldType::signedInteger:
+        return QStringLiteral("int%1").arg(width);
+    case regmap::FieldType::enumeration:
+        return QStringLiteral("enum");
+    case regmap::FieldType::structure:
+        return QStringLiteral("field");
+    case regmap::FieldType::reserved:
+        return QStringLiteral("reserved");
+    }
+    return QStringLiteral("unknown");
+}
+
+[[nodiscard]] QString fieldTypeText(const regmap::Field& field)
+{
+    return valueTypeText(field.type, field.width());
+}
+
+[[nodiscard]] QString registerTypeText(const regmap::Register& reg)
+{
+    return valueTypeText(reg.type, reg.width);
+}
+
+[[nodiscard]] QString rangeText(const std::optional<std::string>& minimum,
+                                const std::optional<std::string>& maximum)
+{
+    if (!minimum && !maximum) {
+        return {};
+    }
+    return QStringLiteral("%1 .. %2")
+        .arg(minimum ? fromUtf8(*minimum) : QString{}, maximum ? fromUtf8(*maximum) : QString{});
+}
+
+[[nodiscard]] QString readSideEffectText(regmap::ReadSideEffect effect)
+{
+    switch (effect) {
+    case regmap::ReadSideEffect::none:
+        return QStringLiteral("none");
+    case regmap::ReadSideEffect::clear:
+        return QStringLiteral("clear");
+    case regmap::ReadSideEffect::set:
+        return QStringLiteral("set");
+    }
+    return QStringLiteral("unknown");
+}
+
+[[nodiscard]] QString writeSideEffectText(regmap::WriteSideEffect effect)
+{
+    switch (effect) {
+    case regmap::WriteSideEffect::none:
+        return QStringLiteral("none");
+    case regmap::WriteSideEffect::write:
+        return QStringLiteral("write");
+    case regmap::WriteSideEffect::oneToClear:
+        return QStringLiteral("w1c");
+    case regmap::WriteSideEffect::oneToSet:
+        return QStringLiteral("w1s");
+    case regmap::WriteSideEffect::zeroToClear:
+        return QStringLiteral("w0c");
+    case regmap::WriteSideEffect::zeroToSet:
+        return QStringLiteral("w0s");
+    case regmap::WriteSideEffect::toggle:
+        return QStringLiteral("toggle");
+    }
+    return QStringLiteral("unknown");
+}
+
+[[nodiscard]] QString severityText(regmap::DiagnosticSeverity severity)
+{
+    switch (severity) {
+    case regmap::DiagnosticSeverity::information:
+        return QStringLiteral("Info");
+    case regmap::DiagnosticSeverity::warning:
+        return QStringLiteral("Warning");
+    case regmap::DiagnosticSeverity::error:
+        return QStringLiteral("Error");
+    }
+    return QStringLiteral("Unknown");
+}
+
+[[nodiscard]] QStandardItem* item(const QString& text)
+{
+    auto* result = new QStandardItem(text);
+    result->setEditable(false);
+    return result;
+}
+
+[[nodiscard]] QStandardItem* editableItem(const QString& text, const regmap::ObjectId& objectId,
+                                          std::string_view property, int objectRole,
+                                          int propertyRole)
+{
+    auto* result = new QStandardItem(text);
+    result->setEditable(true);
+    result->setData(fromUtf8(objectId), objectRole);
+    result->setData(fromUtf8(property), propertyRole);
+    return result;
+}
+
+[[nodiscard]] QStandardItem* addRowItem(const QString& text, int addRole)
+{
+    auto* result = new QStandardItem(text);
+    result->setEditable(false);
+    result->setTextAlignment(Qt::AlignCenter);
+    result->setData(true, addRole);
+    QFont font = result->font();
+    font.setWeight(QFont::DemiBold);
+    result->setFont(font);
+    result->setForeground(QColor(QStringLiteral("#385D8A")));
+    return result;
+}
+
+[[nodiscard]] QString tagsText(const std::vector<std::string>& tags)
+{
+    QStringList values;
+    for (const auto& tag : tags) {
+        values.push_back(fromUtf8(tag));
+    }
+    return values.join(QStringLiteral(", "));
+}
+
+constexpr auto popupListStyle = R"(
+QListWidget {
+    border: 1px solid #C6D2E1;
+    border-radius: 3px;
+    background: #FFFDF5;
+    outline: none;
+}
+QListWidget::item {
+    border: 0;
+    border-radius: 3px;
+    padding: 5px 8px;
+}
+QListWidget::item:hover {
+    background: #DCE6F1;
+    color: #17365D;
+}
+QListWidget::item:selected {
+    background: #385D8A;
+    color: white;
+}
+)";
+
+[[nodiscard]] QFrame* createAnchoredPopup(QTableView* view, const QModelIndex& index,
+                                          const QString& objectName, int preferredWidth,
+                                          int preferredHeight)
+{
+    if (QWidget* active = QApplication::activePopupWidget()) {
+        active->close();
+    }
+
+    auto* popup = new QFrame(view, Qt::Popup);
+    popup->setObjectName(objectName);
+    popup->setAttribute(Qt::WA_DeleteOnClose);
+    popup->setFrameShape(QFrame::StyledPanel);
+    popup->setFrameShadow(QFrame::Raised);
+    popup->resize(std::max(preferredWidth, view->visualRect(index).width()), preferredHeight);
+
+    const QRect cell = view->visualRect(index);
+    QPoint position = view->viewport()->mapToGlobal(cell.bottomLeft() + QPoint(0, 1));
+    if (const QScreen* screen = QApplication::screenAt(position)) {
+        const QRect available = screen->availableGeometry();
+        if (position.y() + popup->height() > available.bottom()) {
+            position.setY(view->viewport()->mapToGlobal(cell.topLeft()).y() - popup->height() - 1);
+        }
+        position.setX(
+            std::clamp(position.x(), available.left(),
+                       std::max(available.left(), available.right() - popup->width() + 1)));
+    }
+    popup->move(position);
+    return popup;
+}
+
+class RegisterTableView final : public QTableView {
+public:
+    using BoundaryPredicate = std::function<bool(int)>;
+    using InsertHandler = std::function<void(int)>;
+
+    explicit RegisterTableView(QWidget* parent = nullptr)
+        : QTableView(parent)
+    {
+        setMouseTracking(true);
+        viewport()->setMouseTracking(true);
+    }
+
+    void setBoundaryPredicate(BoundaryPredicate predicate)
+    {
+        boundaryPredicate_ = std::move(predicate);
+    }
+
+    void setInsertHandler(InsertHandler handler) { insertHandler_ = std::move(handler); }
+
+protected:
+    void mouseMoveEvent(QMouseEvent* event) override
+    {
+        const QPoint position = event->position().toPoint();
+        int candidate = -1;
+        if (position.x() <= insertionHotspotWidth && model() != nullptr &&
+            model()->rowCount() >= 3) {
+            const int row = rowAt(position.y());
+            if (row >= 0) {
+                const QRect rowRectangle = visualRect(model()->index(row, 0));
+                constexpr int activationDistance = 7;
+                if (row > 0 && std::abs(position.y() - rowRectangle.top()) <= activationDistance) {
+                    candidate = row;
+                } else if (row + 1 < model()->rowCount() - 1 &&
+                           std::abs(position.y() - rowRectangle.bottom()) <= activationDistance) {
+                    candidate = row + 1;
+                }
+            }
+        }
+        if (candidate >= 0 && boundaryPredicate_ && !boundaryPredicate_(candidate)) {
+            candidate = -1;
+        }
+        setInsertionBoundary(candidate);
+        QTableView::mouseMoveEvent(event);
+    }
+
+    void leaveEvent(QEvent* event) override
+    {
+        setInsertionBoundary(-1);
+        QTableView::leaveEvent(event);
+    }
+
+    void mousePressEvent(QMouseEvent* event) override
+    {
+        if (event->button() == Qt::LeftButton && insertionBoundary_ >= 0 &&
+            plusRectangle().contains(event->position().toPoint()) && insertHandler_) {
+            const int boundary = insertionBoundary_;
+            setInsertionBoundary(-1);
+            insertHandler_(boundary);
+            event->accept();
+            return;
+        }
+        QTableView::mousePressEvent(event);
+    }
+
+    void paintEvent(QPaintEvent* event) override
+    {
+        QTableView::paintEvent(event);
+        if (insertionBoundary_ < 0 || model() == nullptr ||
+            insertionBoundary_ >= model()->rowCount()) {
+            return;
+        }
+        const int boundaryY = rowViewportPosition(insertionBoundary_);
+        QPainter painter(viewport());
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setPen(QPen(QColor(QStringLiteral("#4472C4")), 2));
+        painter.drawLine(4, boundaryY, viewport()->width() - 4, boundaryY);
+        painter.setBrush(QColor(QStringLiteral("#4472C4")));
+        painter.setPen(Qt::NoPen);
+        painter.drawEllipse(QPoint(plusCenterX, boundaryY), 9, 9);
+        painter.setPen(QPen(Qt::white, 2));
+        painter.drawLine(plusCenterX - 4, boundaryY, plusCenterX + 4, boundaryY);
+        painter.drawLine(plusCenterX, boundaryY - 4, plusCenterX, boundaryY + 4);
+    }
+
+private:
+    static constexpr int insertionHotspotWidth = 40;
+    static constexpr int plusCenterX = 18;
+
+    BoundaryPredicate boundaryPredicate_;
+    InsertHandler insertHandler_;
+    int insertionBoundary_{-1};
+
+    [[nodiscard]] QRect plusRectangle() const
+    {
+        if (insertionBoundary_ < 0) {
+            return {};
+        }
+        const int boundaryY = rowViewportPosition(insertionBoundary_);
+        return QRect(plusCenterX - 11, boundaryY - 11, 22, 22);
+    }
+
+    void setInsertionBoundary(int boundary)
+    {
+        if (insertionBoundary_ == boundary) {
+            return;
+        }
+        insertionBoundary_ = boundary;
+        if (insertionBoundary_ >= 0) {
+            viewport()->setCursor(Qt::PointingHandCursor);
+        } else {
+            viewport()->unsetCursor();
+        }
+        viewport()->update();
+    }
+};
+
+[[nodiscard]] std::uint64_t registerExtent(const regmap::Register& reg)
+{
+    const std::uint64_t byteWidth = (static_cast<std::uint64_t>(reg.width) + 7U) / 8U;
+    return reg.array.count > 1
+               ? static_cast<std::uint64_t>(reg.array.count - 1) * reg.array.stride + byteWidth
+               : byteWidth;
+}
+
+[[nodiscard]] const regmap::Field* findFieldRecursive(const std::vector<regmap::Field>& fields,
+                                                      std::string_view id)
+{
+    for (const auto& field : fields) {
+        if (field.id == id) {
+            return &field;
+        }
+        if (const auto* result = findFieldRecursive(field.members, id)) {
+            return result;
+        }
+    }
+    return nullptr;
+}
+
+void configureTable(QTableView* view)
+{
+    view->setSelectionBehavior(QAbstractItemView::SelectRows);
+    view->setSelectionMode(QAbstractItemView::SingleSelection);
+    view->setAlternatingRowColors(true);
+    view->setSortingEnabled(false);
+    view->setShowGrid(true);
+    view->setWordWrap(false);
+    view->setCornerButtonEnabled(false);
+    view->verticalHeader()->setVisible(false);
+    view->verticalHeader()->setDefaultSectionSize(28);
+    view->horizontalHeader()->setMinimumSectionSize(72);
+    view->horizontalHeader()->setStretchLastSection(true);
+}
+
+[[nodiscard]] bool addOverflow(std::uint64_t left, std::uint64_t right, std::uint64_t& output)
+{
+    if (right > std::numeric_limits<std::uint64_t>::max() - left) {
+        return true;
+    }
+    output = left + right;
+    return false;
+}
+
+[[nodiscard]] regmap::Register* findRegisterContainingField(regmap::Workspace& workspace,
+                                                            std::string_view fieldId)
+{
+    for (auto& addressSpace : workspace.addressSpaces) {
+        for (auto& block : addressSpace.blocks) {
+            for (auto& reg : block.registers) {
+                if (findFieldRecursive(reg.fields, fieldId) != nullptr) {
+                    return &reg;
+                }
+            }
+        }
+    }
+    return nullptr;
+}
+
+[[nodiscard]] const regmap::Register*
+findRegisterContainingField(const regmap::Workspace& workspace, std::string_view fieldId)
+{
+    for (const auto& addressSpace : workspace.addressSpaces) {
+        for (const auto& block : addressSpace.blocks) {
+            for (const auto& reg : block.registers) {
+                if (findFieldRecursive(reg.fields, fieldId) != nullptr) {
+                    return &reg;
+                }
+            }
+        }
+    }
+    return nullptr;
+}
+
+void refreshFieldResets(regmap::Field& field,
+                        const std::optional<regmap::UnsignedValue>& registerReset,
+                        std::uint64_t parentLsb)
+{
+    std::uint64_t absoluteLsb = 0;
+    if (field.msb < field.lsb || addOverflow(parentLsb, field.lsb, absoluteLsb)) {
+        return;
+    }
+    const std::size_t width = field.width();
+    if (registerReset) {
+        field.resetValue = registerReset->slice(static_cast<std::size_t>(absoluteLsb), width);
+    } else if (field.resetValue && !field.resetValue->fitsInBits(width)) {
+        field.resetValue = field.resetValue->slice(0, width);
+    }
+    for (auto& member : field.members) {
+        refreshFieldResets(member, registerReset, absoluteLsb);
+    }
+}
+
+void refreshRegisterFieldResets(regmap::Register& reg)
+{
+    for (auto& field : reg.fields) {
+        refreshFieldResets(field, reg.resetValue, 0);
+    }
+}
+
+} // namespace
+
+MainWindow::MainWindow(QWidget* parent)
+    : QMainWindow(parent)
+    , controller_(this)
+{
+    buildUi();
+    buildActions();
+    connectSignals();
+    statusBar()->setSizeGripEnabled(false);
+    statusBar()->showMessage(QStringLiteral("Open a .regmap.yaml project to begin"));
+    setWindowTitle(QStringLiteral("Register Map Workbench"));
+}
+
+void MainWindow::buildUi()
+{
+    hierarchyModel_ = new QStandardItemModel(this);
+    registerModel_ = new QStandardItemModel(this);
+    fieldModel_ = new QStandardItemModel(this);
+    enumModel_ = new QStandardItemModel(this);
+    problemsModel_ = new QStandardItemModel(this);
+    generatedModel_ = new QStandardItemModel(this);
+    diffModel_ = new QStandardItemModel(this);
+
+    hierarchyView_ = new QTreeView(this);
+    hierarchyView_->setObjectName(QStringLiteral("hierarchyView"));
+    hierarchyView_->setModel(hierarchyModel_);
+    hierarchyView_->setHeaderHidden(false);
+    hierarchyView_->setUniformRowHeights(true);
+    hierarchyView_->setMinimumWidth(220);
+
+    auto* registerTable = new RegisterTableView(this);
+    registerView_ = registerTable;
+    registerView_->setObjectName(QStringLiteral("registerView"));
+    registerView_->setModel(registerModel_);
+    configureTable(registerView_);
+    registerView_->setMinimumHeight(120);
+    registerView_->setEditTriggers(QAbstractItemView::EditKeyPressed |
+                                   QAbstractItemView::AnyKeyPressed);
+    registerView_->setContextMenuPolicy(Qt::CustomContextMenu);
+    registerTable->setBoundaryPredicate([this](int row) { return canInsertRegisterAt(row); });
+    registerTable->setInsertHandler([this](int row) { insertRegisterAt(row); });
+
+    pageContextLabel_ = new QLabel(QStringLiteral("Page: —"), this);
+    pageContextLabel_->setObjectName(QStringLiteral("contextTitle"));
+    pageBaseEdit_ = new QLineEdit(this);
+    pageBaseEdit_->setObjectName(QStringLiteral("pageBaseEdit"));
+    pageBaseEdit_->setPlaceholderText(QStringLiteral("Page base"));
+    pageBaseEdit_->setMaximumWidth(120);
+    pageWidthEdit_ = new QLineEdit(this);
+    pageWidthEdit_->setObjectName(QStringLiteral("pageWidthEdit"));
+    pageWidthEdit_->setPlaceholderText(QStringLiteral("Address width"));
+    pageWidthEdit_->setMaximumWidth(90);
+    pageDescriptionEdit_ = new QLineEdit(this);
+    pageDescriptionEdit_->setObjectName(QStringLiteral("pageDescriptionEdit"));
+    pageDescriptionEdit_->setPlaceholderText(QStringLiteral("Page description"));
+    pageDescriptionEdit_->setMinimumWidth(170);
+
+    blockContextLabel_ = new QLabel(QStringLiteral("Block: —"), this);
+    blockContextLabel_->setObjectName(QStringLiteral("contextTitle"));
+    blockBaseEdit_ = new QLineEdit(this);
+    blockBaseEdit_->setObjectName(QStringLiteral("blockBaseEdit"));
+    blockBaseEdit_->setPlaceholderText(QStringLiteral("Block base"));
+    blockBaseEdit_->setMaximumWidth(120);
+    blockSizeEdit_ = new QLineEdit(this);
+    blockSizeEdit_->setObjectName(QStringLiteral("blockSizeEdit"));
+    blockSizeEdit_->setPlaceholderText(QStringLiteral("Block size"));
+    blockSizeEdit_->setMaximumWidth(120);
+    blockDescriptionEdit_ = new QLineEdit(this);
+    blockDescriptionEdit_->setObjectName(QStringLiteral("blockDescriptionEdit"));
+    blockDescriptionEdit_->setPlaceholderText(QStringLiteral("Block description"));
+    blockDescriptionEdit_->setMinimumWidth(170);
+
+    tagFilter_ = new QComboBox(this);
+    tagFilter_->setObjectName(QStringLiteral("tagFilter"));
+    tagFilter_->setMinimumContentsLength(16);
+    tagFilter_->addItem(QStringLiteral("All tags"));
+    auto* registerPanel = new QWidget(this);
+    auto* registerLayout = new QVBoxLayout(registerPanel);
+    registerLayout->setContentsMargins(0, 0, 0, 0);
+    registerLayout->setSpacing(6);
+    auto* contextBar = new QWidget(registerPanel);
+    contextBar->setObjectName(QStringLiteral("registerContextBar"));
+    auto* contextLayout = new QVBoxLayout(contextBar);
+    contextLayout->setContentsMargins(10, 5, 10, 5);
+    contextLayout->setSpacing(5);
+
+    auto* pageRow = new QHBoxLayout;
+    pageRow->setContentsMargins(0, 0, 0, 0);
+    pageRow->addWidget(pageContextLabel_);
+    pageRow->addWidget(new QLabel(QStringLiteral("Base"), contextBar));
+    pageRow->addWidget(pageBaseEdit_);
+    pageRow->addWidget(new QLabel(QStringLiteral("Address Width"), contextBar));
+    pageRow->addWidget(pageWidthEdit_);
+    pageRow->addWidget(new QLabel(QStringLiteral("Description"), contextBar));
+    pageRow->addWidget(pageDescriptionEdit_, 1);
+    pageRow->addSpacing(12);
+    pageRow->addWidget(new QLabel(QStringLiteral("Tag Filter"), contextBar));
+    pageRow->addWidget(tagFilter_);
+    contextLayout->addLayout(pageRow);
+
+    auto* blockRow = new QHBoxLayout;
+    blockRow->setContentsMargins(0, 0, 0, 0);
+    blockRow->addWidget(blockContextLabel_);
+    blockRow->addWidget(new QLabel(QStringLiteral("Base"), contextBar));
+    blockRow->addWidget(blockBaseEdit_);
+    blockRow->addWidget(new QLabel(QStringLiteral("Size"), contextBar));
+    blockRow->addWidget(blockSizeEdit_);
+    blockRow->addWidget(new QLabel(QStringLiteral("Description"), contextBar));
+    blockRow->addWidget(blockDescriptionEdit_, 1);
+    contextLayout->addLayout(blockRow);
+
+    registerLayout->addWidget(contextBar);
+    registerLayout->addWidget(registerView_, 1);
+
+    fieldView_ = new QTableView(this);
+    fieldView_->setObjectName(QStringLiteral("fieldView"));
+    fieldView_->setModel(fieldModel_);
+    configureTable(fieldView_);
+    fieldView_->setEditTriggers(QAbstractItemView::EditKeyPressed |
+                                QAbstractItemView::AnyKeyPressed);
+    fieldView_->setContextMenuPolicy(Qt::CustomContextMenu);
+
+    bitfieldView_ = new BitfieldView(this);
+    bitfieldView_->setObjectName(QStringLiteral("bitfieldView"));
+    auto* fieldPanel = new QWidget(this);
+    auto* fieldLayout = new QVBoxLayout(fieldPanel);
+    fieldLayout->setContentsMargins(0, 0, 0, 0);
+    fieldLayout->setSpacing(6);
+    enumContextLabel_ = new QLabel(QStringLiteral("Enum Values"), fieldPanel);
+    enumContextLabel_->setObjectName(QStringLiteral("contextTitle"));
+    enumView_ = new QTableView(fieldPanel);
+    enumView_->setObjectName(QStringLiteral("enumView"));
+    enumView_->setModel(enumModel_);
+    configureTable(enumView_);
+    enumView_->setEditTriggers(QAbstractItemView::EditKeyPressed |
+                               QAbstractItemView::AnyKeyPressed);
+    enumView_->setContextMenuPolicy(Qt::CustomContextMenu);
+    enumView_->setFixedHeight(112);
+
+    fieldLayout->addWidget(bitfieldView_);
+    fieldLayout->addWidget(fieldView_, 1);
+    fieldLayout->addWidget(enumContextLabel_);
+    fieldLayout->addWidget(enumView_);
+
+    auto* middleSplitter = new QSplitter(Qt::Vertical, this);
+    middleSplitter->addWidget(registerPanel);
+    middleSplitter->addWidget(fieldPanel);
+    middleSplitter->setStretchFactor(0, 3);
+    middleSplitter->setStretchFactor(1, 2);
+    middleSplitter->setChildrenCollapsible(false);
+    middleSplitter->setHandleWidth(4);
+
+    auto* topSplitter = new QSplitter(Qt::Horizontal, this);
+    topSplitter->addWidget(hierarchyView_);
+    topSplitter->addWidget(middleSplitter);
+    topSplitter->setStretchFactor(0, 0);
+    topSplitter->setStretchFactor(1, 1);
+    topSplitter->setChildrenCollapsible(false);
+    topSplitter->setHandleWidth(4);
+    topSplitter->setSizes({230, 1260});
+
+    problemsView_ = new QTableView(this);
+    problemsView_->setObjectName(QStringLiteral("problemsView"));
+    problemsView_->setModel(problemsModel_);
+    configureTable(problemsView_);
+    generatedView_ = new QTableView(this);
+    generatedView_->setObjectName(QStringLiteral("generatedView"));
+    generatedView_->setModel(generatedModel_);
+    configureTable(generatedView_);
+    diffView_ = new QTableView(this);
+    diffView_->setObjectName(QStringLiteral("diffView"));
+    diffView_->setModel(diffModel_);
+    configureTable(diffView_);
+
+    tabs_ = new QTabWidget(this);
+    tabs_->setDocumentMode(true);
+    tabs_->addTab(problemsView_, QStringLiteral("Problems"));
+    tabs_->addTab(generatedView_, QStringLiteral("Generated"));
+    tabs_->addTab(diffView_, QStringLiteral("Diff"));
+    tabs_->setMinimumHeight(190);
+
+    auto* mainSplitter = new QSplitter(Qt::Vertical, this);
+    mainSplitter->addWidget(topSplitter);
+    mainSplitter->addWidget(tabs_);
+    mainSplitter->setStretchFactor(0, 1);
+    mainSplitter->setStretchFactor(1, 0);
+    mainSplitter->setChildrenCollapsible(false);
+    mainSplitter->setHandleWidth(4);
+    mainSplitter->setContentsMargins(6, 6, 6, 6);
+    mainSplitter->setSizes({690, 230});
+    setCentralWidget(mainSplitter);
+}
+
+void MainWindow::buildActions()
+{
+    auto* newAction = new QAction(QStringLiteral("New Project..."), this);
+    newAction->setShortcut(QKeySequence::New);
+    connect(newAction, &QAction::triggered, this, [this] {
+        QString path =
+            QFileDialog::getSaveFileName(this, QStringLiteral("Create register-map project"), {},
+                                         QStringLiteral("Register Map Project (*.regmap.yaml)"));
+        if (path.isEmpty()) {
+            return;
+        }
+        if (!path.endsWith(QStringLiteral(".regmap.yaml"), Qt::CaseInsensitive)) {
+            path += QStringLiteral(".regmap.yaml");
+        }
+        if (!confirmProjectReplacement()) {
+            return;
+        }
+        if (!controller_.createProject(path)) {
+            QMessageBox::critical(this, QStringLiteral("Create Project"),
+                                  QStringLiteral("The register-map project could not be created."));
+        }
+    });
+
+    auto* openAction = new QAction(QStringLiteral("Open Project…"), this);
+    openAction->setShortcut(QKeySequence::Open);
+    connect(openAction, &QAction::triggered, this, [this] {
+        const QString path = QFileDialog::getOpenFileName(
+            this, QStringLiteral("Open register-map project"), {},
+            QStringLiteral("Register Map Project (*.regmap.yaml *.yaml *.yml);;All "
+                           "Files (*)"));
+        if (!path.isEmpty()) {
+            if (confirmProjectReplacement()) {
+                openProjectPath(path);
+            }
+        }
+    });
+
+    saveAction_ = new QAction(QStringLiteral("Save"), this);
+    saveAction_->setShortcut(QKeySequence::Save);
+    saveAction_->setEnabled(false);
+    connect(saveAction_, &QAction::triggered, &controller_, &ProjectController::save);
+
+    reloadAction_ = new QAction(QStringLiteral("Reload from Disk"), this);
+    reloadAction_->setShortcut(QKeySequence::Refresh);
+    reloadAction_->setEnabled(false);
+    connect(reloadAction_, &QAction::triggered, this, [this] {
+        if (controller_.isDirty() &&
+            QMessageBox::question(
+                this, QStringLiteral("Reload Project"),
+                QStringLiteral("Discard unsaved Workbench edits and reload from disk?")) !=
+                QMessageBox::Yes) {
+            return;
+        }
+        controller_.reload();
+    });
+
+    undoAction_ = new QAction(QStringLiteral("Undo"), this);
+    undoAction_->setShortcut(QKeySequence::Undo);
+    undoAction_->setEnabled(false);
+    connect(undoAction_, &QAction::triggered, &controller_, &ProjectController::undo);
+
+    redoAction_ = new QAction(QStringLiteral("Redo"), this);
+    redoAction_->setShortcut(QKeySequence::Redo);
+    redoAction_->setEnabled(false);
+    connect(redoAction_, &QAction::triggered, &controller_, &ProjectController::redo);
+
+    generateAction_ = new QAction(QStringLiteral("Generate"), this);
+    generateAction_->setShortcut(QKeySequence(QStringLiteral("Ctrl+G")));
+    generateAction_->setEnabled(false);
+    connect(generateAction_, &QAction::triggered, &controller_, &ProjectController::generateNow);
+
+    synchronizeAction_ = new QAction(QStringLiteral("Synchronize RTL"), this);
+    synchronizeAction_->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+S")));
+    synchronizeAction_->setEnabled(false);
+    connect(synchronizeAction_, &QAction::triggered, &controller_,
+            &ProjectController::synchronizeNow);
+
+    useWorkbenchAction_ = new QAction(QStringLiteral("Resolve Conflicts Using Workbench"), this);
+    useWorkbenchAction_->setEnabled(false);
+    connect(useWorkbenchAction_, &QAction::triggered, &controller_,
+            &ProjectController::useWorkbenchForConflicts);
+    useRtlAction_ = new QAction(QStringLiteral("Resolve Conflicts Using RTL"), this);
+    useRtlAction_->setEnabled(false);
+    connect(useRtlAction_, &QAction::triggered, &controller_,
+            &ProjectController::useRtlForConflicts);
+
+    openSourceAction_ = new QAction(QStringLiteral("Open Source"), this);
+    openSourceAction_->setShortcut(QKeySequence(QStringLiteral("Ctrl+L")));
+    openSourceAction_->setEnabled(false);
+    connect(openSourceAction_, &QAction::triggered, this, [this] {
+        if (currentSource_.has_value()) {
+            openSource(*currentSource_);
+        }
+    });
+
+    auto* addAddressAction = new QAction(QStringLiteral("Add Page"), this);
+    connect(addAddressAction, &QAction::triggered, this, &MainWindow::addAddressSpace);
+    auto* addBlockAction = new QAction(QStringLiteral("Add Register Block"), this);
+    connect(addBlockAction, &QAction::triggered, this, &MainWindow::addBlock);
+    auto* addEnumAction = new QAction(QStringLiteral("Add Enum Value"), this);
+    connect(addEnumAction, &QAction::triggered, this, &MainWindow::addEnumValue);
+
+    deleteAction_ = new QAction(QStringLiteral("Delete Selected Object"), this);
+    deleteAction_->setShortcut(QKeySequence::Delete);
+    deleteAction_->setEnabled(false);
+    connect(deleteAction_, &QAction::triggered, this, &MainWindow::deleteSelection);
+
+    auto* exitAction = new QAction(QStringLiteral("Exit"), this);
+    exitAction->setShortcut(QKeySequence::Quit);
+    connect(exitAction, &QAction::triggered, this, &QWidget::close);
+
+    QMenu* fileMenu = menuBar()->addMenu(QStringLiteral("File"));
+    fileMenu->addAction(newAction);
+    fileMenu->addAction(openAction);
+    fileMenu->addAction(saveAction_);
+    fileMenu->addAction(reloadAction_);
+    fileMenu->addSeparator();
+    fileMenu->addAction(exitAction);
+    QMenu* editMenu = menuBar()->addMenu(QStringLiteral("Edit"));
+    editMenu->addAction(undoAction_);
+    editMenu->addAction(redoAction_);
+    editMenu->addSeparator();
+    editMenu->addAction(addAddressAction);
+    editMenu->addAction(addBlockAction);
+    editMenu->addAction(addEnumAction);
+    editMenu->addSeparator();
+    editMenu->addAction(deleteAction_);
+
+    QMenu* projectMenu = menuBar()->addMenu(QStringLiteral("Project"));
+    projectMenu->addAction(synchronizeAction_);
+    projectMenu->addAction(generateAction_);
+    projectMenu->addSeparator();
+    projectMenu->addAction(useWorkbenchAction_);
+    projectMenu->addAction(useRtlAction_);
+    projectMenu->addAction(openSourceAction_);
+
+    QToolBar* toolbar = addToolBar(QStringLiteral("Project"));
+    toolbar->setObjectName(QStringLiteral("projectToolBar"));
+    toolbar->setMovable(false);
+    toolbar->setFloatable(false);
+    toolbar->addAction(newAction);
+    toolbar->addAction(openAction);
+    toolbar->addAction(saveAction_);
+    toolbar->addAction(reloadAction_);
+    toolbar->addSeparator();
+    toolbar->addAction(undoAction_);
+    toolbar->addAction(redoAction_);
+    toolbar->addAction(addAddressAction);
+    toolbar->addAction(addBlockAction);
+    toolbar->addAction(deleteAction_);
+    toolbar->addSeparator();
+    toolbar->addAction(synchronizeAction_);
+    toolbar->addAction(generateAction_);
+    toolbar->addAction(openSourceAction_);
+}
+
+void MainWindow::connectSignals()
+{
+    connect(&controller_, &ProjectController::projectChanged, this,
+            &MainWindow::requestProjectRefresh);
+    connect(&controller_, &ProjectController::diagnosticsChanged, this, [this] {
+        if (modelEditInProgress_) {
+            QTimer::singleShot(0, this, &MainWindow::refreshDiagnostics);
+        } else {
+            refreshDiagnostics();
+        }
+    });
+    connect(&controller_, &ProjectController::generationChanged, this,
+            &MainWindow::refreshGenerated);
+    connect(&controller_, &ProjectController::editStateChanged, this,
+            &MainWindow::updateEditActions);
+    connect(&controller_, &ProjectController::conflictsChanged, this, &MainWindow::refreshDiff);
+    connect(&controller_, &ProjectController::syncStatusChanged, this,
+            [this](const QString& text) { statusBar()->showMessage(text); });
+
+    connect(hierarchyView_->selectionModel(), &QItemSelectionModel::currentChanged, this,
+            [this](const QModelIndex& current) {
+                if (refreshing_) {
+                    return;
+                }
+                selectedAddressId_ = current.data(addressIdRole).toString().toUtf8().toStdString();
+                selectedBlockId_ = current.data(blockIdRole).toString().toUtf8().toStdString();
+                selectedRegisterId_.clear();
+                selectedFieldId_.clear();
+                updateContextBar();
+                populateRegisters();
+                const auto* workspace = controller_.workspace();
+                const std::string objectId =
+                    current.data(objectIdRole).toString().toUtf8().toStdString();
+                if (workspace != nullptr && objectId == workspace->id) {
+                    setCurrentSource({});
+                } else if (const auto* block = findBlock(selectedBlockId_)) {
+                    setCurrentSource(block->source);
+                } else if (const auto* page = findAddressSpace(selectedAddressId_)) {
+                    setCurrentSource(page->source);
+                } else {
+                    setCurrentSource({});
+                }
+                updateEditActions();
+            });
+    connect(registerView_->selectionModel(), &QItemSelectionModel::currentChanged, this,
+            [this](const QModelIndex& current) {
+                if (refreshing_) {
+                    return;
+                }
+                if (current.data(addRowRole).toBool()) {
+                    return;
+                }
+                const QModelIndex first = registerModel_->index(current.row(), 0);
+                selectedRegisterId_ = first.data(objectIdRole).toString().toUtf8().toStdString();
+                selectedFieldId_.clear();
+                const regmap::Register* reg = findRegister(selectedRegisterId_);
+                populateFields(reg);
+                setCurrentSource(reg == nullptr ? regmap::SourceLocation{} : reg->source);
+                updateContextBar();
+                updateEditActions();
+            });
+    connect(fieldView_->selectionModel(), &QItemSelectionModel::currentChanged, this,
+            [this](const QModelIndex& current) {
+                if (refreshing_) {
+                    return;
+                }
+                if (current.data(addRowRole).toBool()) {
+                    return;
+                }
+                const QModelIndex first = fieldModel_->index(current.row(), 0);
+                selectedFieldId_ = first.data(objectIdRole).toString().toUtf8().toStdString();
+                const regmap::Register* reg = findRegister(selectedRegisterId_);
+                const regmap::Field* field =
+                    reg == nullptr ? nullptr : findField(*reg, selectedFieldId_);
+                bitfieldView_->setSelectedField(field);
+                populateEnumValues(reg, field);
+                setCurrentSource(field == nullptr ? regmap::SourceLocation{} : field->source);
+                updateEditActions();
+            });
+    connect(bitfieldView_, &BitfieldView::fieldActivated, this,
+            [this](const QString& id) { selectField(id.toUtf8().toStdString()); });
+    connect(bitfieldView_, &BitfieldView::fieldDragPreview, this,
+            [this](const QString&, std::uint32_t lsb, std::uint32_t msb) {
+                statusBar()->showMessage(QStringLiteral("Moving field [%1:%2]").arg(msb).arg(lsb));
+            });
+    connect(bitfieldView_, &BitfieldView::fieldMoveRequested, this,
+            [this](const QString& id, std::uint32_t lsb, std::uint32_t msb) {
+                moveField(id.toUtf8().toStdString(), lsb, msb);
+            });
+
+    connect(registerView_, &QTableView::clicked, this, [this](const QModelIndex& index) {
+        if (index.data(addRowRole).toBool()) {
+            addRegister();
+            return;
+        }
+        if (index.column() == registerTagsColumn) {
+            editRegisterTags(index);
+            return;
+        }
+        if (index.column() == registerAccessColumn) {
+            editRegisterAccess(index);
+            return;
+        }
+        if (index.flags() & Qt::ItemIsEditable) {
+            registerView_->edit(index);
+        }
+    });
+    connect(fieldView_, &QTableView::clicked, this, [this](const QModelIndex& index) {
+        if (index.data(addRowRole).toBool()) {
+            addField();
+            return;
+        }
+        if (index.flags() & Qt::ItemIsEditable) {
+            fieldView_->edit(index);
+        }
+    });
+    connect(enumView_, &QTableView::clicked, this, [this](const QModelIndex& index) {
+        if (index.data(addRowRole).toBool()) {
+            addEnumValue();
+            return;
+        }
+        if (index.flags() & Qt::ItemIsEditable) {
+            enumView_->edit(index);
+        }
+    });
+    connect(enumView_, &QWidget::customContextMenuRequested, this, [this](const QPoint& position) {
+        const QModelIndex index = enumView_->indexAt(position);
+        const std::string id = index.data(objectIdRole).toString().toUtf8().toStdString();
+        if (id.empty()) {
+            return;
+        }
+        QMenu menu(this);
+        QAction* remove = menu.addAction(QStringLiteral("Delete Enum Value"));
+        if (menu.exec(enumView_->viewport()->mapToGlobal(position)) == remove &&
+            controller_.editWorkspace(QStringLiteral("Delete enum value"),
+                                      [id](regmap::Workspace& candidate) {
+                                          static_cast<void>(regmap::removeObject(candidate, id));
+                                      })) {
+            refreshProject();
+        }
+    });
+    connect(registerView_, &QWidget::customContextMenuRequested, this,
+            &MainWindow::showRegisterContextMenu);
+    connect(fieldView_, &QWidget::customContextMenuRequested, this,
+            &MainWindow::showFieldContextMenu);
+    connect(tagFilter_, &QComboBox::currentIndexChanged, this, [this](int index) {
+        if (refreshing_) {
+            return;
+        }
+        selectedTagFilter_ =
+            index <= 0 ? std::string{} : tagFilter_->itemText(index).toUtf8().toStdString();
+        populateRegisters();
+    });
+    connect(pageBaseEdit_, &QLineEdit::editingFinished, this, [this] {
+        const std::string id =
+            pageBaseEdit_->property("objectId").toString().toUtf8().toStdString();
+        if (const auto* page = findAddressSpace(id)) {
+            applyPropertyEdit(page->id, "base", pageBaseEdit_->text());
+        }
+    });
+    connect(blockBaseEdit_, &QLineEdit::editingFinished, this, [this] {
+        const std::string id =
+            blockBaseEdit_->property("objectId").toString().toUtf8().toStdString();
+        if (const auto* block = findBlock(id)) {
+            applyPropertyEdit(block->id, "base", blockBaseEdit_->text());
+        }
+    });
+    connect(pageWidthEdit_, &QLineEdit::editingFinished, this, [this] {
+        const std::string id =
+            pageWidthEdit_->property("objectId").toString().toUtf8().toStdString();
+        if (const auto* page = findAddressSpace(id)) {
+            applyPropertyEdit(page->id, "address_width", pageWidthEdit_->text());
+        }
+    });
+    connect(pageDescriptionEdit_, &QLineEdit::editingFinished, this, [this] {
+        const std::string id =
+            pageDescriptionEdit_->property("objectId").toString().toUtf8().toStdString();
+        if (const auto* page = findAddressSpace(id)) {
+            applyPropertyEdit(page->id, "description", pageDescriptionEdit_->text());
+        }
+    });
+    connect(blockSizeEdit_, &QLineEdit::editingFinished, this, [this] {
+        const std::string id =
+            blockSizeEdit_->property("objectId").toString().toUtf8().toStdString();
+        if (const auto* block = findBlock(id)) {
+            applyPropertyEdit(block->id, "size", blockSizeEdit_->text());
+        }
+    });
+    connect(blockDescriptionEdit_, &QLineEdit::editingFinished, this, [this] {
+        const std::string id =
+            blockDescriptionEdit_->property("objectId").toString().toUtf8().toStdString();
+        if (const auto* block = findBlock(id)) {
+            applyPropertyEdit(block->id, "description", blockDescriptionEdit_->text());
+        }
+    });
+    connect(problemsView_, &QTableView::doubleClicked, this, [this](const QModelIndex& index) {
+        const int diagnosticIndex =
+            problemsModel_->index(index.row(), 0).data(rowIndexRole).toInt();
+        if (diagnosticIndex >= 0 &&
+            static_cast<std::size_t>(diagnosticIndex) < controller_.diagnostics().size()) {
+            openSource(controller_.diagnostics()[static_cast<std::size_t>(diagnosticIndex)].source);
+        }
+    });
+    connect(generatedView_, &QTableView::doubleClicked, this, [this](const QModelIndex& index) {
+        const int artifactIndex = generatedModel_->index(index.row(), 0).data(rowIndexRole).toInt();
+        if (artifactIndex >= 0 &&
+            static_cast<std::size_t>(artifactIndex) < controller_.artifacts().size()) {
+            if (!SourceNavigation::openFile(
+                    controller_.artifacts()[static_cast<std::size_t>(artifactIndex)].path)) {
+                statusBar()->showMessage(QStringLiteral("Could not open generated artifact"));
+            }
+        }
+    });
+    connect(diffView_, &QTableView::doubleClicked, this, [this](const QModelIndex& index) {
+        const int changeIndex = diffModel_->index(index.row(), 0).data(rowIndexRole).toInt();
+        if (changeIndex >= 0 &&
+            static_cast<std::size_t>(changeIndex) < controller_.changes().size()) {
+            const auto& change = controller_.changes()[static_cast<std::size_t>(changeIndex)];
+            openSource(change.afterSource.empty() ? change.beforeSource : change.afterSource);
+        }
+    });
+
+    const auto handleModelEdit = [this](QStandardItem* changedItem) {
+        if (refreshing_ || changedItem == nullptr) {
+            return;
+        }
+        const std::string objectId =
+            changedItem->data(objectIdRole).toString().toUtf8().toStdString();
+        const std::string property =
+            changedItem->data(propertyRole).toString().toUtf8().toStdString();
+        if (!objectId.empty() && !property.empty()) {
+            const QScopedValueRollback editGuard(modelEditInProgress_, true);
+            applyPropertyEdit(objectId, property, changedItem->text());
+        }
+    };
+    connect(hierarchyModel_, &QStandardItemModel::itemChanged, this, handleModelEdit);
+    connect(registerModel_, &QStandardItemModel::itemChanged, this, handleModelEdit);
+    connect(fieldModel_, &QStandardItemModel::itemChanged, this, handleModelEdit);
+    connect(enumModel_, &QStandardItemModel::itemChanged, this, handleModelEdit);
+}
+
+bool MainWindow::confirmProjectReplacement()
+{
+    if (!controller_.isDirty()) {
+        return true;
+    }
+    const auto answer = QMessageBox::warning(
+        this, QStringLiteral("Unsaved Register Map"),
+        QStringLiteral("Save Workbench edits before opening another project?"),
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
+    if (answer == QMessageBox::Cancel) {
+        return false;
+    }
+    if (answer == QMessageBox::Save) {
+        controller_.save();
+        return !controller_.isDirty();
+    }
+    return true;
+}
+
+void MainWindow::openProjectPath(const QString& path) { controller_.openProject(path); }
+
+void MainWindow::requestProjectRefresh()
+{
+    if (!modelEditInProgress_) {
+        refreshProject();
+        return;
+    }
+    if (refreshPending_) {
+        return;
+    }
+    refreshPending_ = true;
+    QTimer::singleShot(0, this, [this] {
+        refreshPending_ = false;
+        refreshProject();
+    });
+}
+
+void MainWindow::refreshProject()
+{
+    populateHierarchy();
+    updateContextBar();
+    updateTagFilter();
+    populateRegisters();
+    refreshDiff();
+    reloadAction_->setEnabled(!controller_.manifestPath().empty());
+    generateAction_->setEnabled(controller_.workspace() != nullptr &&
+                                !controller_.hasProjectErrors());
+    updateEditActions();
+
+    if (const auto* workspace = controller_.workspace()) {
+        setWindowTitle(fromUtf8(workspace->name) +
+                       (controller_.isDirty() ? QStringLiteral(" *") : QString{}) +
+                       QStringLiteral(" — Register Map Workbench"));
+    } else {
+        setWindowTitle(QStringLiteral("Register Map Workbench"));
+    }
+}
+
+void MainWindow::updateContextBar()
+{
+    std::string pageId = selectedAddressId_;
+    std::string blockId = selectedBlockId_;
+    if (const auto* workspace = controller_.workspace()) {
+        bool foundContext = false;
+        for (const auto& candidatePage : workspace->addressSpaces) {
+            for (const auto& candidateBlock : candidatePage.blocks) {
+                const bool selectedBlock = !blockId.empty() && candidateBlock.id == blockId;
+                const bool selectedRegister =
+                    !selectedRegisterId_.empty() &&
+                    std::ranges::any_of(candidateBlock.registers, [&](const regmap::Register& reg) {
+                        return reg.id == selectedRegisterId_;
+                    });
+                if (selectedBlock || selectedRegister) {
+                    pageId = candidatePage.id;
+                    blockId = candidateBlock.id;
+                    foundContext = true;
+                    break;
+                }
+            }
+            if (foundContext) {
+                break;
+            }
+        }
+    }
+    const auto* page = findAddressSpace(pageId);
+    const auto* block = findBlock(blockId);
+    const QSignalBlocker pageBaseBlocker(pageBaseEdit_);
+    const QSignalBlocker pageWidthBlocker(pageWidthEdit_);
+    const QSignalBlocker pageDescriptionBlocker(pageDescriptionEdit_);
+    const QSignalBlocker blockBaseBlocker(blockBaseEdit_);
+    const QSignalBlocker blockSizeBlocker(blockSizeEdit_);
+    const QSignalBlocker blockDescriptionBlocker(blockDescriptionEdit_);
+
+    const QString pageObjectId = page == nullptr ? QString{} : fromUtf8(page->id);
+    for (QLineEdit* edit : {pageBaseEdit_, pageWidthEdit_, pageDescriptionEdit_}) {
+        edit->setProperty("objectId", pageObjectId);
+        edit->setEnabled(page != nullptr);
+    }
+    pageContextLabel_->setText(page == nullptr
+                                   ? QStringLiteral("Page: select in tree")
+                                   : QStringLiteral("Page: %1").arg(fromUtf8(page->name)));
+    pageBaseEdit_->setText(page == nullptr ? QString{} : hex(page->baseAddress));
+    pageWidthEdit_->setText(page == nullptr ? QString{} : QString::number(page->addressWidth));
+    pageDescriptionEdit_->setText(page == nullptr ? QString{} : fromUtf8(page->description));
+
+    const QString blockObjectId = block == nullptr ? QString{} : fromUtf8(block->id);
+    for (QLineEdit* edit : {blockBaseEdit_, blockSizeEdit_, blockDescriptionEdit_}) {
+        edit->setProperty("objectId", blockObjectId);
+        edit->setEnabled(block != nullptr);
+    }
+    blockContextLabel_->setText(block == nullptr
+                                    ? QStringLiteral("Block: select in tree")
+                                    : QStringLiteral("Block: %1").arg(fromUtf8(block->name)));
+    blockBaseEdit_->setText(block == nullptr ? QString{} : hex(block->baseAddress));
+    blockSizeEdit_->setText(block == nullptr || !block->size ? QString{} : hex(*block->size));
+    blockDescriptionEdit_->setText(block == nullptr ? QString{} : fromUtf8(block->description));
+}
+
+void MainWindow::populateHierarchy()
+{
+    QScopedValueRollback guard(refreshing_, true);
+    hierarchyModel_->clear();
+    hierarchyModel_->setHorizontalHeaderLabels({QStringLiteral("Workspace / Pages / Blocks")});
+    const regmap::Workspace* workspace = controller_.workspace();
+    if (workspace == nullptr) {
+        return;
+    }
+
+    auto* workspaceItem =
+        editableItem(fromUtf8(workspace->name), workspace->id, "name", objectIdRole, propertyRole);
+    workspaceItem->setData(fromUtf8(workspace->id), objectIdRole);
+    hierarchyModel_->appendRow(workspaceItem);
+    QModelIndex selected = workspaceItem->index();
+    for (const auto& addressSpace : workspace->addressSpaces) {
+        auto* addressItem = editableItem(fromUtf8(addressSpace.name), addressSpace.id, "name",
+                                         objectIdRole, propertyRole);
+        addressItem->setData(fromUtf8(addressSpace.id), objectIdRole);
+        addressItem->setData(fromUtf8(addressSpace.id), addressIdRole);
+        workspaceItem->appendRow(addressItem);
+        if (addressSpace.id == selectedAddressId_ && selectedBlockId_.empty()) {
+            selected = addressItem->index();
+        }
+        for (const auto& block : addressSpace.blocks) {
+            auto* blockItem =
+                editableItem(fromUtf8(block.name), block.id, "name", objectIdRole, propertyRole);
+            blockItem->setData(fromUtf8(block.id), objectIdRole);
+            blockItem->setData(fromUtf8(addressSpace.id), addressIdRole);
+            blockItem->setData(fromUtf8(block.id), blockIdRole);
+            addressItem->appendRow(blockItem);
+            if (addressSpace.id == selectedAddressId_ && block.id == selectedBlockId_) {
+                selected = blockItem->index();
+            }
+        }
+    }
+    hierarchyView_->expandAll();
+    if (selected.isValid()) {
+        const std::string newAddressId =
+            selected.data(addressIdRole).toString().toUtf8().toStdString();
+        const std::string newBlockId = selected.data(blockIdRole).toString().toUtf8().toStdString();
+        if (newAddressId != selectedAddressId_ || newBlockId != selectedBlockId_) {
+            selectedRegisterId_.clear();
+            selectedFieldId_.clear();
+        }
+        selectedAddressId_ = newAddressId;
+        selectedBlockId_ = newBlockId;
+        hierarchyView_->setCurrentIndex(selected);
+    }
+    hierarchyView_->resizeColumnToContents(0);
+}
+
+void MainWindow::populateRegisters()
+{
+    QScopedValueRollback guard(refreshing_, true);
+    const std::string preferredRegister = selectedRegisterId_;
+    registerModel_->clear();
+    registerModel_->setHorizontalHeaderLabels(
+        {QStringLiteral("Register"), QStringLiteral("Offset"), QStringLiteral("Address"),
+         QStringLiteral("Width"), QStringLiteral("Type"), QStringLiteral("Range"),
+         QStringLiteral("Initial"), QStringLiteral("Reset"), QStringLiteral("Access"),
+         QStringLiteral("Tags"), QStringLiteral("Description")});
+
+    const regmap::Workspace* workspace = controller_.workspace();
+    if (workspace == nullptr) {
+        populateFields(nullptr);
+        setCurrentSource({});
+        return;
+    }
+
+    int preferredRow = -1;
+    for (const auto& addressSpace : workspace->addressSpaces) {
+        if (!selectedAddressId_.empty() && addressSpace.id != selectedAddressId_) {
+            continue;
+        }
+        for (const auto& block : addressSpace.blocks) {
+            if (!selectedBlockId_.empty() && block.id != selectedBlockId_) {
+                continue;
+            }
+            for (const auto& reg : block.registers) {
+                if (!selectedTagFilter_.empty() &&
+                    std::ranges::find(reg.tags, selectedTagFilter_) == reg.tags.end()) {
+                    continue;
+                }
+                std::uint64_t address = 0;
+                std::uint64_t blockAddress = 0;
+                const bool overflow =
+                    addOverflow(addressSpace.baseAddress, block.baseAddress, blockAddress) ||
+                    addOverflow(blockAddress, reg.offset, address);
+                QList<QStandardItem*> row;
+                auto* name =
+                    editableItem(fromUtf8(reg.name), reg.id, "name", objectIdRole, propertyRole);
+                name->setData(fromUtf8(reg.id), objectIdRole);
+                name->setData(fromUtf8(addressSpace.id), addressIdRole);
+                name->setData(fromUtf8(block.id), blockIdRole);
+                row << name
+                    << editableItem(hex(reg.offset), reg.id, "offset", objectIdRole, propertyRole)
+                    << item(overflow ? QStringLiteral("overflow") : hex(address))
+                    << editableItem(QString::number(reg.width), reg.id, "width", objectIdRole,
+                                    propertyRole)
+                    << editableItem(registerTypeText(reg), reg.id, "type", objectIdRole,
+                                    propertyRole)
+                    << editableItem(rangeText(reg.minimumValue, reg.maximumValue), reg.id, "range",
+                                    objectIdRole, propertyRole)
+                    << editableItem(valueText(reg.initialValue), reg.id, "initial", objectIdRole,
+                                    propertyRole)
+                    << editableItem(valueText(reg.resetValue), reg.id, "reset", objectIdRole,
+                                    propertyRole)
+                    << item(accessText(reg.access).toUpper()) << item(tagsText(reg.tags))
+                    << editableItem(fromUtf8(reg.description), reg.id, "description", objectIdRole,
+                                    propertyRole);
+                if (reg.reserved) {
+                    for (auto* current : row) {
+                        QFont font = current->font();
+                        font.setWeight(QFont::DemiBold);
+                        current->setFont(font);
+                        current->setForeground(QColor(QStringLiteral("#B3261E")));
+                    }
+                }
+                const int rowNumber = registerModel_->rowCount();
+                registerModel_->appendRow(row);
+                if (reg.id == preferredRegister) {
+                    preferredRow = rowNumber;
+                }
+            }
+        }
+    }
+
+    QList<QStandardItem*> addRow;
+    for (int column = 0; column <= registerDescriptionColumn; ++column) {
+        addRow << addRowItem(column == registerNameColumn ? QStringLiteral("+") : QString{},
+                             addRowRole);
+    }
+    registerModel_->appendRow(addRow);
+    registerView_->resizeColumnsToContents();
+    const int dataRowCount = registerModel_->rowCount() - 1;
+    if (preferredRow < 0 && dataRowCount > 0) {
+        preferredRow = 0;
+    }
+    if (preferredRow >= 0) {
+        registerView_->setCurrentIndex(registerModel_->index(preferredRow, 0));
+        const std::string id = registerModel_->index(preferredRow, 0)
+                                   .data(objectIdRole)
+                                   .toString()
+                                   .toUtf8()
+                                   .toStdString();
+        if (id != selectedRegisterId_) {
+            selectedFieldId_.clear();
+        }
+        selectedRegisterId_ = id;
+        const regmap::Register* selectedRegister = findRegister(selectedRegisterId_);
+        populateFields(selectedRegister);
+        if (selectedFieldId_.empty()) {
+            setCurrentSource(selectedRegister == nullptr ? regmap::SourceLocation{}
+                                                         : selectedRegister->source);
+        }
+    } else {
+        selectedRegisterId_.clear();
+        populateFields(nullptr);
+        setCurrentSource({});
+    }
+    updateContextBar();
+}
+
+void MainWindow::populateFields(const regmap::Register* reg)
+{
+    QScopedValueRollback guard(refreshing_, true);
+    const std::string preferredField = selectedFieldId_;
+    fieldModel_->clear();
+    fieldModel_->setHorizontalHeaderLabels(
+        {QStringLiteral("Field"), QStringLiteral("Parent"), QStringLiteral("MSB"),
+         QStringLiteral("LSB"), QStringLiteral("Width"), QStringLiteral("Type"),
+         QStringLiteral("Minimum"), QStringLiteral("Maximum"), QStringLiteral("SW"),
+         QStringLiteral("HW"), QStringLiteral("Reset"), QStringLiteral("Reset Domain"),
+         QStringLiteral("Read Effect"), QStringLiteral("Write Effect"),
+         QStringLiteral("Description")});
+    bitfieldView_->setRegister(reg);
+    if (reg == nullptr) {
+        populateEnumValues(nullptr, nullptr);
+        return;
+    }
+
+    int preferredRow = -1;
+    const auto appendFields = [&](const auto& self, const std::vector<regmap::Field>& fields,
+                                  const std::string& parentPath) -> void {
+        for (const auto& field : fields) {
+            QList<QStandardItem*> row;
+            auto* name =
+                editableItem(fromUtf8(field.name), field.id, "name", objectIdRole, propertyRole);
+            name->setData(fromUtf8(field.id), objectIdRole);
+            row << name << item(fromUtf8(parentPath))
+                << editableItem(QString::number(field.msb), field.id, "msb", objectIdRole,
+                                propertyRole)
+                << item(QString::number(field.lsb))
+                << editableItem(QString::number(field.width()), field.id, "field_width",
+                                objectIdRole, propertyRole)
+                << editableItem(fieldTypeText(field), field.id, "type", objectIdRole, propertyRole)
+                << editableItem(field.minimumValue ? fromUtf8(*field.minimumValue) : QString{},
+                                field.id, "minimum", objectIdRole, propertyRole)
+                << editableItem(field.maximumValue ? fromUtf8(*field.maximumValue) : QString{},
+                                field.id, "maximum", objectIdRole, propertyRole)
+                << editableItem(accessText(field.softwareAccess), field.id, "sw_access",
+                                objectIdRole, propertyRole)
+                << editableItem(accessText(field.hardwareAccess), field.id, "hw_access",
+                                objectIdRole, propertyRole)
+                << editableItem(valueText(field.resetValue), field.id, "reset", objectIdRole,
+                                propertyRole)
+                << editableItem(fromUtf8(field.resetDomain), field.id, "reset_domain", objectIdRole,
+                                propertyRole)
+                << editableItem(readSideEffectText(field.readSideEffect), field.id,
+                                "read_side_effect", objectIdRole, propertyRole)
+                << editableItem(writeSideEffectText(field.writeSideEffect), field.id,
+                                "write_side_effect", objectIdRole, propertyRole)
+                << editableItem(fromUtf8(field.description), field.id, "description", objectIdRole,
+                                propertyRole);
+            const int rowNumber = fieldModel_->rowCount();
+            fieldModel_->appendRow(row);
+            if (field.id == preferredField) {
+                preferredRow = rowNumber;
+            }
+            const std::string path =
+                parentPath.empty() ? field.name : parentPath + '.' + field.name;
+            self(self, field.members, path);
+        }
+    };
+    appendFields(appendFields, reg->fields, {});
+    if (!reg->reserved) {
+        QList<QStandardItem*> addRow;
+        for (int column = 0; column <= fieldDescriptionColumn; ++column) {
+            addRow << addRowItem(column == fieldNameColumn ? QStringLiteral("+") : QString{},
+                                 addRowRole);
+        }
+        fieldModel_->appendRow(addRow);
+    }
+    fieldView_->resizeColumnsToContents();
+    const int fieldCount = fieldModel_->rowCount() - (reg->reserved ? 0 : 1);
+    if (preferredRow < 0 && fieldCount > 0) {
+        preferredRow = 0;
+    }
+    if (preferredRow >= 0) {
+        fieldView_->setCurrentIndex(fieldModel_->index(preferredRow, 0));
+        selectedFieldId_ = fieldModel_->index(preferredRow, 0)
+                               .data(objectIdRole)
+                               .toString()
+                               .toUtf8()
+                               .toStdString();
+        const regmap::Field* selectedField = findField(*reg, selectedFieldId_);
+        bitfieldView_->setSelectedField(selectedField);
+        populateEnumValues(reg, selectedField);
+        setCurrentSource(selectedField == nullptr ? regmap::SourceLocation{}
+                                                  : selectedField->source);
+    } else {
+        selectedFieldId_.clear();
+        populateEnumValues(reg, nullptr);
+        setCurrentSource(reg->source);
+    }
+}
+
+void MainWindow::populateEnumValues(const regmap::Register* reg, const regmap::Field* field)
+{
+    QScopedValueRollback guard(refreshing_, true);
+    enumModel_->clear();
+    enumModel_->setHorizontalHeaderLabels(
+        {QStringLiteral("Name"), QStringLiteral("Value"), QStringLiteral("Description")});
+
+    const std::vector<regmap::EnumValue>* enumValues = nullptr;
+    regmap::FieldType type = regmap::FieldType::bits;
+    QString ownerKind;
+    QString ownerName;
+    if (field != nullptr) {
+        enumValues = &field->enumValues;
+        type = field->type;
+        ownerKind = QStringLiteral("Field");
+        ownerName = fromUtf8(field->name);
+    } else if (reg != nullptr) {
+        enumValues = &reg->enumValues;
+        type = reg->type;
+        ownerKind = QStringLiteral("Register");
+        ownerName = fromUtf8(reg->name);
+    }
+    const bool visible =
+        enumValues != nullptr && (type == regmap::FieldType::boolean ||
+                                  type == regmap::FieldType::enumeration || !enumValues->empty());
+    enumContextLabel_->setVisible(visible);
+    enumView_->setVisible(visible);
+    if (!visible) {
+        return;
+    }
+
+    enumContextLabel_->setText(QStringLiteral("%1 Enum Values — %2").arg(ownerKind, ownerName));
+    if (type == regmap::FieldType::boolean && enumValues->empty()) {
+        enumModel_->appendRow({item(QStringLiteral("FALSE")), item(QStringLiteral("0")),
+                               item(QStringLiteral("Implicit"))});
+        enumModel_->appendRow({item(QStringLiteral("TRUE")), item(QStringLiteral("1")),
+                               item(QStringLiteral("Implicit"))});
+    } else {
+        for (const auto& enumValue : *enumValues) {
+            enumModel_->appendRow({editableItem(fromUtf8(enumValue.name), enumValue.id, "name",
+                                                objectIdRole, propertyRole),
+                                   editableItem(fromUtf8(enumValue.value.toHexString()),
+                                                enumValue.id, "value", objectIdRole, propertyRole),
+                                   editableItem(fromUtf8(enumValue.description), enumValue.id,
+                                                "description", objectIdRole, propertyRole)});
+        }
+        QList<QStandardItem*> addRow;
+        for (int column = 0; column <= enumDescriptionColumn; ++column) {
+            addRow << addRowItem(column == enumNameColumn ? QStringLiteral("+") : QString{},
+                                 addRowRole);
+        }
+        enumModel_->appendRow(addRow);
+    }
+    enumView_->resizeColumnsToContents();
+}
+void MainWindow::refreshDiagnostics()
+{
+    problemsModel_->clear();
+    problemsModel_->setHorizontalHeaderLabels(
+        {QStringLiteral("Severity"), QStringLiteral("Code"), QStringLiteral("Message"),
+         QStringLiteral("Object ID"), QStringLiteral("Source")});
+    const auto& diagnostics = controller_.diagnostics();
+    int errorCount = 0;
+    for (std::size_t index = 0; index < diagnostics.size(); ++index) {
+        const auto& diagnostic = diagnostics[index];
+        auto* severity = item(severityText(diagnostic.severity));
+        severity->setData(static_cast<int>(index), rowIndexRole);
+        if (diagnostic.severity == regmap::DiagnosticSeverity::error) {
+            severity->setForeground(QBrush(QColor(190, 35, 35)));
+            ++errorCount;
+        } else if (diagnostic.severity == regmap::DiagnosticSeverity::warning) {
+            severity->setForeground(QBrush(QColor(180, 115, 0)));
+        }
+        problemsModel_->appendRow(
+            {severity, item(fromUtf8(diagnostic.code)), item(fromUtf8(diagnostic.message)),
+             item(fromUtf8(diagnostic.objectId)), item(sourceText(diagnostic.source))});
+    }
+    problemsView_->resizeColumnsToContents();
+    tabs_->setTabText(0, QStringLiteral("Problems (%1)").arg(diagnostics.size()));
+    generateAction_->setEnabled(controller_.workspace() != nullptr &&
+                                !controller_.hasProjectErrors());
+    if (errorCount > 0) {
+        tabs_->setCurrentIndex(0);
+    }
+}
+
+void MainWindow::refreshGenerated()
+{
+    generatedModel_->clear();
+    generatedModel_->setHorizontalHeaderLabels(
+        {QStringLiteral("Target"), QStringLiteral("Path"), QStringLiteral("Status")});
+    const auto& artifacts = controller_.artifacts();
+    for (std::size_t index = 0; index < artifacts.size(); ++index) {
+        const auto& artifact = artifacts[index];
+        auto* kind = item(fromUtf8(regmap::toString(artifact.kind)));
+        kind->setData(static_cast<int>(index), rowIndexRole);
+        generatedModel_->appendRow(
+            {kind, item(fromPath(artifact.path)),
+             item(QFileInfo::exists(fromPath(artifact.path)) ? QStringLiteral("Generated")
+                                                             : QStringLiteral("Missing"))});
+    }
+    generatedView_->resizeColumnsToContents();
+    tabs_->setTabText(1, QStringLiteral("Generated (%1)").arg(artifacts.size()));
+}
+
+void MainWindow::refreshDiff()
+{
+    diffModel_->clear();
+    diffModel_->setHorizontalHeaderLabels({QStringLiteral("Change"), QStringLiteral("Object Type"),
+                                           QStringLiteral("Name"), QStringLiteral("Stable ID"),
+                                           QStringLiteral("Summary"), QStringLiteral("Source")});
+    const auto& changes = controller_.changes();
+    for (std::size_t index = 0; index < changes.size(); ++index) {
+        const auto& change = changes[index];
+        auto* kind = item(fromUtf8(regmap::toString(change.change)));
+        kind->setData(static_cast<int>(index), rowIndexRole);
+        const auto& source = change.afterSource.empty() ? change.beforeSource : change.afterSource;
+        diffModel_->appendRow({kind, item(fromUtf8(regmap::toString(change.objectKind))),
+                               item(fromUtf8(change.name)), item(fromUtf8(change.id)),
+                               item(fromUtf8(change.summary)), item(sourceText(source))});
+    }
+    const auto displayValue = [](const std::optional<std::string>& value) {
+        return value ? fromUtf8(*value) : QStringLiteral("<absent>");
+    };
+    for (const auto& conflict : controller_.conflicts()) {
+        auto* kind = item(QStringLiteral("Conflict"));
+        kind->setData(-1, rowIndexRole);
+        const QString summary =
+            QStringLiteral("%1: Workbench=%2; RTL=%3; Base=%4")
+                .arg(fromUtf8(conflict.property), displayValue(conflict.workbenchValue),
+                     displayValue(conflict.rtlValue), displayValue(conflict.baseValue));
+        diffModel_->appendRow({kind, item(fromUtf8(regmap::toString(conflict.objectKind))),
+                               item(fromUtf8(conflict.objectName)),
+                               item(fromUtf8(conflict.objectId)), item(summary),
+                               item(controller_.manifest() == nullptr
+                                        ? QString{}
+                                        : fromPath(controller_.manifest()->rtl.path.resolved))});
+    }
+    diffView_->resizeColumnsToContents();
+    tabs_->setTabText(
+        2, QStringLiteral("Diff (%1)").arg(changes.size() + controller_.conflicts().size()));
+    if (!controller_.conflicts().empty()) {
+        tabs_->setCurrentIndex(2);
+    }
+}
+
+void MainWindow::setCurrentSource(const regmap::SourceLocation& source)
+{
+    if (source.empty()) {
+        currentSource_.reset();
+        openSourceAction_->setEnabled(false);
+        return;
+    }
+    currentSource_ = source;
+    openSourceAction_->setEnabled(true);
+}
+
+const regmap::Register* MainWindow::findRegister(const std::string& id) const
+{
+    const regmap::Workspace* workspace = controller_.workspace();
+    if (workspace == nullptr) {
+        return nullptr;
+    }
+    for (const auto& addressSpace : workspace->addressSpaces) {
+        for (const auto& block : addressSpace.blocks) {
+            const auto iterator = std::ranges::find(block.registers, id, &regmap::Register::id);
+            if (iterator != block.registers.end()) {
+                return &*iterator;
+            }
+        }
+    }
+    return nullptr;
+}
+
+const regmap::AddressSpace* MainWindow::findAddressSpace(const std::string& id) const
+{
+    const regmap::Workspace* workspace = controller_.workspace();
+    return workspace == nullptr ? nullptr : regmap::findAddressSpace(*workspace, id);
+}
+
+const regmap::RegisterBlock* MainWindow::findBlock(const std::string& id) const
+{
+    const regmap::Workspace* workspace = controller_.workspace();
+    return workspace == nullptr ? nullptr : regmap::findRegisterBlock(*workspace, id);
+}
+
+const regmap::Field* MainWindow::findField(const regmap::Register& reg, const std::string& id) const
+{
+    return findFieldRecursive(reg.fields, id);
+}
+
+void MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& property,
+                                   const QString& value)
+{
+    const regmap::Workspace* workspace = controller_.workspace();
+    if (workspace == nullptr) {
+        return;
+    }
+    const std::string textValue = value.trimmed().toUtf8().toStdString();
+    const auto parseUnsigned = [&]() -> std::optional<regmap::UnsignedValue> {
+        return regmap::UnsignedValue::parse(textValue);
+    };
+    const auto parseUInt64 = [&]() -> std::optional<std::uint64_t> {
+        const auto parsed = parseUnsigned();
+        return parsed ? parsed->toUInt64() : std::nullopt;
+    };
+    const auto parseUInt32 = [&]() -> std::optional<std::uint32_t> {
+        const auto parsed = parseUInt64();
+        if (!parsed || *parsed > std::numeric_limits<std::uint32_t>::max()) {
+            return std::nullopt;
+        }
+        return static_cast<std::uint32_t>(*parsed);
+    };
+    const auto reject = [this](const QString& expectation) {
+        statusBar()->showMessage(QStringLiteral("Edit rejected: expected %1").arg(expectation),
+                                 5000);
+        requestProjectRefresh();
+    };
+    const QString description = QStringLiteral("Edit %1").arg(fromUtf8(property));
+
+    if (workspace->id == objectId && property == "name") {
+        controller_.editWorkspace(
+            description, [=](regmap::Workspace& candidate) { candidate.name = textValue; });
+        return;
+    }
+
+    if (regmap::findEnumValue(*workspace, objectId) != nullptr) {
+        if (property == "name" || property == "description") {
+            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+                if (auto* enumValue = regmap::findEnumValue(candidate, objectId)) {
+                    (property == "name" ? enumValue->name : enumValue->description) = textValue;
+                }
+            });
+            return;
+        }
+        if (property == "value") {
+            const auto parsed = parseUnsigned();
+            if (!parsed) {
+                reject(QStringLiteral("an unsigned integer"));
+                return;
+            }
+            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+                if (auto* enumValue = regmap::findEnumValue(candidate, objectId)) {
+                    enumValue->value = *parsed;
+                }
+            });
+            return;
+        }
+    }
+
+    if (regmap::findField(*workspace, objectId) != nullptr) {
+        if (property == "name" || property == "reset_domain" || property == "description") {
+            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+                if (auto* field = regmap::findField(candidate, objectId)) {
+                    if (property == "name") {
+                        field->name = textValue;
+                    } else if (property == "reset_domain") {
+                        field->resetDomain = textValue;
+                    } else {
+                        field->description = textValue;
+                    }
+                }
+            });
+            return;
+        }
+        if (property == "minimum" || property == "maximum") {
+            const std::optional<std::string> range =
+                textValue.empty() ? std::nullopt : std::optional{textValue};
+            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+                if (auto* field = regmap::findField(candidate, objectId)) {
+                    (property == "minimum" ? field->minimumValue : field->maximumValue) = range;
+                }
+            });
+            return;
+        }
+        if (property == "msb") {
+            const auto parsed = parseUInt32();
+            const auto* current = regmap::findField(*workspace, objectId);
+            const auto* owner = findRegisterContainingField(*workspace, objectId);
+            if (!parsed || current == nullptr || owner == nullptr || *parsed < current->lsb ||
+                *parsed >= owner->width) {
+                reject(QStringLiteral("an MSB between the field LSB and register width"));
+                return;
+            }
+            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+                if (auto* field = regmap::findField(candidate, objectId)) {
+                    field->msb = *parsed;
+                    if (auto* reg = findRegisterContainingField(candidate, objectId)) {
+                        refreshRegisterFieldResets(*reg);
+                    }
+                }
+            });
+            return;
+        }
+        if (property == "field_width") {
+            const auto parsed = parseUInt32();
+            const auto* current = regmap::findField(*workspace, objectId);
+            const auto* owner = findRegisterContainingField(*workspace, objectId);
+            if (!parsed || *parsed == 0 || *parsed > maximumEditableWidth || current == nullptr ||
+                owner == nullptr ||
+                static_cast<std::uint64_t>(current->lsb) + *parsed - 1 >= owner->width) {
+                reject(QStringLiteral("a positive field width that fits in the register"));
+                return;
+            }
+            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+                if (auto* field = regmap::findField(candidate, objectId)) {
+                    field->msb = field->lsb + *parsed - 1;
+                    if (auto* reg = findRegisterContainingField(candidate, objectId)) {
+                        refreshRegisterFieldResets(*reg);
+                    }
+                }
+            });
+            return;
+        }
+        if (property == "reset") {
+            std::optional<regmap::UnsignedValue> parsed;
+            if (!textValue.empty()) {
+                parsed = parseUnsigned();
+                if (!parsed) {
+                    reject(QStringLiteral("an unsigned integer or an empty value"));
+                    return;
+                }
+            }
+            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+                if (auto* field = regmap::findField(candidate, objectId)) {
+                    field->resetValue = parsed;
+                }
+            });
+            return;
+        }
+        if (property == "type") {
+            const QString normalized = value.trimmed().toLower();
+            const QRegularExpression numericPattern(QStringLiteral(R"(^(u?int)([1-9][0-9]*)$)"));
+            const QRegularExpressionMatch numericMatch = numericPattern.match(normalized);
+            std::optional<regmap::FieldType> parsed;
+            std::optional<std::uint32_t> numericWidth;
+            if (numericMatch.hasMatch()) {
+                bool ok = false;
+                const qulonglong width = numericMatch.captured(2).toULongLong(&ok);
+                if (ok && width <= std::numeric_limits<std::uint32_t>::max()) {
+                    numericWidth = static_cast<std::uint32_t>(width);
+                    parsed = numericMatch.captured(1) == QStringLiteral("uint")
+                                 ? regmap::FieldType::unsignedInteger
+                                 : regmap::FieldType::signedInteger;
+                }
+            } else {
+                parsed = regmap::parseFieldType(textValue);
+            }
+            if (!parsed) {
+                reject(QStringLiteral("bits, bool, intN, uintN, enum, field, or reserved"));
+                return;
+            }
+            const auto* currentField = regmap::findField(*workspace, objectId);
+            const auto* owner = findRegisterContainingField(*workspace, objectId);
+            if (numericWidth &&
+                (currentField == nullptr || owner == nullptr ||
+                 *numericWidth > maximumEditableWidth ||
+                 static_cast<std::uint64_t>(currentField->lsb) + *numericWidth - 1 >=
+                     owner->width)) {
+                reject(QStringLiteral("a numeric type width that fits the field position"));
+                return;
+            }
+            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+                if (auto* field = regmap::findField(candidate, objectId)) {
+                    field->type = *parsed;
+                    if (numericWidth) {
+                        field->msb = field->lsb + *numericWidth - 1;
+                    } else if (*parsed == regmap::FieldType::boolean) {
+                        field->msb = field->lsb;
+                    } else if (*parsed == regmap::FieldType::structure) {
+                        field->softwareAccess = regmap::AccessMode::none;
+                        field->hardwareAccess = regmap::AccessMode::none;
+                        field->readSideEffect = regmap::ReadSideEffect::none;
+                        field->writeSideEffect = regmap::WriteSideEffect::none;
+                    }
+                    if (auto* reg = findRegisterContainingField(candidate, objectId)) {
+                        refreshRegisterFieldResets(*reg);
+                    }
+                }
+            });
+            return;
+        }
+        if (property == "sw_access" || property == "hw_access") {
+            const auto parsed = regmap::parseAccessMode(textValue);
+            if (!parsed) {
+                reject(QStringLiteral("none, ro, wo, or rw"));
+                return;
+            }
+            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+                if (auto* field = regmap::findField(candidate, objectId)) {
+                    (property == "sw_access" ? field->softwareAccess : field->hardwareAccess) =
+                        *parsed;
+                }
+            });
+            return;
+        }
+        if (property == "read_side_effect") {
+            const auto parsed = regmap::parseReadSideEffect(textValue);
+            if (!parsed) {
+                reject(QStringLiteral("none, clear, or set"));
+                return;
+            }
+            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+                if (auto* field = regmap::findField(candidate, objectId)) {
+                    field->readSideEffect = *parsed;
+                }
+            });
+            return;
+        }
+        if (property == "write_side_effect") {
+            const auto parsed = regmap::parseWriteSideEffect(textValue);
+            if (!parsed) {
+                reject(QStringLiteral("none, write, w1c, w1s, w0c, w0s, or toggle"));
+                return;
+            }
+            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+                if (auto* field = regmap::findField(candidate, objectId)) {
+                    field->writeSideEffect = *parsed;
+                }
+            });
+            return;
+        }
+    }
+
+    if (regmap::findRegister(*workspace, objectId) != nullptr) {
+        if (property == "name" || property == "description") {
+            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+                if (auto* reg = regmap::findRegister(candidate, objectId)) {
+                    (property == "name" ? reg->name : reg->description) = textValue;
+                }
+            });
+            return;
+        }
+        if (property == "range") {
+            std::optional<std::string> minimum;
+            std::optional<std::string> maximum;
+            if (!value.trimmed().isEmpty()) {
+                const QRegularExpression rangePattern(
+                    QStringLiteral(R"(^\s*(.*?)\s*\.\.\s*(.*?)\s*$)"));
+                const QRegularExpressionMatch match = rangePattern.match(value);
+                if (!match.hasMatch()) {
+                    reject(QStringLiteral("a range in the form minimum .. maximum"));
+                    return;
+                }
+                const QString minimumText = match.captured(1).trimmed();
+                const QString maximumText = match.captured(2).trimmed();
+                if (minimumText.isEmpty() && maximumText.isEmpty()) {
+                    reject(QStringLiteral("at least one range bound"));
+                    return;
+                }
+                if (!minimumText.isEmpty()) {
+                    minimum = minimumText.toUtf8().toStdString();
+                }
+                if (!maximumText.isEmpty()) {
+                    maximum = maximumText.toUtf8().toStdString();
+                }
+            }
+            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+                if (auto* reg = regmap::findRegister(candidate, objectId)) {
+                    reg->minimumValue = minimum;
+                    reg->maximumValue = maximum;
+                }
+            });
+            return;
+        }
+        if (property == "type") {
+            const QString normalized = value.trimmed().toLower();
+            const QRegularExpression numericPattern(QStringLiteral(R"(^(u?int)([1-9][0-9]*)$)"));
+            const QRegularExpressionMatch numericMatch = numericPattern.match(normalized);
+            std::optional<regmap::FieldType> parsed;
+            std::optional<std::uint32_t> numericWidth;
+            if (numericMatch.hasMatch()) {
+                bool ok = false;
+                const qulonglong width = numericMatch.captured(2).toULongLong(&ok);
+                if (ok && width <= maximumEditableWidth) {
+                    numericWidth = static_cast<std::uint32_t>(width);
+                    parsed = numericMatch.captured(1) == QStringLiteral("uint")
+                                 ? regmap::FieldType::unsignedInteger
+                                 : regmap::FieldType::signedInteger;
+                }
+            } else {
+                parsed = regmap::parseFieldType(textValue);
+            }
+            const auto* current = regmap::findRegister(*workspace, objectId);
+            if (!parsed || current == nullptr) {
+                reject(QStringLiteral("bits, bool, intN, uintN, enum, field, or reserved"));
+                return;
+            }
+            if (*parsed != regmap::FieldType::structure && !current->fields.empty()) {
+                reject(QStringLiteral("field type while the register contains fields"));
+                return;
+            }
+            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+                if (auto* reg = regmap::findRegister(candidate, objectId)) {
+                    reg->type = *parsed;
+                    reg->reserved = *parsed == regmap::FieldType::reserved;
+                    if (numericWidth) {
+                        reg->width = *numericWidth;
+                    } else if (*parsed == regmap::FieldType::boolean) {
+                        reg->width = 1;
+                    } else if (*parsed == regmap::FieldType::reserved) {
+                        reg->access = regmap::AccessMode::none;
+                        reg->minimumValue.reset();
+                        reg->maximumValue.reset();
+                        reg->enumValues.clear();
+                        reg->initialValue = regmap::UnsignedValue(0);
+                        reg->resetValue = regmap::UnsignedValue(0);
+                    }
+                    if (*parsed != regmap::FieldType::enumeration &&
+                        *parsed != regmap::FieldType::boolean) {
+                        reg->enumValues.clear();
+                    }
+                    if (*parsed != regmap::FieldType::signedInteger &&
+                        *parsed != regmap::FieldType::unsignedInteger) {
+                        reg->minimumValue.reset();
+                        reg->maximumValue.reset();
+                    }
+                }
+            });
+            return;
+        }
+        if (property == "offset" || property == "stride") {
+            const auto parsed = parseUInt64();
+            if (!parsed) {
+                reject(QStringLiteral("a 64-bit unsigned integer"));
+                return;
+            }
+            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+                if (auto* reg = regmap::findRegister(candidate, objectId)) {
+                    (property == "offset" ? reg->offset : reg->array.stride) = *parsed;
+                }
+            });
+            return;
+        }
+        if (property == "width" || property == "array_count") {
+            const auto parsed = parseUInt32();
+            if (!parsed || *parsed == 0 ||
+                (property == "width" && *parsed > maximumEditableWidth)) {
+                reject(property == "width" ? QStringLiteral("a register width from 1 to 65536 that "
+                                                            "contains all fields")
+                                           : QStringLiteral("a positive array count"));
+                return;
+            }
+            const auto* current = regmap::findRegister(*workspace, objectId);
+            if (property == "width" && current != nullptr &&
+                !std::ranges::all_of(current->fields, [&](const regmap::Field& field) {
+                    return field.msb < *parsed;
+                })) {
+                reject(QStringLiteral("a register width that contains all existing fields"));
+                return;
+            }
+            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+                if (auto* reg = regmap::findRegister(candidate, objectId)) {
+                    (property == "width" ? reg->width : reg->array.count) = *parsed;
+                }
+            });
+            return;
+        }
+        if (property == "initial" || property == "reset") {
+            std::optional<regmap::UnsignedValue> parsed;
+            if (!textValue.empty()) {
+                parsed = parseUnsigned();
+                const auto* current = regmap::findRegister(*workspace, objectId);
+                if (!parsed || current == nullptr || !parsed->fitsInBits(current->width)) {
+                    reject(
+                        QStringLiteral("an unsigned integer fitting the register width, or empty"));
+                    return;
+                }
+            }
+            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+                if (auto* reg = regmap::findRegister(candidate, objectId)) {
+                    if (property == "initial") {
+                        reg->initialValue = parsed;
+                    } else {
+                        reg->resetValue = parsed;
+                        refreshRegisterFieldResets(*reg);
+                    }
+                }
+            });
+            return;
+        }
+        if (property == "access") {
+            const auto parsed = regmap::parseAccessMode(textValue);
+            if (!parsed) {
+                reject(QStringLiteral("none, ro, wo, or rw"));
+                return;
+            }
+            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+                if (auto* reg = regmap::findRegister(candidate, objectId)) {
+                    reg->access = *parsed;
+                }
+            });
+            return;
+        }
+    }
+
+    if (regmap::findRegisterBlock(*workspace, objectId) != nullptr) {
+        if (property == "name" || property == "description") {
+            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+                if (auto* block = regmap::findRegisterBlock(candidate, objectId)) {
+                    (property == "name" ? block->name : block->description) = textValue;
+                }
+            });
+            return;
+        }
+        if (property == "base" || property == "size") {
+            std::optional<std::uint64_t> parsed;
+            if (property == "base" || !textValue.empty()) {
+                parsed = parseUInt64();
+                if (!parsed) {
+                    reject(QStringLiteral("a 64-bit unsigned integer"));
+                    return;
+                }
+            }
+            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+                if (auto* block = regmap::findRegisterBlock(candidate, objectId)) {
+                    if (property == "base") {
+                        block->baseAddress = *parsed;
+                    } else {
+                        block->size = parsed;
+                    }
+                }
+            });
+            return;
+        }
+    }
+
+    if (regmap::findAddressSpace(*workspace, objectId) != nullptr) {
+        if (property == "name" || property == "description") {
+            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+                if (auto* space = regmap::findAddressSpace(candidate, objectId)) {
+                    (property == "name" ? space->name : space->description) = textValue;
+                }
+            });
+            return;
+        }
+        if (property == "base") {
+            const auto parsed = parseUInt64();
+            if (!parsed) {
+                reject(QStringLiteral("a 64-bit unsigned integer"));
+                return;
+            }
+            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+                if (auto* space = regmap::findAddressSpace(candidate, objectId)) {
+                    space->baseAddress = *parsed;
+                }
+            });
+            return;
+        }
+        if (property == "address_width") {
+            const auto parsed = parseUInt32();
+            if (!parsed) {
+                reject(QStringLiteral("a 32-bit unsigned integer"));
+                return;
+            }
+            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+                if (auto* space = regmap::findAddressSpace(candidate, objectId)) {
+                    space->addressWidth = *parsed;
+                }
+            });
+            return;
+        }
+    }
+
+    reject(QStringLiteral("a supported editable property"));
+}
+
+void MainWindow::addAddressSpace()
+{
+    const auto* workspace = controller_.workspace();
+    if (workspace == nullptr) {
+        return;
+    }
+    regmap::AddressSpace addressSpace;
+    addressSpace.id = regmap::makeStableObjectId(*workspace, "space");
+    addressSpace.name = "NEW_PAGE";
+    addressSpace.addressWidth = 32;
+    const std::string newId = addressSpace.id;
+    if (controller_.editWorkspace(
+            QStringLiteral("Add page"),
+            [addressSpace = std::move(addressSpace)](regmap::Workspace& candidate) mutable {
+                candidate.addressSpaces.push_back(std::move(addressSpace));
+            })) {
+        selectedAddressId_ = newId;
+        selectedBlockId_.clear();
+        selectedRegisterId_.clear();
+        selectedFieldId_.clear();
+        refreshProject();
+    }
+}
+
+void MainWindow::addBlock()
+{
+    const auto* workspace = controller_.workspace();
+    if (workspace == nullptr || workspace->addressSpaces.empty()) {
+        statusBar()->showMessage(QStringLiteral("Add a page first"), 5000);
+        return;
+    }
+    std::string parentId = selectedAddressId_;
+    if (regmap::findAddressSpace(*workspace, parentId) == nullptr) {
+        parentId = workspace->addressSpaces.front().id;
+    }
+    regmap::RegisterBlock block;
+    block.id = regmap::makeStableObjectId(*workspace, "block");
+    block.name = "NEW_BLOCK";
+    block.size = 0x1000;
+    if (const auto* parent = regmap::findAddressSpace(*workspace, parentId)) {
+        for (const auto& existing : parent->blocks) {
+            block.baseAddress =
+                std::max(block.baseAddress,
+                         existing.baseAddress + existing.size.value_or(std::uint64_t{0x1000}));
+        }
+    }
+    const std::string newId = block.id;
+    if (controller_.editWorkspace(
+            QStringLiteral("Add register block"),
+            [parentId, block = std::move(block)](regmap::Workspace& candidate) mutable {
+                if (auto* parent = regmap::findAddressSpace(candidate, parentId)) {
+                    parent->blocks.push_back(std::move(block));
+                }
+            })) {
+        selectedAddressId_ = parentId;
+        selectedBlockId_ = newId;
+        selectedRegisterId_.clear();
+        selectedFieldId_.clear();
+        refreshProject();
+    }
+}
+
+void MainWindow::addRegister()
+{
+    const auto* workspace = controller_.workspace();
+    if (workspace == nullptr) {
+        return;
+    }
+    std::string parentId = selectedBlockId_;
+    const auto* parent = regmap::findRegisterBlock(*workspace, parentId);
+    if (parent == nullptr) {
+        for (const auto& space : workspace->addressSpaces) {
+            if (!space.blocks.empty()) {
+                parent = &space.blocks.front();
+                parentId = parent->id;
+                selectedAddressId_ = space.id;
+                break;
+            }
+        }
+    }
+    if (parent == nullptr) {
+        statusBar()->showMessage(QStringLiteral("Add a register block first"), 5000);
+        return;
+    }
+
+    regmap::Register reg;
+    reg.id = regmap::makeStableObjectId(*workspace, "reg");
+    reg.name = "NEW_REGISTER";
+    reg.width = 32;
+    reg.array.count = 1;
+    reg.array.stride = 4;
+    reg.type = regmap::FieldType::unsignedInteger;
+    reg.initialValue = regmap::UnsignedValue(0);
+    reg.resetValue = regmap::UnsignedValue(0);
+    reg.access = regmap::AccessMode::readWrite;
+    for (const auto& existing : parent->registers) {
+        const std::uint64_t byteWidth = (static_cast<std::uint64_t>(existing.width) + 7) / 8;
+        const std::uint64_t extent =
+            existing.array.count > 1
+                ? static_cast<std::uint64_t>(existing.array.count - 1) * existing.array.stride +
+                      byteWidth
+                : byteWidth;
+        reg.offset = std::max(reg.offset, existing.offset + extent);
+    }
+    reg.offset = (reg.offset + 3U) & ~std::uint64_t{3};
+    const std::string newId = reg.id;
+    if (controller_.editWorkspace(
+            QStringLiteral("Add register"),
+            [parentId, reg = std::move(reg)](regmap::Workspace& candidate) mutable {
+                if (auto* block = regmap::findRegisterBlock(candidate, parentId)) {
+                    block->registers.push_back(std::move(reg));
+                }
+            })) {
+        selectedBlockId_ = parentId;
+        selectedRegisterId_ = newId;
+        selectedFieldId_.clear();
+        refreshProject();
+        selectRegister(newId);
+    }
+}
+
+bool MainWindow::canInsertRegisterAt(int row) const
+{
+    if (!selectedTagFilter_.empty() || registerModel_ == nullptr || row <= 0 ||
+        row >= registerModel_->rowCount() - 1) {
+        return false;
+    }
+    const QModelIndex previous = registerModel_->index(row - 1, registerNameColumn);
+    const QModelIndex next = registerModel_->index(row, registerNameColumn);
+    const std::string previousBlock = previous.data(blockIdRole).toString().toUtf8().toStdString();
+    const std::string nextBlock = next.data(blockIdRole).toString().toUtf8().toStdString();
+    if (previousBlock.empty() || previousBlock != nextBlock) {
+        return false;
+    }
+    const auto* block = findBlock(previousBlock);
+    if (block == nullptr) {
+        return false;
+    }
+    const std::string previousId = previous.data(objectIdRole).toString().toUtf8().toStdString();
+    const std::string nextId = next.data(objectIdRole).toString().toUtf8().toStdString();
+    const auto previousIterator =
+        std::ranges::find(block->registers, previousId, &regmap::Register::id);
+    const auto nextIterator = std::ranges::find(block->registers, nextId, &regmap::Register::id);
+    return previousIterator != block->registers.end() && nextIterator != block->registers.end() &&
+           std::next(previousIterator) == nextIterator;
+}
+
+void MainWindow::insertRegisterAt(int row)
+{
+    if (!canInsertRegisterAt(row)) {
+        return;
+    }
+    const QModelIndex nextIndex = registerModel_->index(row, registerNameColumn);
+    const std::string blockId = nextIndex.data(blockIdRole).toString().toUtf8().toStdString();
+    const std::string addressId = nextIndex.data(addressIdRole).toString().toUtf8().toStdString();
+    const std::string nextId = nextIndex.data(objectIdRole).toString().toUtf8().toStdString();
+    const auto* workspace = controller_.workspace();
+    const auto* block = workspace == nullptr ? nullptr : findBlock(blockId);
+    if (workspace == nullptr || block == nullptr) {
+        return;
+    }
+    const auto next = std::ranges::find(block->registers, nextId, &regmap::Register::id);
+    if (next == block->registers.end()) {
+        return;
+    }
+
+    regmap::Register reg;
+    reg.id = regmap::makeStableObjectId(*workspace, "reg");
+    reg.name = "NEW_REGISTER";
+    reg.offset = next->offset;
+    reg.width = 32;
+    reg.array.count = 1;
+    reg.array.stride = 4;
+    reg.type = regmap::FieldType::unsignedInteger;
+    reg.initialValue = regmap::UnsignedValue(0);
+    reg.resetValue = regmap::UnsignedValue(0);
+    reg.access = regmap::AccessMode::readWrite;
+    const std::uint64_t shift = registerExtent(reg);
+    if (std::ranges::any_of(next, block->registers.end(), [shift](const regmap::Register& current) {
+            return current.offset > std::numeric_limits<std::uint64_t>::max() - shift;
+        })) {
+        statusBar()->showMessage(
+            QStringLiteral("Cannot insert: a following register offset would overflow"), 5000);
+        return;
+    }
+
+    const std::string newId = reg.id;
+    if (controller_.editWorkspace(
+            QStringLiteral("Insert register and shift following offsets"),
+            [blockId, nextId, shift, reg = std::move(reg)](regmap::Workspace& candidate) mutable {
+                auto* targetBlock = regmap::findRegisterBlock(candidate, blockId);
+                if (targetBlock == nullptr) {
+                    return;
+                }
+                const auto insertion =
+                    std::ranges::find(targetBlock->registers, nextId, &regmap::Register::id);
+                if (insertion == targetBlock->registers.end()) {
+                    return;
+                }
+                for (auto current = insertion; current != targetBlock->registers.end(); ++current) {
+                    current->offset += shift;
+                }
+                targetBlock->registers.insert(insertion, std::move(reg));
+            })) {
+        selectedAddressId_ = addressId;
+        selectedBlockId_ = blockId;
+        selectedRegisterId_ = newId;
+        selectedFieldId_.clear();
+        refreshProject();
+        selectRegister(newId);
+    }
+}
+
+void MainWindow::addField()
+{
+    const auto* workspace = controller_.workspace();
+    const auto* reg =
+        workspace == nullptr ? nullptr : regmap::findRegister(*workspace, selectedRegisterId_);
+    if (workspace == nullptr || reg == nullptr) {
+        statusBar()->showMessage(QStringLiteral("Select a register first"), 5000);
+        return;
+    }
+    if (reg->reserved) {
+        statusBar()->showMessage(QStringLiteral("Reserved registers cannot contain fields"), 5000);
+        return;
+    }
+    std::vector<bool> used(reg->width, false);
+    for (const auto& field : reg->fields) {
+        if (field.msb < reg->width && field.lsb <= field.msb) {
+            for (std::uint32_t bit = field.lsb; bit <= field.msb; ++bit) {
+                used[bit] = true;
+            }
+        }
+    }
+    const auto freeBit = std::ranges::find(used, false);
+    if (freeBit == used.end()) {
+        statusBar()->showMessage(QStringLiteral("The selected register has no free bit"), 5000);
+        return;
+    }
+
+    regmap::Field field;
+    field.id = regmap::makeStableObjectId(*workspace, "field");
+    field.name = "NEW_FIELD";
+    field.msb = field.lsb = static_cast<std::uint32_t>(std::distance(used.begin(), freeBit));
+    field.type = regmap::FieldType::bits;
+    field.softwareAccess = reg->access;
+    field.hardwareAccess = regmap::AccessMode::none;
+    field.resetValue =
+        reg->resetValue ? std::optional{reg->resetValue->slice(field.lsb, 1)} : std::nullopt;
+    field.writeSideEffect =
+        reg->access == regmap::AccessMode::writeOnly || reg->access == regmap::AccessMode::readWrite
+            ? regmap::WriteSideEffect::write
+            : regmap::WriteSideEffect::none;
+    const std::string newId = field.id;
+    const std::string registerId = reg->id;
+    if (controller_.editWorkspace(
+            QStringLiteral("Add field"),
+            [registerId, field = std::move(field)](regmap::Workspace& candidate) mutable {
+                if (auto* target = regmap::findRegister(candidate, registerId)) {
+                    target->type = regmap::FieldType::structure;
+                    target->minimumValue.reset();
+                    target->maximumValue.reset();
+                    target->enumValues.clear();
+                    target->fields.push_back(std::move(field));
+                }
+            })) {
+        selectedFieldId_ = newId;
+        refreshProject();
+        selectRegister(registerId);
+        selectField(newId);
+    }
+}
+
+void MainWindow::addSubfield()
+{
+    const auto* workspace = controller_.workspace();
+    const auto* reg = workspace == nullptr ? nullptr : findRegister(selectedRegisterId_);
+    const auto* parent =
+        workspace == nullptr ? nullptr : regmap::findField(*workspace, selectedFieldId_);
+    if (workspace == nullptr || reg == nullptr || parent == nullptr ||
+        parent->type != regmap::FieldType::structure) {
+        statusBar()->showMessage(QStringLiteral("Select a field/compound field first"), 5000);
+        return;
+    }
+    if (parent->width() > std::numeric_limits<std::size_t>::max()) {
+        statusBar()->showMessage(QStringLiteral("Compound field width is too large"), 5000);
+        return;
+    }
+    std::vector<bool> used(static_cast<std::size_t>(parent->width()), false);
+    for (const auto& member : parent->members) {
+        if (member.msb < used.size() && member.lsb <= member.msb) {
+            for (std::uint32_t bit = member.lsb; bit <= member.msb; ++bit) {
+                used[bit] = true;
+            }
+        }
+    }
+    const auto freeBit = std::ranges::find(used, false);
+    if (freeBit == used.end()) {
+        statusBar()->showMessage(QStringLiteral("The compound field has no free bit"), 5000);
+        return;
+    }
+
+    regmap::Field member;
+    member.id = regmap::makeStableObjectId(*workspace, "field");
+    member.name = "NEW_MEMBER";
+    member.msb = member.lsb = static_cast<std::uint32_t>(std::distance(used.begin(), freeBit));
+    member.type = regmap::FieldType::bits;
+    member.softwareAccess = reg->access;
+    member.hardwareAccess = regmap::AccessMode::none;
+    member.writeSideEffect = (reg->access == regmap::AccessMode::writeOnly ||
+                              reg->access == regmap::AccessMode::readWrite)
+                                 ? regmap::WriteSideEffect::write
+                                 : regmap::WriteSideEffect::none;
+    const std::string newId = member.id;
+    const std::string parentId = parent->id;
+    const std::string registerId = reg->id;
+    if (controller_.editWorkspace(
+            QStringLiteral("Add member field"), [parentId, registerId, member = std::move(member)](
+                                                    regmap::Workspace& candidate) mutable {
+                if (auto* target = regmap::findField(candidate, parentId)) {
+                    target->members.push_back(std::move(member));
+                    if (auto* owner = regmap::findRegister(candidate, registerId)) {
+                        refreshRegisterFieldResets(*owner);
+                    }
+                }
+            })) {
+        selectedFieldId_ = newId;
+        refreshProject();
+        selectRegister(reg->id);
+        selectField(newId);
+    }
+}
+
+void MainWindow::addEnumValue()
+{
+    const auto* workspace = controller_.workspace();
+    const auto* reg =
+        workspace == nullptr ? nullptr : regmap::findRegister(*workspace, selectedRegisterId_);
+    const auto* field = workspace == nullptr || selectedFieldId_.empty()
+                            ? nullptr
+                            : regmap::findField(*workspace, selectedFieldId_);
+    if (workspace == nullptr || (field == nullptr && reg == nullptr)) {
+        statusBar()->showMessage(QStringLiteral("Select a register or field first"), 5000);
+        return;
+    }
+
+    const auto& currentValues = field != nullptr ? field->enumValues : reg->enumValues;
+    const std::uint64_t width = field != nullptr ? field->width() : reg->width;
+    std::uint64_t value = 0;
+    for (;;) {
+        const bool used = std::ranges::any_of(currentValues, [&](const regmap::EnumValue& item) {
+            return item.value == regmap::UnsignedValue(value);
+        });
+        if (!used) {
+            break;
+        }
+        ++value;
+    }
+    if (!regmap::UnsignedValue(value).fitsInBits(width)) {
+        statusBar()->showMessage(QStringLiteral("No unused enum value fits in this object"), 5000);
+        return;
+    }
+
+    regmap::EnumValue enumValue;
+    enumValue.id = regmap::makeStableObjectId(*workspace, "enum");
+    enumValue.name = "NEW_VALUE";
+    enumValue.value = regmap::UnsignedValue(value);
+    const std::string ownerId = field != nullptr ? field->id : reg->id;
+    const bool fieldOwner = field != nullptr;
+    if (controller_.editWorkspace(
+            QStringLiteral("Add enum value"),
+            [ownerId, fieldOwner,
+             enumValue = std::move(enumValue)](regmap::Workspace& candidate) mutable {
+                if (fieldOwner) {
+                    if (auto* target = regmap::findField(candidate, ownerId)) {
+                        if (target->type != regmap::FieldType::boolean) {
+                            target->type = regmap::FieldType::enumeration;
+                        }
+                        target->minimumValue.reset();
+                        target->maximumValue.reset();
+                        target->enumValues.push_back(std::move(enumValue));
+                    }
+                } else if (auto* target = regmap::findRegister(candidate, ownerId)) {
+                    if (target->type != regmap::FieldType::boolean) {
+                        target->type = regmap::FieldType::enumeration;
+                    }
+                    target->minimumValue.reset();
+                    target->maximumValue.reset();
+                    target->enumValues.push_back(std::move(enumValue));
+                }
+            })) {
+        refreshProject();
+        const auto* selectedRegister = findRegister(selectedRegisterId_);
+        const auto* selectedField = selectedRegister == nullptr || selectedFieldId_.empty()
+                                        ? nullptr
+                                        : findField(*selectedRegister, selectedFieldId_);
+        populateEnumValues(selectedRegister, selectedField);
+    }
+}
+void MainWindow::updateTagFilter()
+{
+    std::set<std::string, std::less<>> tags;
+    if (const auto* workspace = controller_.workspace()) {
+        for (const auto& space : workspace->addressSpaces) {
+            for (const auto& block : space.blocks) {
+                for (const auto& reg : block.registers) {
+                    tags.insert(reg.tags.begin(), reg.tags.end());
+                }
+            }
+        }
+    }
+    if (!selectedTagFilter_.empty() && !tags.contains(selectedTagFilter_)) {
+        selectedTagFilter_.clear();
+    }
+    const QSignalBlocker blocker(tagFilter_);
+    tagFilter_->clear();
+    tagFilter_->addItem(QStringLiteral("All tags"));
+    int selectedIndex = 0;
+    for (const auto& tag : tags) {
+        tagFilter_->addItem(fromUtf8(tag));
+        if (tag == selectedTagFilter_) {
+            selectedIndex = tagFilter_->count() - 1;
+        }
+    }
+    tagFilter_->setCurrentIndex(selectedIndex);
+}
+
+void MainWindow::editRegisterTags(const QModelIndex& index)
+{
+    const auto* workspace = controller_.workspace();
+    if (workspace == nullptr || !index.isValid()) {
+        return;
+    }
+    const std::string registerId = registerModel_->index(index.row(), registerNameColumn)
+                                       .data(objectIdRole)
+                                       .toString()
+                                       .toUtf8()
+                                       .toStdString();
+    const auto* reg = findRegister(registerId);
+    if (reg == nullptr) {
+        return;
+    }
+
+    QStringList available;
+    const auto appendUnique = [&available](const std::string& value) {
+        const QString candidate = fromUtf8(value);
+        if (std::ranges::none_of(available, [&](const QString& current) {
+                return current.compare(candidate, Qt::CaseInsensitive) == 0;
+            })) {
+            available.push_back(candidate);
+        }
+    };
+    for (const auto& space : workspace->addressSpaces) {
+        for (const auto& block : space.blocks) {
+            for (const auto& current : block.registers) {
+                for (const auto& tag : current.tags) {
+                    appendUnique(tag);
+                }
+            }
+        }
+    }
+    for (const auto& tag : reg->tags) {
+        appendUnique(tag);
+    }
+    available.sort(Qt::CaseInsensitive);
+
+    auto* popup = createAnchoredPopup(registerView_, index, QStringLiteral("tagPopup"), 300, 270);
+    auto* layout = new QVBoxLayout(popup);
+    layout->setContentsMargins(7, 7, 7, 7);
+    layout->setSpacing(6);
+    auto* inputRow = new QHBoxLayout;
+    inputRow->setContentsMargins(0, 0, 0, 0);
+    auto* search = new QLineEdit(popup);
+    search->setObjectName(QStringLiteral("tagSearch"));
+    search->setPlaceholderText(QStringLiteral("Filter or enter a tag"));
+    auto* add = new QToolButton(popup);
+    add->setObjectName(QStringLiteral("addTagButton"));
+    add->setText(QStringLiteral("+"));
+    add->setToolTip(QStringLiteral("Create and select this tag"));
+    add->setFixedWidth(34);
+    add->setEnabled(false);
+    inputRow->addWidget(search, 1);
+    inputRow->addWidget(add);
+    layout->addLayout(inputRow);
+
+    auto* list = new QListWidget(popup);
+    list->setObjectName(QStringLiteral("tagOptions"));
+    list->setSelectionMode(QAbstractItemView::MultiSelection);
+    list->setMouseTracking(true);
+    list->setStyleSheet(QString::fromLatin1(popupListStyle));
+    for (const QString& value : available) {
+        auto* current = new QListWidgetItem(value, list);
+        current->setFlags(current->flags() & ~Qt::ItemIsUserCheckable);
+        current->setSelected(std::ranges::any_of(reg->tags, [&](const std::string& tag) {
+            return fromUtf8(tag).compare(value, Qt::CaseInsensitive) == 0;
+        }));
+    }
+    layout->addWidget(list, 1);
+
+    const auto containsTag = [list](const QString& value) {
+        for (int itemIndex = 0; itemIndex < list->count(); ++itemIndex) {
+            if (list->item(itemIndex)->text().compare(value, Qt::CaseInsensitive) == 0) {
+                return true;
+            }
+        }
+        return false;
+    };
+    const auto commit = [this, list, registerId] {
+        std::vector<std::string> tags;
+        for (int itemIndex = 0; itemIndex < list->count(); ++itemIndex) {
+            if (list->item(itemIndex)->isSelected()) {
+                tags.push_back(list->item(itemIndex)->text().trimmed().toUtf8().toStdString());
+            }
+        }
+        std::ranges::sort(tags);
+        tags.erase(std::unique(tags.begin(), tags.end()), tags.end());
+        selectedRegisterId_ = registerId;
+        controller_.editWorkspace(
+            QStringLiteral("Edit register tags"),
+            [registerId, tags = std::move(tags)](regmap::Workspace& candidate) {
+                if (auto* target = regmap::findRegister(candidate, registerId)) {
+                    target->tags = tags;
+                }
+            });
+    };
+    const auto updateFilter = [list, add, containsTag](const QString& text) {
+        const QString filter = text.trimmed();
+        for (int itemIndex = 0; itemIndex < list->count(); ++itemIndex) {
+            list->item(itemIndex)->setHidden(
+                !filter.isEmpty() &&
+                !list->item(itemIndex)->text().contains(filter, Qt::CaseInsensitive));
+        }
+        add->setEnabled(!filter.isEmpty() && !containsTag(filter));
+    };
+    connect(search, &QLineEdit::textChanged, popup, updateFilter);
+    connect(list, &QListWidget::itemClicked, popup, [commit](QListWidgetItem*) { commit(); });
+    connect(add, &QToolButton::clicked, popup, [=] {
+        const QString candidate = search->text().trimmed();
+        if (candidate.isEmpty() || containsTag(candidate)) {
+            return;
+        }
+        auto* current = new QListWidgetItem(candidate, list);
+        current->setFlags(current->flags() & ~Qt::ItemIsUserCheckable);
+        current->setSelected(true);
+        list->sortItems(Qt::AscendingOrder);
+        search->clear();
+        commit();
+    });
+
+    popup->show();
+    search->setFocus();
+}
+
+void MainWindow::editRegisterAccess(const QModelIndex& index)
+{
+    if (!index.isValid()) {
+        return;
+    }
+    const std::string registerId = registerModel_->index(index.row(), registerNameColumn)
+                                       .data(objectIdRole)
+                                       .toString()
+                                       .toUtf8()
+                                       .toStdString();
+    const auto* reg = findRegister(registerId);
+    if (reg == nullptr) {
+        return;
+    }
+
+    auto* popup =
+        createAnchoredPopup(registerView_, index, QStringLiteral("accessPopup"), 150, 158);
+    auto* layout = new QVBoxLayout(popup);
+    layout->setContentsMargins(6, 6, 6, 6);
+    auto* list = new QListWidget(popup);
+    list->setObjectName(QStringLiteral("accessOptions"));
+    list->setSelectionMode(QAbstractItemView::SingleSelection);
+    list->setMouseTracking(true);
+    list->setStyleSheet(QString::fromLatin1(popupListStyle));
+    const QString currentAccess = accessText(reg->access).toUpper();
+    for (const QString& value : {QStringLiteral("NONE"), QStringLiteral("RO"), QStringLiteral("WO"),
+                                 QStringLiteral("RW")}) {
+        auto* current = new QListWidgetItem(value, list);
+        current->setFlags(current->flags() & ~Qt::ItemIsUserCheckable);
+        if (value == currentAccess) {
+            list->setCurrentItem(current);
+        }
+    }
+    layout->addWidget(list);
+    connect(list, &QListWidget::itemClicked, popup,
+            [this, popup, registerId](QListWidgetItem* current) {
+                selectedRegisterId_ = registerId;
+                applyPropertyEdit(registerId, "access", current->text().toLower());
+                popup->close();
+            });
+    popup->show();
+    list->setFocus();
+}
+
+void MainWindow::showRegisterContextMenu(const QPoint& position)
+{
+    const QModelIndex index = registerView_->indexAt(position);
+    if (!index.isValid()) {
+        return;
+    }
+    if (index.data(addRowRole).toBool()) {
+        addRegister();
+        return;
+    }
+    registerView_->setCurrentIndex(registerModel_->index(index.row(), registerNameColumn));
+    const auto* reg = findRegister(selectedRegisterId_);
+    if (reg == nullptr) {
+        return;
+    }
+
+    QMenu menu(this);
+    QAction* editTags = menu.addAction(QStringLiteral("编辑标签…"));
+    menu.addSeparator();
+    QAction* reserve = menu.addAction(QStringLiteral("悬空（保留偏移）"));
+    QFont reserveFont = reserve->font();
+    reserveFont.setWeight(QFont::DemiBold);
+    reserve->setFont(reserveFont);
+    QPixmap reserveIcon(10, 10);
+    reserveIcon.fill(QColor(QStringLiteral("#B3261E")));
+    reserve->setIcon(QIcon(reserveIcon));
+    reserve->setEnabled(!reg->reserved);
+    QAction* removeAndShift = menu.addAction(QStringLiteral("删除（后续寄存器顺延）"));
+    QAction* chosen = menu.exec(registerView_->viewport()->mapToGlobal(position));
+    if (chosen == editTags) {
+        editRegisterTags(registerModel_->index(index.row(), registerTagsColumn));
+    } else if (chosen == reserve) {
+        convertSelectedRegisterToReserved();
+    } else if (chosen == removeAndShift) {
+        deleteSelectedRegisterAndShift();
+    }
+}
+
+void MainWindow::showFieldContextMenu(const QPoint& position)
+{
+    const QModelIndex index = fieldView_->indexAt(position);
+    if (!index.isValid()) {
+        return;
+    }
+    if (index.data(addRowRole).toBool()) {
+        addField();
+        return;
+    }
+    fieldView_->setCurrentIndex(fieldModel_->index(index.row(), fieldNameColumn));
+    const auto* workspace = controller_.workspace();
+    const auto* field =
+        workspace == nullptr ? nullptr : regmap::findField(*workspace, selectedFieldId_);
+    if (field == nullptr) {
+        return;
+    }
+
+    QMenu menu(this);
+    QMenu* typeMenu = menu.addMenu(QStringLiteral("设置类型"));
+    const std::vector<QString> types{
+        QStringLiteral("bits"),    QStringLiteral("bool"),   QStringLiteral("enum"),
+        QStringLiteral("uint8"),   QStringLiteral("uint16"), QStringLiteral("uint32"),
+        QStringLiteral("uint64"),  QStringLiteral("int8"),   QStringLiteral("int16"),
+        QStringLiteral("int32"),   QStringLiteral("int64"),  QStringLiteral("field"),
+        QStringLiteral("reserved")};
+    for (const auto& type : types) {
+        QAction* action = typeMenu->addAction(type);
+        action->setData(type);
+    }
+    QAction* addEnum = menu.addAction(QStringLiteral("添加枚举值"));
+    QAction* addMember = menu.addAction(QStringLiteral("添加内部 Field"));
+    addMember->setEnabled(field->type == regmap::FieldType::structure);
+    menu.addSeparator();
+    QAction* remove = menu.addAction(QStringLiteral("删除 Field"));
+    QAction* chosen = menu.exec(fieldView_->viewport()->mapToGlobal(position));
+    if (chosen == nullptr) {
+        return;
+    }
+    if (chosen->data().isValid()) {
+        applyPropertyEdit(selectedFieldId_, "type", chosen->data().toString());
+    } else if (chosen == addEnum) {
+        addEnumValue();
+    } else if (chosen == addMember) {
+        addSubfield();
+    } else if (chosen == remove) {
+        deleteSelection();
+    }
+}
+
+void MainWindow::convertSelectedRegisterToReserved()
+{
+    const auto* reg = findRegister(selectedRegisterId_);
+    if (reg == nullptr || reg->reserved) {
+        return;
+    }
+    const std::string registerId = reg->id;
+    const std::string reservedName =
+        (QStringLiteral("RESERVED_%1").arg(hex(reg->offset).mid(2).toUpper()))
+            .toUtf8()
+            .toStdString();
+    if (controller_.editWorkspace(QStringLiteral("Reserve register address"),
+                                  [registerId, reservedName](regmap::Workspace& candidate) {
+                                      if (auto* target =
+                                              regmap::findRegister(candidate, registerId)) {
+                                          target->name = reservedName;
+                                          target->reserved = true;
+                                          target->type = regmap::FieldType::reserved;
+                                          target->access = regmap::AccessMode::none;
+                                          target->minimumValue.reset();
+                                          target->maximumValue.reset();
+                                          target->enumValues.clear();
+                                          target->initialValue = regmap::UnsignedValue(0);
+                                          target->resetValue = regmap::UnsignedValue(0);
+                                          target->fields.clear();
+                                          target->description = "Reserved address slot.";
+                                      }
+                                  })) {
+        selectedFieldId_.clear();
+        selectedRegisterId_ = registerId;
+        refreshProject();
+        selectRegister(registerId);
+    }
+}
+
+void MainWindow::deleteSelectedRegisterAndShift()
+{
+    const auto* workspace = controller_.workspace();
+    if (workspace == nullptr || selectedRegisterId_.empty()) {
+        return;
+    }
+    std::string blockId;
+    std::string nextId;
+    for (const auto& space : workspace->addressSpaces) {
+        for (const auto& block : space.blocks) {
+            const auto iterator =
+                std::ranges::find(block.registers, selectedRegisterId_, &regmap::Register::id);
+            if (iterator == block.registers.end()) {
+                continue;
+            }
+            blockId = block.id;
+            const auto index =
+                static_cast<std::size_t>(std::distance(block.registers.begin(), iterator));
+            if (index + 1 < block.registers.size()) {
+                nextId = block.registers[index + 1].id;
+            } else if (index > 0) {
+                nextId = block.registers[index - 1].id;
+            }
+            break;
+        }
+        if (!blockId.empty()) {
+            break;
+        }
+    }
+    if (blockId.empty()) {
+        return;
+    }
+    const std::string registerId = selectedRegisterId_;
+    if (controller_.editWorkspace(
+            QStringLiteral("Delete register and shift following offsets"),
+            [blockId, registerId](regmap::Workspace& candidate) {
+                auto* block = regmap::findRegisterBlock(candidate, blockId);
+                if (block == nullptr) {
+                    return;
+                }
+                const auto iterator =
+                    std::ranges::find(block->registers, registerId, &regmap::Register::id);
+                if (iterator == block->registers.end()) {
+                    return;
+                }
+                const std::uint64_t shift = registerExtent(*iterator);
+                const auto firstFollowing = block->registers.erase(iterator);
+                for (auto current = firstFollowing; current != block->registers.end(); ++current) {
+                    current->offset = current->offset >= shift ? current->offset - shift : 0;
+                }
+            })) {
+        selectedRegisterId_ = nextId;
+        selectedFieldId_.clear();
+        refreshProject();
+        if (!nextId.empty()) {
+            selectRegister(nextId);
+        }
+    }
+}
+
+void MainWindow::moveField(const std::string& fieldId, std::uint32_t lsb, std::uint32_t msb)
+{
+    const auto* reg = findRegister(selectedRegisterId_);
+    if (reg == nullptr || msb < lsb || msb >= reg->width) {
+        statusBar()->showMessage(QStringLiteral("Field move is outside the register width"), 5000);
+        return;
+    }
+    const auto moving = std::ranges::find(reg->fields, fieldId, &regmap::Field::id);
+    if (moving == reg->fields.end()) {
+        statusBar()->showMessage(QStringLiteral("Only top-level fields can be dragged"), 5000);
+        return;
+    }
+    if (moving->lsb == lsb && moving->msb == msb) {
+        return;
+    }
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> obstacles;
+    for (const auto& field : reg->fields) {
+        if (field.id != fieldId && field.msb >= field.lsb && lsb <= field.msb && field.lsb <= msb) {
+            obstacles.emplace_back(field.lsb, field.msb);
+        }
+    }
+
+    enum class Resolution { moveOnly, trimMoving, trimOthers, cancel };
+    Resolution resolution = obstacles.empty() ? Resolution::moveOnly : Resolution::cancel;
+    if (!obstacles.empty()) {
+        QMessageBox dialog(this);
+        dialog.setWindowTitle(QStringLiteral("Resolve field overlap"));
+        dialog.setIcon(QMessageBox::Warning);
+        dialog.setText(QStringLiteral("The moved field overlaps one or more fields. Choose "
+                                      "which side may adapt its width."));
+        auto* trimMoving =
+            dialog.addButton(QStringLiteral("Trim moving field"), QMessageBox::AcceptRole);
+        auto* trimOthers = dialog.addButton(QStringLiteral("Trim overlapping fields"),
+                                            QMessageBox::DestructiveRole);
+        dialog.addButton(QMessageBox::Cancel);
+        dialog.exec();
+        if (dialog.clickedButton() == trimMoving) {
+            resolution = Resolution::trimMoving;
+        } else if (dialog.clickedButton() == trimOthers) {
+            resolution = Resolution::trimOthers;
+        }
+    }
+    if (resolution == Resolution::cancel) {
+        statusBar()->showMessage(QStringLiteral("Field move cancelled"), 3000);
+        return;
+    }
+
+    if (resolution == Resolution::trimMoving) {
+        std::vector<std::pair<std::uint32_t, std::uint32_t>> segments{{lsb, msb}};
+        std::ranges::sort(obstacles);
+        for (const auto& [obstacleLsb, obstacleMsb] : obstacles) {
+            std::vector<std::pair<std::uint32_t, std::uint32_t>> next;
+            for (const auto& [segmentLsb, segmentMsb] : segments) {
+                if (obstacleMsb < segmentLsb || obstacleLsb > segmentMsb) {
+                    next.emplace_back(segmentLsb, segmentMsb);
+                    continue;
+                }
+                if (obstacleLsb > segmentLsb) {
+                    next.emplace_back(segmentLsb, obstacleLsb - 1);
+                }
+                if (obstacleMsb < segmentMsb) {
+                    next.emplace_back(obstacleMsb + 1, segmentMsb);
+                }
+            }
+            segments = std::move(next);
+        }
+        if (segments.empty()) {
+            statusBar()->showMessage(QStringLiteral("The moving field has no non-overlapping bits"),
+                                     5000);
+            return;
+        }
+        const auto best =
+            std::ranges::max_element(segments, [](const auto& left, const auto& right) {
+                return (left.second - left.first) < (right.second - right.first);
+            });
+        lsb = best->first;
+        msb = best->second;
+    }
+
+    const std::string registerId = reg->id;
+    if (controller_.editWorkspace(
+            QStringLiteral("Move field"),
+            [registerId, fieldId, lsb, msb, resolution](regmap::Workspace& candidate) {
+                auto* target = regmap::findRegister(candidate, registerId);
+                if (target == nullptr) {
+                    return;
+                }
+                if (resolution == Resolution::trimOthers) {
+                    std::erase_if(target->fields, [&](regmap::Field& field) {
+                        if (field.id == fieldId || field.msb < field.lsb || msb < field.lsb ||
+                            lsb > field.msb) {
+                            return false;
+                        }
+                        const bool hasLeft = field.lsb < lsb;
+                        const bool hasRight = field.msb > msb;
+                        if (!hasLeft && !hasRight) {
+                            return true;
+                        }
+                        const std::uint32_t leftWidth = hasLeft ? lsb - field.lsb : 0;
+                        const std::uint32_t rightWidth = hasRight ? field.msb - msb : 0;
+                        if (leftWidth >= rightWidth) {
+                            field.msb = lsb - 1;
+                        } else {
+                            field.lsb = msb + 1;
+                        }
+                        return false;
+                    });
+                }
+                if (auto* field = regmap::findField(candidate, fieldId)) {
+                    field->lsb = lsb;
+                    field->msb = msb;
+                }
+                refreshRegisterFieldResets(*target);
+            })) {
+        selectedFieldId_ = fieldId;
+        refreshProject();
+        selectRegister(registerId);
+        selectField(fieldId);
+        statusBar()->showMessage(QStringLiteral("Field moved: MSB %1 · LSB %2").arg(msb).arg(lsb),
+                                 5000);
+    }
+}
+
+void MainWindow::deleteSelection()
+{
+    std::string id;
+    const bool deletingEnumValue = enumView_->hasFocus();
+    if (deletingEnumValue) {
+        id = enumView_->currentIndex().data(objectIdRole).toString().toUtf8().toStdString();
+        if (id.empty()) {
+            return;
+        }
+    } else if (!selectedFieldId_.empty()) {
+        id = selectedFieldId_;
+    } else if (!selectedRegisterId_.empty()) {
+        id = selectedRegisterId_;
+    } else if (!selectedBlockId_.empty()) {
+        id = selectedBlockId_;
+    } else {
+        id = selectedAddressId_;
+    }
+    if (id.empty()) {
+        return;
+    }
+    if (controller_.editWorkspace(QStringLiteral("Delete object"),
+                                  [id](regmap::Workspace& candidate) {
+                                      static_cast<void>(regmap::removeObject(candidate, id));
+                                  })) {
+        if (deletingEnumValue) {
+            // Keep the current register/field context while its value list refreshes.
+        } else if (id == selectedFieldId_) {
+            selectedFieldId_.clear();
+        } else if (id == selectedRegisterId_) {
+            selectedRegisterId_.clear();
+            selectedFieldId_.clear();
+        } else if (id == selectedBlockId_) {
+            selectedBlockId_.clear();
+            selectedRegisterId_.clear();
+            selectedFieldId_.clear();
+        } else {
+            selectedAddressId_.clear();
+            selectedBlockId_.clear();
+            selectedRegisterId_.clear();
+            selectedFieldId_.clear();
+        }
+        refreshProject();
+    }
+}
+
+void MainWindow::updateEditActions()
+{
+    const bool hasWorkspace = controller_.workspace() != nullptr;
+    saveAction_->setEnabled(hasWorkspace && controller_.isDirty());
+    synchronizeAction_->setEnabled(hasWorkspace);
+    useWorkbenchAction_->setEnabled(controller_.hasConflicts());
+    useRtlAction_->setEnabled(controller_.hasConflicts());
+    undoAction_->setEnabled(controller_.canUndo());
+    redoAction_->setEnabled(controller_.canRedo());
+    undoAction_->setText(controller_.canUndo()
+                             ? QStringLiteral("Undo %1").arg(controller_.undoText())
+                             : QStringLiteral("Undo"));
+    redoAction_->setText(controller_.canRedo()
+                             ? QStringLiteral("Redo %1").arg(controller_.redoText())
+                             : QStringLiteral("Redo"));
+    deleteAction_->setEnabled(hasWorkspace &&
+                              (!selectedAddressId_.empty() || !selectedBlockId_.empty() ||
+                               !selectedRegisterId_.empty() || !selectedFieldId_.empty()));
+}
+
+void MainWindow::closeEvent(QCloseEvent* event)
+{
+    if (!controller_.isDirty()) {
+        event->accept();
+        return;
+    }
+    const auto answer = QMessageBox::warning(
+        this, QStringLiteral("Unsaved Register Map"),
+        QStringLiteral("Save Workbench edits before closing?"),
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
+    if (answer == QMessageBox::Cancel) {
+        event->ignore();
+        return;
+    }
+    if (answer == QMessageBox::Save) {
+        controller_.save();
+        if (controller_.isDirty()) {
+            event->ignore();
+            return;
+        }
+    }
+    event->accept();
+}
+
+void MainWindow::selectRegister(const std::string& id)
+{
+    for (int row = 0; row < registerModel_->rowCount(); ++row) {
+        if (registerModel_->index(row, 0).data(objectIdRole).toString().toUtf8().toStdString() ==
+            id) {
+            registerView_->setCurrentIndex(registerModel_->index(row, 0));
+            registerView_->scrollTo(registerModel_->index(row, 0));
+            return;
+        }
+    }
+}
+
+void MainWindow::selectField(const std::string& id)
+{
+    for (int row = 0; row < fieldModel_->rowCount(); ++row) {
+        if (fieldModel_->index(row, 0).data(objectIdRole).toString().toUtf8().toStdString() == id) {
+            fieldView_->setCurrentIndex(fieldModel_->index(row, 0));
+            fieldView_->scrollTo(fieldModel_->index(row, 0));
+            return;
+        }
+    }
+}
+
+void MainWindow::openSource(const regmap::SourceLocation& source)
+{
+    if (source.empty()) {
+        return;
+    }
+    if (!SourceNavigation::open(source)) {
+        QMessageBox::warning(this, QStringLiteral("Open Source"),
+                             QStringLiteral("Could not open source: %1").arg(sourceText(source)));
+    }
+}

@@ -1,0 +1,86 @@
+diff --git a/QXlsx/source/xlsxdocument.cpp b/QXlsx/source/xlsxdocument.cpp
+--- a/QXlsx/source/xlsxdocument.cpp
++++ b/QXlsx/source/xlsxdocument.cpp
+@@ -150,6 +150,20 @@ std::string copyTag(const std::string &sFrom, const std::string &sTo, const std::
+
+     return sOut;
+ }
++
++QString resolveRelationshipTarget(const QString &sourcePart, const QString &target)
++{
++    if (target.startsWith(u'/'))
++        return QDir::cleanPath(target.mid(1));
++    if (sourcePart.isEmpty())
++        return QDir::cleanPath(target);
++
++    const auto parts = splitPath(sourcePart);
++    if (parts.first() == QLatin1String("."))
++        return QDir::cleanPath(target);
++
++    return QDir::cleanPath(parts.first() + u'/' + target);
++}
+ } // namespace xlsxDocumentCpp
+
+ DocumentPrivate::DocumentPrivate(Document *p)
+@@ -222,8 +236,7 @@ bool DocumentPrivate::loadPackage(QIODevice *device)
+     QList<XlsxRelationship> rels_xl =
+         rootRels.documentRelationships(QStringLiteral("/officeDocument"));
+     if (rels_xl.isEmpty())
+         return false;
+-    const QString xlworkbook_Path = rels_xl[0].target;
+-    const auto parts              = splitPath(xlworkbook_Path);
+-    const QString xlworkbook_Dir  = parts.first();
++    const QString xlworkbook_Path =
++        xlsxDocumentCpp::resolveRelationshipTarget(QString(), rels_xl[0].target);
+     const QString relFilePath     = getRelFilePath(xlworkbook_Path);
+@@ -238,15 +251,7 @@ bool DocumentPrivate::loadPackage(QIODevice *device)
+     if (!rels_styles.isEmpty()) {
+         // In normal case this should be styles.xml which in xl
+         QString name = rels_styles[0].target;
+-
+-        // dev34
+-        QString path;
+-        if (xlworkbook_Dir == QLatin1String(".")) // root
+-        {
+-            path = name;
+-        } else {
+-            path = xlworkbook_Dir + QLatin1String("/") + name;
+-        }
++        QString path = xlsxDocumentCpp::resolveRelationshipTarget(xlworkbook_Path, name);
+
+         std::shared_ptr<Styles> styles(new Styles(Styles::F_LoadFromExists));
+         styles->loadFromXmlData(zipReader.fileData(path));
+@@ -259,7 +264,7 @@ bool DocumentPrivate::loadPackage(QIODevice *device)
+     if (!rels_sharedStrings.isEmpty()) {
+         // In normal case this should be sharedStrings.xml which in xl
+         QString name = rels_sharedStrings[0].target;
+-        QString path = xlworkbook_Dir + QLatin1String("/") + name;
++        QString path = xlsxDocumentCpp::resolveRelationshipTarget(xlworkbook_Path, name);
+         workbook->d_func()->sharedStrings->loadFromXmlData(zipReader.fileData(path));
+     }
+
+@@ -269,7 +274,7 @@ bool DocumentPrivate::loadPackage(QIODevice *device)
+     if (!rels_theme.isEmpty()) {
+         // In normal case this should be theme/theme1.xml which in xl
+         QString name = rels_theme[0].target;
+-        QString path = xlworkbook_Dir + QLatin1String("/") + name;
++        QString path = xlsxDocumentCpp::resolveRelationshipTarget(xlworkbook_Path, name);
+         workbook->theme()->loadFromXmlData(zipReader.fileData(path));
+     }
+
+diff --git a/QXlsx/source/xlsxworksheet.cpp b/QXlsx/source/xlsxworksheet.cpp
+--- a/QXlsx/source/xlsxworksheet.cpp
++++ b/QXlsx/source/xlsxworksheet.cpp
+@@ -2343,8 +2343,12 @@ void WorksheetPrivate::loadXmlSheetData(QXmlStreamReader &reader)
+                 QString r                       = attributes.value(QLatin1String("r")).toString();
+                 CellReference pos(r);
+                 if (r.isEmpty()) {
+                     pos.setRow(row_num);
+                     pos.setColumn(++col_num);
+                 }
++                if (dimension.lastRow() < pos.row())
++                    dimension.setLastRow(pos.row());
++                if (dimension.lastColumn() < pos.column())
++                    dimension.setLastColumn(pos.column());
+
+                 // get format

@@ -52,3 +52,18 @@ compile_commands.json
 *creator.user*
 
 *_qmlcache.qrc
+
+# CMake out-of-source builds
+/build/
+/out/
+CMakeUserPresets.json
+
+# Task-local generated tooling
+/.tmp/
+/.codex-tmp/
+
+# Application-maintained synchronization baselines
+*.regmap.yaml.sync.json
+
+# Generated outputs from the checked-in example
+/examples/minimal/generated/

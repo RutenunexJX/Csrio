@@ -1,0 +1,189 @@
+diff --git a/QXlsx/header/xlsxworksheet.h b/QXlsx/header/xlsxworksheet.h
+--- a/QXlsx/header/xlsxworksheet.h
++++ b/QXlsx/header/xlsxworksheet.h
+@@ -130,6 +130,12 @@ public:
+     std::shared_ptr<Cell> cellAt(int row, int column) const;
+
+     int insertImage(int row, int column, const QImage &image);
++    int insertImage(
++        int fromRow,
++        int fromColumn,
++        int toRow,
++        int toColumn,
++        const QImage &image);
+     bool getImage(int imageIndex, QImage &img);
+     bool getImage(int row, int column, QImage &img);
+     uint getImageCount();
+@@ -182,6 +182,8 @@ public:
+     void setRulerVisible(bool visible);
+     bool isOutlineSymbolsVisible() const;
+     void setOutlineSymbolsVisible(bool visible);
++    bool areSummaryRowsBelow() const;
++    void setSummaryRowsBelow(bool below);
+     bool isWhiteSpaceVisible() const;
+     void setWhiteSpaceVisible(bool visible);
+     bool setStartPage(int spagen); // add by liufeijin20181028
+diff --git a/QXlsx/header/xlsxworksheet_p.h b/QXlsx/header/xlsxworksheet_p.h
+--- a/QXlsx/header/xlsxworksheet_p.h
++++ b/QXlsx/header/xlsxworksheet_p.h
+@@ -215,6 +215,7 @@ public:
+     void loadXmlColumnsInfo(QXmlStreamReader &reader);
+     void loadXmlMergeCells(QXmlStreamReader &reader);
+     void loadXmlDataValidations(QXmlStreamReader &reader);
++    void loadXmlSheetProperties(QXmlStreamReader &reader);
+     void loadXmlSheetFormatProps(QXmlStreamReader &reader);
+     void loadXmlSheetViews(QXmlStreamReader &reader);
+     void loadXmlHyperlinks(QXmlStreamReader &reader);
+@@ -282,6 +283,7 @@ public:
+     bool tabSelected;
+     bool showRuler;
+     bool showOutlineSymbols;
++    bool summaryRowsBelow;
+     bool showWhiteSpace;
+
+     QRegularExpression urlPattern;
+diff --git a/QXlsx/source/xlsxworksheet.cpp b/QXlsx/source/xlsxworksheet.cpp
+--- a/QXlsx/source/xlsxworksheet.cpp
++++ b/QXlsx/source/xlsxworksheet.cpp
+@@ -65,6 +65,7 @@ WorksheetPrivate::WorksheetPrivate(Worksheet *p, Worksheet::CreateFlag flag)
+     , tabSelected(false)
+     , showRuler(false)
+     , showOutlineSymbols(true)
++    , summaryRowsBelow(true)
+     , showWhiteSpace(true)
+     , urlPattern(QStringLiteral("^([fh]tt?ps?://)|(mailto:)|(file://)"))
+ {
+@@ -402,6 +403,24 @@ void Worksheet::setOutlineSymbolsVisible(bool visible)
+     d->showOutlineSymbols = visible;
+ }
+
++/*!
++ * Return whether grouped row summaries are shown below their detail rows.
++ */
++bool Worksheet::areSummaryRowsBelow() const
++{
++    Q_D(const Worksheet);
++    return d->summaryRowsBelow;
++}
++
++/*!
++ * Place grouped row summaries below or above their detail rows.
++ */
++void Worksheet::setSummaryRowsBelow(bool below)
++{
++    Q_D(Worksheet);
++    d->summaryRowsBelow = below;
++}
++
+ /*!
+  * Return whether is white space is shown.
+  */
+@@ -1118,6 +1137,37 @@ int Worksheet::insertImage(int row, int column, const QImage &image)
+     return imageIndex;
+ }
+
++/*!
++ * Insert an \a image between zero-based cell markers.
++ *
++ * A two-cell anchor moves and sizes with its cells, so images inside grouped
++ * rows collapse and expand with those rows.
++ */
++int Worksheet::insertImage(
++    int fromRow,
++    int fromColumn,
++    int toRow,
++    int toColumn,
++    const QImage &image)
++{
++    Q_D(Worksheet);
++
++    if (image.isNull() || fromRow < 0 || fromColumn < 0 || toRow <= fromRow
++        || toColumn <= fromColumn) {
++        return 0;
++    }
++
++    if (!d->drawing) {
++        d->drawing = std::make_shared<Drawing>(this, F_NewFromScratch);
++    }
++
++    auto anchor = new DrawingTwoCellAnchor(d->drawing.get(), DrawingAnchor::Picture);
++    anchor->from = XlsxMarker(fromRow, fromColumn, 0, 0);
++    anchor->to = XlsxMarker(toRow, toColumn, 0, 0);
++    anchor->setObjectPicture(image);
++    return anchor->getm_id();
++}
++
+ bool Worksheet::getImage(int imageIndex, QImage &img)
+ {
+     Q_D(Worksheet);
+@@ -1303,6 +1322,14 @@ void Worksheet::saveToXmlFile(QIODevice *device) const
+     //     "http://schemas.microsoft.com/office/spreadsheetml/2009/9/ac");
+     //     writer.writeAttribute("mc:Ignorable", "x14ac");
+
++    if (!d->summaryRowsBelow) {
++        writer.writeStartElement(QStringLiteral("sheetPr"));
++        writer.writeStartElement(QStringLiteral("outlinePr"));
++        writer.writeAttribute(QStringLiteral("summaryBelow"), QStringLiteral("0"));
++        writer.writeEndElement(); // outlinePr
++        writer.writeEndElement(); // sheetPr
++    }
++
+     writer.writeStartElement(QStringLiteral("dimension"));
+     writer.writeAttribute(QStringLiteral("ref"), d->generateDimensionString());
+     writer.writeEndElement(); // dimension
+@@ -2129,6 +2156,9 @@ bool Worksheet::groupRows(int rowFirst, int rowLast, bool collapsed)
+ {
+     Q_D(Worksheet);
+
++    if (collapsed && !d->summaryRowsBelow && rowFirst <= 1)
++        return false;
++
+     for (int row = rowFirst; row <= rowLast; ++row) {
+         auto it = d->rowsInfo.find(row);
+         if (it != d->rowsInfo.end()) {
+@@ -2142,9 +2172,10 @@ bool Worksheet::groupRows(int rowFirst, int rowLast, bool collapsed)
+             (*it)->hidden = true;
+     }
+     if (collapsed) {
+-        auto it = d->rowsInfo.find(rowLast + 1);
++        const int summaryRow = d->summaryRowsBelow ? rowLast + 1 : rowFirst - 1;
++        auto it = d->rowsInfo.find(summaryRow);
+         if (it == d->rowsInfo.end())
+-            it = d->rowsInfo.insert(rowLast + 1, std::make_shared<XlsxRowInfo>());
++            it = d->rowsInfo.insert(summaryRow, std::make_shared<XlsxRowInfo>());
+         (*it)->collapsed = true;
+     }
+     return true;
+@@ -2614,6 +2649,21 @@ void WorksheetPrivate::loadXmlSheetViews(QXmlStreamReader &reader)
+     }
+ }
+
++void WorksheetPrivate::loadXmlSheetProperties(QXmlStreamReader &reader)
++{
++    Q_ASSERT(reader.name() == QLatin1String("sheetPr"));
++
++    while (!reader.atEnd() && !(reader.name() == QLatin1String("sheetPr") &&
++                                reader.tokenType() == QXmlStreamReader::EndElement)) {
++        reader.readNextStartElement();
++        if (reader.tokenType() == QXmlStreamReader::StartElement &&
++            reader.name() == QLatin1String("outlinePr")) {
++            summaryRowsBelow =
++                reader.attributes().value(QLatin1String("summaryBelow")) != QLatin1String("0");
++        }
++    }
++}
++
+ void WorksheetPrivate::loadXmlSheetFormatProps(QXmlStreamReader &reader)
+ {
+     Q_ASSERT(reader.name() == QLatin1String("sheetFormatPr"));
+@@ -2753,7 +2803,9 @@ bool Worksheet::loadFromXmlFile(QIODevice *device)
+     while (!reader.atEnd()) {
+         reader.readNextStartElement();
+         if (reader.tokenType() == QXmlStreamReader::StartElement) {
+-            if (reader.name() == QLatin1String("dimension")) {
++            if (reader.name() == QLatin1String("sheetPr")) {
++                d->loadXmlSheetProperties(reader);
++            } else if (reader.name() == QLatin1String("dimension")) {
+                 QXmlStreamAttributes attributes = reader.attributes();
+                 QString range                   = attributes.value(QLatin1String("ref")).toString();
+                 d->dimension                    = CellRange(range);

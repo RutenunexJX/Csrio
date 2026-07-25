@@ -1,0 +1,237 @@
+schema_version: 2
+workspace:
+  id: minimal-example
+  name: Minimal Example
+  address_spaces:
+    - id: space-main
+      name: Main
+      base: 0x43C00000
+      address_width: 32
+      blocks:
+        - id: block-control
+          name: Control
+          base: 0xF000
+          size: 0x1000
+          description: Control and status registers.
+          registers:
+            - id: reg-control
+              name: CONTROL
+              offset: 0x0
+              width: 32
+              array:
+                count: 1
+                stride: 0x4
+              type: field
+              reset: 0x0
+              access: rw
+              tags:
+                - test
+              description: Global enable and operating mode.
+              enum_values:
+                []
+              fields:
+                - id: field-enable
+                  name: sss
+                  msb: 28
+                  lsb: 28
+                  type: bool
+                  sw_access: rw
+                  hw_access: ro
+                  reset: 0x0
+                  read_side_effect: none
+                  write_side_effect: write
+                  reset_domain: csr_rst_n
+                  description: Enables the block.
+                  enum_values:
+                    []
+                - id: field-fc9c50920cb6a8a5
+                  name: NEW_FIELD
+                  msb: 20
+                  lsb: 17
+                  type: bits
+                  sw_access: rw
+                  hw_access: none
+                  reset: 0x0
+                  read_side_effect: none
+                  write_side_effect: write
+                  enum_values:
+                    []
+            - id: reg-status
+              name: STATUS
+              offset: 0x4
+              width: 32
+              array:
+                count: 1
+                stride: 0x4
+              type: field
+              reset: 0x1
+              access: ro
+              tags:
+                - test
+              description: Current hardware status.
+              enum_values:
+                []
+              fields:
+                - id: field-ready
+                  name: READY
+                  msb: 0
+                  lsb: 0
+                  type: bool
+                  sw_access: ro
+                  hw_access: wo
+                  reset: 0x1
+                  read_side_effect: none
+                  write_side_effect: none
+                  reset_domain: csr_rst_n
+                  description: Hardware is ready.
+                  enum_values:
+                    []
+                - id: field-error
+                  name: ERROR
+                  msb: 1
+                  lsb: 1
+                  type: bool
+                  sw_access: ro
+                  hw_access: wo
+                  reset: 0x0
+                  read_side_effect: none
+                  write_side_effect: none
+                  reset_domain: csr_rst_n
+                  description: Hardware error indicator.
+                  enum_values:
+                    []
+            - id: reg-irq-status
+              name: IRQ_STATUS
+              offset: 0x8
+              width: 32
+              array:
+                count: 1
+                stride: 0x4
+              type: field
+              reset: 0x0
+              access: rw
+              description: Pending interrupt bits; software clears with one.
+              enum_values:
+                []
+              fields:
+                - id: field-pending
+                  name: PENDING
+                  msb: 15
+                  lsb: 12
+                  type: bits
+                  sw_access: rw
+                  hw_access: wo
+                  reset: 0x0
+                  read_side_effect: none
+                  write_side_effect: w1c
+                  reset_domain: csr_rst_n
+                  description: Pending interrupt sources.
+                  enum_values:
+                    []
+                - id: field-irq-reserved
+                  name: RESERVED
+                  msb: 31
+                  lsb: 27
+                  type: reserved
+                  sw_access: none
+                  hw_access: none
+                  reset: 0x0
+                  read_side_effect: none
+                  write_side_effect: none
+                  description: Reserved; keep zero.
+                  enum_values:
+                    []
+                - id: field-9f5da9c8400451c0
+                  name: NEW_FIELD
+                  msb: 0
+                  lsb: 0
+                  type: bits
+                  sw_access: rw
+                  hw_access: none
+                  reset: 0x0
+                  read_side_effect: none
+                  write_side_effect: write
+                  enum_values:
+                    []
+            - id: reg-e9acdc7d5c2cb466
+              name: r
+              offset: 0xC
+              width: 32
+              array:
+                count: 1
+                stride: 0x4
+              type: unsigned
+              reset: 0x0
+              access: rw
+              description: 测试
+              enum_values:
+                []
+              fields:
+                []
+            - id: reg-5e1369c084a3f835
+              name: tt
+              offset: 0x10
+              width: 32
+              array:
+                count: 1
+                stride: 0x4
+              type: unsigned
+              reset: 0x0
+              access: rw
+              enum_values:
+                []
+              fields:
+                []
+            - id: reg-67fd5a7da60e1d15
+              name: ddd
+              offset: 0x14
+              width: 32
+              array:
+                count: 1
+                stride: 0x4
+              type: unsigned
+              reset: 0x0
+              access: rw
+              enum_values:
+                []
+              fields:
+                []
+            - id: reg-e56277710635ee09
+              name: NEW_REGISTER
+              offset: 0x18
+              width: 32
+              array:
+                count: 1
+                stride: 0x4
+              type: field
+              reset: 0x0
+              access: rw
+              enum_values:
+                []
+              fields:
+                - id: field-73f4f13f70d0fa2a
+                  name: NEW_FIELD
+                  msb: 0
+                  lsb: 0
+                  type: bits
+                  sw_access: rw
+                  hw_access: none
+                  reset: 0x0
+                  read_side_effect: none
+                  write_side_effect: write
+                  enum_values:
+                    []
+rtl:
+  path: rtl/minimal_registers.sv
+  module: minimal_registers
+generation:
+  output_directory: generated
+  targets:
+    - kind: xlsx
+      path: register-map.xlsx
+    - kind: c-header
+      path: minimal_regs.h
+      options:
+        guard: MINIMAL_REGS_H
+    - kind: markdown
+      path: register-map.md

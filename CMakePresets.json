@@ -1,0 +1,57 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 24,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "dev-debug",
+      "displayName": "Developer Debug",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/dev-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "REGMAP_BUILD_APP": "ON",
+        "REGMAP_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "core-debug",
+      "displayName": "Core Debug",
+      "inherits": "dev-debug",
+      "binaryDir": "${sourceDir}/build/core-debug",
+      "cacheVariables": {
+        "REGMAP_BUILD_APP": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "dev-debug",
+      "configurePreset": "dev-debug"
+    },
+    {
+      "name": "core-debug",
+      "configurePreset": "core-debug"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "dev-debug",
+      "configurePreset": "dev-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "core-debug",
+      "configurePreset": "core-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}
