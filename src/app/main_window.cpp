@@ -654,14 +654,35 @@ void MainWindow::buildUi()
     hierarchyView_ = new QTreeView(this);
     hierarchyView_->setObjectName(QStringLiteral("hierarchyView"));
     hierarchyView_->setModel(hierarchyModel_);
-    hierarchyView_->setHeaderHidden(false);
+    hierarchyView_->setHeaderHidden(true);
     hierarchyView_->setUniformRowHeights(true);
     hierarchyView_->setItemDelegate(new HierarchyItemDelegate(hierarchyView_));
     hierarchyView_->setEditTriggers(QAbstractItemView::DoubleClicked |
                                     QAbstractItemView::EditKeyPressed);
     hierarchyView_->setExpandsOnDoubleClick(false);
     hierarchyView_->setContextMenuPolicy(Qt::CustomContextMenu);
-    hierarchyView_->setMinimumWidth(220);
+    auto* hierarchyPanel = new QWidget(this);
+    hierarchyPanel->setObjectName(QStringLiteral("hierarchyPanel"));
+    hierarchyPanel->setMinimumWidth(220);
+    auto* hierarchyLayout = new QVBoxLayout(hierarchyPanel);
+    hierarchyLayout->setContentsMargins(0, 0, 0, 0);
+    hierarchyLayout->setSpacing(4);
+    auto* hierarchyHeader = new QWidget(hierarchyPanel);
+    hierarchyHeader->setObjectName(QStringLiteral("hierarchyHeaderBar"));
+    auto* hierarchyHeaderLayout = new QHBoxLayout(hierarchyHeader);
+    hierarchyHeaderLayout->setContentsMargins(8, 4, 6, 4);
+    hierarchyHeaderLayout->setSpacing(6);
+    auto* hierarchyTitle =
+        new QLabel(QStringLiteral("Workspace"), hierarchyHeader);
+    hierarchyTitle->setObjectName(QStringLiteral("hierarchyTitle"));
+    hierarchyTitle->setToolTip(QStringLiteral("Workspace / Pages / Blocks"));
+    hierarchyAddButton_ = new QPushButton(QStringLiteral("+ Page"), hierarchyHeader);
+    hierarchyAddButton_->setObjectName(QStringLiteral("hierarchyAddButton"));
+    hierarchyAddButton_->setEnabled(false);
+    hierarchyHeaderLayout->addWidget(hierarchyTitle, 1);
+    hierarchyHeaderLayout->addWidget(hierarchyAddButton_);
+    hierarchyLayout->addWidget(hierarchyHeader);
+    hierarchyLayout->addWidget(hierarchyView_, 1);
 
     auto* registerTable = new RegisterTableView(this);
     registerView_ = registerTable;
@@ -805,7 +826,7 @@ void MainWindow::buildUi()
     middleSplitter->setHandleWidth(4);
 
     auto* topSplitter = new QSplitter(Qt::Horizontal, this);
-    topSplitter->addWidget(hierarchyView_);
+    topSplitter->addWidget(hierarchyPanel);
     topSplitter->addWidget(middleSplitter);
     topSplitter->setStretchFactor(0, 0);
     topSplitter->setStretchFactor(1, 1);
@@ -1139,6 +1160,7 @@ void MainWindow::connectSignals()
                 } else {
                     setCurrentSource({});
                 }
+                updateHierarchyAddAction();
                 updateEditActions();
             });
     connect(registerView_->selectionModel(), &QItemSelectionModel::currentChanged, this,
@@ -1194,6 +1216,22 @@ void MainWindow::connectSignals()
                 moveField(id.toUtf8().toStdString(), lsb, msb);
             });
     connect(closeFieldsButton_, &QPushButton::clicked, this, &MainWindow::closeFields);
+
+    connect(hierarchyAddButton_, &QPushButton::clicked, this, [this] {
+        if (controller_.workspace() == nullptr) {
+            return;
+        }
+        const QModelIndex current = hierarchyView_->currentIndex();
+        if (current.isValid() && !current.data(blockIdRole).toString().isEmpty()) {
+            addRegister();
+            return;
+        }
+        if (current.isValid() && !current.data(addressIdRole).toString().isEmpty()) {
+            addBlock();
+            return;
+        }
+        addAddressSpace();
+    });
 
     connect(registerView_, &QTableView::clicked, this, [this](const QModelIndex& index) {
         if (index.data(addRowRole).toBool()) {
@@ -1423,6 +1461,7 @@ void MainWindow::refreshProject()
         searchResultLabel_->clear();
     }
     populateHierarchy();
+    updateHierarchyAddAction();
     updateContextBar();
     updateTagFilter();
     populateRegisters();
@@ -1554,6 +1593,33 @@ void MainWindow::populateHierarchy()
         hierarchyView_->setCurrentIndex(selected);
     }
     hierarchyView_->resizeColumnToContents(0);
+}
+
+void MainWindow::updateHierarchyAddAction()
+{
+    if (controller_.workspace() == nullptr) {
+        hierarchyAddButton_->setText(QStringLiteral("+ Page"));
+        hierarchyAddButton_->setToolTip(
+            QStringLiteral("Open or create a project before adding a Page"));
+        hierarchyAddButton_->setEnabled(false);
+        return;
+    }
+
+    const QModelIndex current = hierarchyView_->currentIndex();
+    if (current.isValid() && !current.data(blockIdRole).toString().isEmpty()) {
+        hierarchyAddButton_->setText(QStringLiteral("+ Register"));
+        hierarchyAddButton_->setToolTip(
+            QStringLiteral("Add a Register to the selected Block"));
+    } else if (current.isValid() && !current.data(addressIdRole).toString().isEmpty()) {
+        hierarchyAddButton_->setText(QStringLiteral("+ Block"));
+        hierarchyAddButton_->setToolTip(
+            QStringLiteral("Add a Register Block to the selected Page"));
+    } else {
+        hierarchyAddButton_->setText(QStringLiteral("+ Page"));
+        hierarchyAddButton_->setToolTip(
+            QStringLiteral("Add a Page to this Workspace"));
+    }
+    hierarchyAddButton_->setEnabled(true);
 }
 
 void MainWindow::populateRegisters()

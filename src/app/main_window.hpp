@@ -50,6 +50,7 @@ private:
     ProjectController controller_;
 
     QTreeView* hierarchyView_{nullptr};
+    QPushButton* hierarchyAddButton_{nullptr};
     QTableView* registerView_{nullptr};
     QLabel* pageContextLabel_{nullptr};
     QLabel* blockContextLabel_{nullptr};
@@ -133,6 +134,7 @@ private:
     void updateSyncPresentation(const QString& message = {});
     void applyFieldColumnVisibility();
     void populateHierarchy();
+    void updateHierarchyAddAction();
     void populateRegisters();
     void populateFields(const regmap::Register* reg);
     void populateEnumValues(const regmap::Register* reg, const regmap::Field* field);

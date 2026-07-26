@@ -404,6 +404,9 @@ void GuiSmokeTests::navigatesHierarchyAndOpensFieldsExplicitly()
     auto* fieldPanel = window.findChild<QWidget*>(QStringLiteral("fieldPanel"));
     auto* fieldContext = window.findChild<QLabel*>(QStringLiteral("fieldContextLabel"));
     auto* closeFields = window.findChild<QPushButton*>(QStringLiteral("closeFieldsButton"));
+    auto* hierarchyTitle = window.findChild<QLabel*>(QStringLiteral("hierarchyTitle"));
+    auto* hierarchyAdd =
+        window.findChild<QPushButton*>(QStringLiteral("hierarchyAddButton"));
     auto* toolbar = window.findChild<QToolBar*>(QStringLiteral("projectToolBar"));
     QVERIFY(hierarchy != nullptr);
     QVERIFY(registers != nullptr);
@@ -411,7 +414,13 @@ void GuiSmokeTests::navigatesHierarchyAndOpensFieldsExplicitly()
     QVERIFY(fieldPanel != nullptr);
     QVERIFY(fieldContext != nullptr);
     QVERIFY(closeFields != nullptr);
+    QVERIFY(hierarchyTitle != nullptr);
+    QVERIFY(hierarchyAdd != nullptr);
     QVERIFY(toolbar != nullptr);
+    QVERIFY(hierarchy->isHeaderHidden());
+    QCOMPARE(hierarchyTitle->text(), QStringLiteral("Workspace"));
+    QVERIFY(hierarchyAdd->isVisible());
+    QVERIFY(hierarchyTitle->geometry().right() < hierarchyAdd->geometry().left());
 
     QStringList toolbarCommands;
     for (QAction* action : toolbar->actions()) {
@@ -450,6 +459,10 @@ void GuiSmokeTests::navigatesHierarchyAndOpensFieldsExplicitly()
     QTest::keyClick(treeEditor, Qt::Key_Escape);
 
     root = hierarchy->model()->index(0, 0);
+    hierarchy->setCurrentIndex(root);
+    QCoreApplication::processEvents();
+    QTRY_COMPARE_WITH_TIMEOUT(hierarchyAdd->text(), QStringLiteral("+ Page"), 2000);
+    QVERIFY(hierarchyAdd->toolTip().contains(QStringLiteral("Page")));
     Q_EMIT hierarchy->customContextMenuRequested(hierarchy->visualRect(root).center());
     QCoreApplication::processEvents();
     auto* rootMenu = hierarchy->findChild<QMenu*>(QStringLiteral("hierarchyContextMenu"));
@@ -459,13 +472,16 @@ void GuiSmokeTests::navigatesHierarchyAndOpensFieldsExplicitly()
     QVERIFY(rootMenu->findChild<QAction*>(QStringLiteral("renameContextAction")) != nullptr);
     QVERIFY(rootMenu->findChild<QAction*>(QStringLiteral("expandAllContextAction")) != nullptr);
     QVERIFY(rootMenu->findChild<QAction*>(QStringLiteral("collapseAllContextAction")) != nullptr);
-    newPage->trigger();
+    rootMenu->close();
+    hierarchyAdd->click();
     QTRY_COMPARE_WITH_TIMEOUT(hierarchy->model()->index(0, 0).model()
                                   ->rowCount(hierarchy->model()->index(0, 0)),
                               2, 2000);
 
     QModelIndex newPageIndex = hierarchy->currentIndex();
     QCOMPARE(newPageIndex.data().toString(), QStringLiteral("NEW_PAGE"));
+    QTRY_COMPARE_WITH_TIMEOUT(hierarchyAdd->text(), QStringLiteral("+ Block"), 2000);
+    QVERIFY(hierarchyAdd->toolTip().contains(QStringLiteral("Block")));
     Q_EMIT hierarchy->customContextMenuRequested(
         hierarchy->visualRect(newPageIndex).center());
     QCoreApplication::processEvents();
@@ -475,11 +491,14 @@ void GuiSmokeTests::navigatesHierarchyAndOpensFieldsExplicitly()
     QVERIFY(newBlock != nullptr);
     QVERIFY(pageMenu->findChild<QAction*>(QStringLiteral("renameContextAction")) != nullptr);
     QVERIFY(pageMenu->findChild<QAction*>(QStringLiteral("deleteContextAction")) != nullptr);
-    newBlock->trigger();
+    pageMenu->close();
+    hierarchyAdd->click();
     QTRY_COMPARE_WITH_TIMEOUT(hierarchy->currentIndex().data().toString(),
                               QStringLiteral("NEW_BLOCK"), 2000);
 
     QModelIndex newBlockIndex = hierarchy->currentIndex();
+    QTRY_COMPARE_WITH_TIMEOUT(hierarchyAdd->text(), QStringLiteral("+ Register"), 2000);
+    QVERIFY(hierarchyAdd->toolTip().contains(QStringLiteral("Register")));
     Q_EMIT hierarchy->customContextMenuRequested(
         hierarchy->visualRect(newBlockIndex).center());
     QCoreApplication::processEvents();
@@ -490,7 +509,8 @@ void GuiSmokeTests::navigatesHierarchyAndOpensFieldsExplicitly()
     QVERIFY(newRegister != nullptr);
     QVERIFY(blockMenu->findChild<QAction*>(QStringLiteral("renameContextAction")) != nullptr);
     QVERIFY(blockMenu->findChild<QAction*>(QStringLiteral("deleteContextAction")) != nullptr);
-    newRegister->trigger();
+    blockMenu->close();
+    hierarchyAdd->click();
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->rowCount(), 2, 2000);
     QCOMPARE(registers->model()->index(0, 0).data().toString(),
              QStringLiteral("NEW_REGISTER"));

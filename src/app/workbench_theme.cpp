@@ -220,6 +220,31 @@ QAbstractItemView::item:hover:!selected {
     background: #EDF3F9;
 }
 
+QWidget#hierarchyHeaderBar {
+    background: #17365D;
+    border: 1px solid #0B1F33;
+}
+QLabel#hierarchyTitle {
+    color: #FFFFFF;
+    font-weight: 600;
+}
+QPushButton#hierarchyAddButton {
+    background: #FFFFFF;
+    color: #17365D;
+    border: 1px solid #9FB0C4;
+    padding: 3px 8px;
+    min-width: 64px;
+}
+QPushButton#hierarchyAddButton:hover {
+    background: #EAF1F8;
+    border-color: #FFFFFF;
+}
+QPushButton#hierarchyAddButton:disabled {
+    background: #DCE6F1;
+    color: #7A8999;
+    border-color: #9FB0C4;
+}
+
 QWidget#registerContextBar {
     background: #DCE6F1;
     border: 1px solid #9FB0C4;
