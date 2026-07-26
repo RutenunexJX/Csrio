@@ -167,7 +167,6 @@ void insert(FlatWorkspace& workspace, FlatObject object)
             {"reset", optionalText(field.resetValue)},
             {"read_side_effect", std::string(toString(field.readSideEffect))},
             {"write_side_effect", std::string(toString(field.writeSideEffect))},
-            {"reset_domain", field.resetDomain},
             {"minimum", optionalText(field.minimumValue)},
             {"maximum", optionalText(field.maximumValue)},
             {"description", field.description}};
@@ -381,7 +380,6 @@ template <typename Value>
                                    .value_or(ReadSideEffect::none);
         value.writeSideEffect = parseWriteSideEffect(property(object, "write_side_effect"))
                                     .value_or(WriteSideEffect::write);
-        value.resetDomain = property(object, "reset_domain");
         const std::string minimum = property(object, "minimum");
         const std::string maximum = property(object, "maximum");
         value.minimumValue = minimum.empty() ? std::nullopt : std::optional{minimum};
@@ -612,7 +610,7 @@ void appendConflict(std::vector<MergeConflict>& conflicts, const ObjectId& id, O
         case ObjectKind::field:
             missing = require(object, {"parent", "order", "name", "msb", "lsb", "type", "sw_access",
                                        "hw_access", "reset", "read_side_effect",
-                                       "write_side_effect", "reset_domain", "description"});
+                                       "write_side_effect", "description"});
             break;
         case ObjectKind::enumValue:
             missing = require(object, {"parent", "order", "name", "value", "description"});

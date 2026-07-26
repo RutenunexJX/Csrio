@@ -268,7 +268,7 @@ void GuiSmokeTests::opensProjectAndPopulatesEditableViews()
     QCOMPARE(fields->model()->rowCount(), 2);
     QCOMPARE(enums->model()->rowCount(), 2);
     QCOMPARE(registers->model()->columnCount(), 11);
-    QCOMPARE(fields->model()->columnCount(), 15);
+    QCOMPARE(fields->model()->columnCount(), 14);
     QCOMPARE(problems->model()->rowCount(), 0);
     QCOMPARE(generated->model()->rowCount(), 3);
     QVERIFY(registers->model()->flags(registers->model()->index(0, 0)) & Qt::ItemIsEditable);
@@ -286,7 +286,29 @@ void GuiSmokeTests::opensProjectAndPopulatesEditableViews()
     QCOMPARE(blockSize->text(), QStringLiteral("0x1000"));
     QCOMPARE(registers->model()->index(0, 4).data().toString(), QStringLiteral("field"));
     QCOMPARE(registers->model()->index(0, 6).data().toString(), QStringLiteral("0x0"));
-    QCOMPARE(fields->model()->index(0, 11).data().toString(), QStringLiteral("csr_rst_n"));
+    QCOMPARE(fields->model()->headerData(11, Qt::Horizontal).toString(),
+             QStringLiteral("Read Effect"));
+    for (int column = 0; column < registers->model()->columnCount(); ++column) {
+        const int expected = column == 10
+                                 ? static_cast<int>(Qt::AlignLeft | Qt::AlignVCenter)
+                                 : static_cast<int>(Qt::AlignCenter);
+        QCOMPARE(registers->model()
+                     ->index(0, column)
+                     .data(Qt::TextAlignmentRole)
+                     .toInt(),
+                 expected);
+    }
+    for (int column = 0; column < fields->model()->columnCount(); ++column) {
+        const int expected = column == 13
+                                 ? static_cast<int>(Qt::AlignLeft | Qt::AlignVCenter)
+                                 : static_cast<int>(Qt::AlignCenter);
+        QCOMPARE(fields->model()->index(0, column).data(Qt::TextAlignmentRole).toInt(),
+                 expected);
+    }
+    QCOMPARE(enums->model()->index(0, 0).data(Qt::TextAlignmentRole).toInt(),
+             static_cast<int>(Qt::AlignCenter));
+    QCOMPARE(enums->model()->index(0, 2).data(Qt::TextAlignmentRole).toInt(),
+             static_cast<int>(Qt::AlignLeft | Qt::AlignVCenter));
     QCOMPARE(registers->verticalHeader()->defaultSectionSize(), 28);
     QCOMPARE(fields->verticalHeader()->defaultSectionSize(), 28);
     QCOMPARE(registers->font().pointSizeF(), 10.0);
@@ -558,6 +580,10 @@ void GuiSmokeTests::editsUndoesAndSavesProject()
     controller.save();
     QVERIFY(!controller.isDirty());
     QVERIFY(controller.changes().empty());
+    QFile savedManifest(manifestPath);
+    QVERIFY(savedManifest.open(QIODevice::ReadOnly | QIODevice::Text));
+    QVERIFY(!savedManifest.readAll().contains("reset_domain"));
+    savedManifest.close();
 
     const auto reopened = regmap::openProject(std::filesystem::path(manifestPath.toStdWString()));
     QVERIFY(reopened.workspace.has_value());

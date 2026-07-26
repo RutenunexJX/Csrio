@@ -1,0 +1,162 @@
+diff --git a/QXlsx/header/xlsxworksheet.h b/QXlsx/header/xlsxworksheet.h
+index f1c08a8..aee458e 100644
+--- a/QXlsx/header/xlsxworksheet.h
++++ b/QXlsx/header/xlsxworksheet.h
+@@ -176,6 +176,13 @@ public:
+     void setFormulasVisible(bool visible);
+     bool isGridLinesVisible() const;
+     void setGridLinesVisible(bool visible);
++    void freezePanes(int rows, int columns);
++    int frozenRowCount() const;
++    int frozenColumnCount() const;
++
++    bool setAutoFilter(const CellRange &range);
++    CellRange autoFilter() const;
++
+     bool isRowColumnHeadersVisible() const;
+     void setRowColumnHeadersVisible(bool visible);
+     bool isZerosVisible() const;
+diff --git a/QXlsx/header/xlsxworksheet_p.h b/QXlsx/header/xlsxworksheet_p.h
+index 19b78e5..2fd9086 100644
+--- a/QXlsx/header/xlsxworksheet_p.h
++++ b/QXlsx/header/xlsxworksheet_p.h
+@@ -243,6 +243,9 @@ public:
+     QHash<int, CellFormula> sharedFormulaMap; // shared formula map
+ 
+     CellRange dimension;
++    int frozenRows;
++    int frozenColumns;
++    CellRange autoFilterRange;
+ 
+     mutable QHash<int, QString> row_spans;
+     QHash<int, double> row_sizes;
+diff --git a/QXlsx/source/xlsxworksheet.cpp b/QXlsx/source/xlsxworksheet.cpp
+index ee2f622..363634e 100644
+--- a/QXlsx/source/xlsxworksheet.cpp
++++ b/QXlsx/source/xlsxworksheet.cpp
+@@ -56,6 +56,8 @@ const int XLSX_STRING_MAX = 32767;
+ 
+ WorksheetPrivate::WorksheetPrivate(Worksheet *p, Worksheet::CreateFlag flag)
+     : AbstractSheetPrivate(p, flag)
++    , frozenRows(0)
++    , frozenColumns(0)
+     , windowProtection(false)
+     , showFormulas(false)
+     , showGridLines(true)
+@@ -295,6 +297,48 @@ void Worksheet::setGridLinesVisible(bool visible)
+     d->showGridLines = visible;
+ }
+ 
++/*!
++ * Freeze the first \a rows rows and \a columns columns.
++ */
++void Worksheet::freezePanes(int rows, int columns)
++{
++    Q_D(Worksheet);
++    d->frozenRows = qMax(0, qMin(rows, XLSX_ROW_MAX - 1));
++    d->frozenColumns = qMax(0, qMin(columns, XLSX_COLUMN_MAX - 1));
++}
++
++int Worksheet::frozenRowCount() const
++{
++    Q_D(const Worksheet);
++    return d->frozenRows;
++}
++
++int Worksheet::frozenColumnCount() const
++{
++    Q_D(const Worksheet);
++    return d->frozenColumns;
++}
++
++/*!
++ * Enable an auto filter for \a range.
++ */
++bool Worksheet::setAutoFilter(const CellRange &range)
++{
++    Q_D(Worksheet);
++    if (!range.isValid()) {
++        d->autoFilterRange = CellRange();
++        return false;
++    }
++    d->autoFilterRange = range;
++    return true;
++}
++
++CellRange Worksheet::autoFilter() const
++{
++    Q_D(const Worksheet);
++    return d->autoFilterRange;
++}
++
+ /*!
+  * Return whether is row and column headers is vislbe.
+  */
+@@ -1388,6 +1432,29 @@ void Worksheet::saveToXmlFile(QIODevice *device) const
+     if (!d->showWhiteSpace)
+         writer.writeAttribute(QStringLiteral("showWhiteSpace"), QStringLiteral("0"));
+     writer.writeAttribute(QStringLiteral("workbookViewId"), QStringLiteral("0"));
++    if (d->frozenRows > 0 || d->frozenColumns > 0) {
++        const QString topLeft =
++            CellReference(d->frozenRows + 1, d->frozenColumns + 1).toString();
++        const QString activePane =
++            d->frozenRows > 0 && d->frozenColumns > 0
++                ? QStringLiteral("bottomRight")
++                : (d->frozenRows > 0 ? QStringLiteral("bottomLeft")
++                                     : QStringLiteral("topRight"));
++
++        writer.writeEmptyElement(QStringLiteral("pane"));
++        if (d->frozenColumns > 0)
++            writer.writeAttribute(QStringLiteral("xSplit"), QString::number(d->frozenColumns));
++        if (d->frozenRows > 0)
++            writer.writeAttribute(QStringLiteral("ySplit"), QString::number(d->frozenRows));
++        writer.writeAttribute(QStringLiteral("topLeftCell"), topLeft);
++        writer.writeAttribute(QStringLiteral("activePane"), activePane);
++        writer.writeAttribute(QStringLiteral("state"), QStringLiteral("frozen"));
++
++        writer.writeEmptyElement(QStringLiteral("selection"));
++        writer.writeAttribute(QStringLiteral("pane"), activePane);
++        writer.writeAttribute(QStringLiteral("activeCell"), topLeft);
++        writer.writeAttribute(QStringLiteral("sqref"), topLeft);
++    }
+     writer.writeEndElement(); // sheetView
+     writer.writeEndElement(); // sheetViews
+ 
+@@ -1438,6 +1505,11 @@ void Worksheet::saveToXmlFile(QIODevice *device) const
+         d->saveXmlSheetData(writer);
+     writer.writeEndElement(); // sheetData
+ 
++    if (d->autoFilterRange.isValid()) {
++        writer.writeEmptyElement(QStringLiteral("autoFilter"));
++        writer.writeAttribute(QStringLiteral("ref"), d->autoFilterRange.toString());
++    }
++
+     d->saveXmlMergeCells(writer);
+     for (const ConditionalFormatting &cf : d->conditionalFormattingList)
+         cf.saveToXml(writer);
+@@ -2676,6 +2748,13 @@ void WorksheetPrivate::loadXmlSheetViews(QXmlStreamReader &reader)
+             showOutlineSymbols =
+                 attrs.value(QLatin1String("showOutlineSymbols")) != QLatin1String("0");
+             showWhiteSpace = attrs.value(QLatin1String("showWhiteSpace")) != QLatin1String("0");
++        } else if (reader.tokenType() == QXmlStreamReader::StartElement &&
++                   reader.name() == QLatin1String("pane")) {
++            const QXmlStreamAttributes attrs = reader.attributes();
++            frozenRows =
++                attrs.value(QLatin1String("ySplit")).toString().toDouble();
++            frozenColumns =
++                attrs.value(QLatin1String("xSplit")).toString().toDouble();
+         }
+     }
+ }
+@@ -2848,6 +2927,11 @@ bool Worksheet::loadFromXmlFile(QIODevice *device)
+                 d->loadXmlColumnsInfo(reader);
+             } else if (reader.name() == QLatin1String("sheetData")) {
+                 d->loadXmlSheetData(reader);
++            } else if (reader.name() == QLatin1String("autoFilter")) {
++                const QXmlStreamAttributes attributes = reader.attributes();
++                d->autoFilterRange =
++                    CellRange(attributes.value(QLatin1String("ref")).toString());
++                reader.skipCurrentElement();
+             } else if (reader.name() == QLatin1String("mergeCells")) {
+                 d->loadXmlMergeCells(reader);
+             } else if (reader.name() == QLatin1String("dataValidations")) {

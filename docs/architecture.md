@@ -65,10 +65,11 @@ overwritten. Details are specified in [rtl-sync.md](rtl-sync.md).
 
 XLSX, C header, and Markdown generation is deterministic for a normalized model. Files are
 written by atomic replacement and then marked read-only. They are not watched as input and are
-never merged. The workbook's default Register Map view groups each register with its field tree;
-each group begins with a generated static bitfield diagram. The diagram and field rows are
-initially collapsed and can be expanded with Excel outline controls. The flat Registers sheet
-remains the secondary register-only view. A later successful save or explicit generation
+never merged. XLSX contains one worksheet per Page, with Page metadata at the top and Block
+metadata in section bands. Register groups alternate background colors; only structure registers
+contain a generated static bitfield diagram and field tree. Diagram and field rows are initially
+collapsed and can be expanded with Excel outline controls. Header rows and key columns are
+frozen, and each Page table is filterable. A later successful save or explicit generation
 replaces any externally modified copy.
 
 ## Failure semantics

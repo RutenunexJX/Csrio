@@ -31,6 +31,23 @@ constexpr std::string_view writeFailureCode = "RM4000";
 constexpr std::string_view symbolCollisionCode = "RM4001";
 constexpr std::string_view addressOverflowCode = "RM4002";
 
+[[nodiscard]] std::string outputWriteFailureMessage(const GeneratedArtifact& artifact,
+                                                    std::string_view operation,
+                                                    const QString& error)
+{
+    std::string message = "Cannot " + std::string(operation) + " generated output '" +
+                          artifact.path.string() + "'";
+    if (!error.isEmpty()) {
+        message += ": " + error.toUtf8().toStdString();
+    }
+    message += '.';
+    if (artifact.kind == GenerationTargetKind::xlsx) {
+        message +=
+            " The XLSX file may be open in Excel; close it and generate again.";
+    }
+    return message;
+}
+
 template <typename Value, typename Compare>
 [[nodiscard]] std::vector<const Value*> sortedPointers(const std::vector<Value>& values,
                                                        Compare compare)
@@ -623,7 +640,7 @@ std::vector<Diagnostic> writeGeneratedArtifacts(const std::vector<GeneratedArtif
             SourceLocation source;
             source.workbook = artifact.path;
             addDiagnostic(diagnostics, writeFailureCode,
-                          "Cannot open generated output '" + artifact.path.string() + "'.", {},
+                          outputWriteFailureMessage(artifact, "open", file.errorString()), {},
                           std::move(source));
             continue;
         }
@@ -633,13 +650,21 @@ std::vector<Diagnostic> writeGeneratedArtifacts(const std::vector<GeneratedArtif
                              static_cast<qsizetype>(artifact.binaryContent.size()))
                 : QByteArray(artifact.content.data(),
                              static_cast<qsizetype>(artifact.content.size()));
-        if (file.write(bytes) != bytes.size() || !file.commit()) {
+        if (file.write(bytes) != bytes.size()) {
             SourceLocation source;
             source.workbook = artifact.path;
             addDiagnostic(diagnostics, writeFailureCode,
-                          "Cannot atomically write generated output '" + artifact.path.string() +
-                              "'.",
+                          outputWriteFailureMessage(artifact, "write", file.errorString()),
                           {}, std::move(source));
+            continue;
+        }
+        if (!file.commit()) {
+            SourceLocation source;
+            source.workbook = artifact.path;
+            addDiagnostic(
+                diagnostics, writeFailureCode,
+                outputWriteFailureMessage(artifact, "replace", file.errorString()), {},
+                std::move(source));
             continue;
         }
         QFile::setPermissions(path, QFileDevice::ReadOwner | QFileDevice::ReadGroup |

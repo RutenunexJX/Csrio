@@ -15,12 +15,17 @@
 #include <xlsxdocument.h>
 #include <xlsxformat.h>
 
+#include <QColor>
 #include <QFile>
 #include <QFileDevice>
 #include <QDebug>
 #include <QStringList>
 #include <QTemporaryDir>
 #include <QTest>
+
+#ifdef Q_OS_WIN
+#include <qt_windows.h>
+#endif
 
 #include <algorithm>
 #include <cstdint>
@@ -773,6 +778,29 @@ void CoreTests::generatesReadOnlyArtifacts()
         target.path.resolved = manifest.outputDirectory.resolved / target.path.declared;
     }
 
+    regmap::Register reservedRegister;
+    reservedRegister.id = "reg-reserved-test";
+    reservedRegister.name = "RESERVED_1C";
+    reservedRegister.offset = 0x1C;
+    reservedRegister.width = 32;
+    reservedRegister.array.count = 1;
+    reservedRegister.array.stride = 4;
+    reservedRegister.type = regmap::FieldType::reserved;
+    reservedRegister.resetValue = regmap::UnsignedValue(0);
+    reservedRegister.access = regmap::AccessMode::none;
+    reservedRegister.reserved = true;
+    reservedRegister.description = "Reserved register style regression.";
+    opened.workspace->addressSpaces.front().blocks.front().registers.push_back(
+        std::move(reservedRegister));
+
+    regmap::AddressSpace secondaryPage;
+    secondaryPage.id = "space-debug";
+    secondaryPage.name = "Debug/Trace";
+    secondaryPage.baseAddress = 0x50000000;
+    secondaryPage.addressWidth = 32;
+    secondaryPage.description = "Empty page used to verify one worksheet per page.";
+    opened.workspace->addressSpaces.push_back(std::move(secondaryPage));
+
     const auto generation = regmap::generateArtifacts(*opened.workspace, manifest);
     for (const auto& diagnostic : generation.diagnostics) {
         qWarning().noquote() << QString::fromStdString(diagnostic.code + ": " + diagnostic.message);
@@ -800,45 +828,110 @@ void CoreTests::generatesReadOnlyArtifacts()
     QXlsx::Document workbook(QString::fromStdWString(generation.artifacts.front().path.wstring()));
     QVERIFY(workbook.load());
     QCOMPARE(workbook.sheetNames(),
-             QStringList({QStringLiteral("Registers"), QStringLiteral("Register Map")}));
-    QVERIFY(workbook.selectSheet(QStringLiteral("Register Map")));
-    QVERIFY(!workbook.currentWorksheet()->areSummaryRowsBelow());
+             QStringList({QStringLiteral("Main"), QStringLiteral("Debug_Trace")}));
+    QVERIFY(workbook.selectSheet(QStringLiteral("Debug_Trace")));
+    QVERIFY(!workbook.currentWorksheet()->isGridLinesVisible());
+    QCOMPARE(workbook.currentWorksheet()->frozenRowCount(), 4);
+    QCOMPARE(workbook.currentWorksheet()->frozenColumnCount(), 3);
+    QCOMPARE(workbook.currentWorksheet()->autoFilter().toString(), QStringLiteral("A4:K4"));
+
+    QVERIFY(workbook.selectSheet(QStringLiteral("Main")));
+    const auto* worksheet = workbook.currentWorksheet();
+    QVERIFY(worksheet != nullptr);
+    QVERIFY(!worksheet->areSummaryRowsBelow());
+    QVERIFY(!worksheet->isGridLinesVisible());
+    QCOMPARE(worksheet->frozenRowCount(), 4);
+    QCOMPARE(worksheet->frozenColumnCount(), 3);
+    QCOMPARE(worksheet->autoFilter().toString(), QStringLiteral("A4:K25"));
     uint expectedDiagramCount = 0;
     for (const auto& space : opened.workspace->addressSpaces) {
         for (const auto& block : space.blocks) {
             expectedDiagramCount +=
                 static_cast<uint>(std::ranges::count_if(block.registers, [](const auto& reg) {
-                    return reg.type == regmap::FieldType::structure;
+                    return !reg.reserved && reg.type == regmap::FieldType::structure;
                 }));
         }
     }
     QCOMPARE(workbook.getImageCount(), expectedDiagramCount);
-    QCOMPARE(workbook.read(3, 2).toString(), QStringLiteral("Page"));
-    QCOMPARE(workbook.read(3, 4).toString(), QStringLiteral("Register / Field"));
-    QCOMPARE(workbook.read(3, 10).toString(), QStringLiteral("Initial"));
-    QCOMPARE(workbook.read(3, 12).toString(), QStringLiteral("Reset Domain"));
-    QVERIFY(workbook.read(4, 4).toString().contains(QStringLiteral("CONTROL")));
-    const auto firstRegisterCell = workbook.cellAt(4, 1);
-    const auto secondRegisterCell = workbook.cellAt(8, 1);
+    QCOMPARE(workbook.read(2, 2).toString(), QStringLiteral("0x43C00000"));
+    QCOMPARE(workbook.read(2, 4).toString(), QStringLiteral("32 bits"));
+    QVERIFY(workbook.read(2, 6).toString().isEmpty());
+    QCOMPARE(workbook.read(4, 1).toString(), QStringLiteral("Address"));
+    QCOMPARE(workbook.read(4, 2).toString(), QStringLiteral("Offset"));
+    QCOMPARE(workbook.read(4, 3).toString(), QStringLiteral("Register / Field"));
+    QCOMPARE(workbook.read(4, 7).toString(), QStringLiteral("Initial"));
+    QCOMPARE(workbook.read(4, 9).toString(), QStringLiteral("Tags"));
+    QCOMPARE(workbook.read(4, 10).toString(), QStringLiteral("Range / Enum"));
+    QCOMPARE(workbook.read(4, 11).toString(), QStringLiteral("Description"));
+    QCOMPARE(workbook.read(5, 1).toString(), QStringLiteral("BLOCK"));
+    QCOMPARE(workbook.read(5, 2).toString(), QStringLiteral("Control"));
+    QCOMPARE(workbook.read(5, 4).toString(), QStringLiteral("0x0000F000"));
+    QCOMPARE(workbook.read(5, 6).toString(), QStringLiteral("0x00001000"));
+    QCOMPARE(workbook.read(6, 1).toString(), QStringLiteral("0x43C0F000"));
+    QCOMPARE(workbook.read(6, 2).toString(), QStringLiteral("0x00000000"));
+    QVERIFY(workbook.read(6, 3).toString().contains(QStringLiteral("CONTROL")));
+    QCOMPARE(workbook.read(6, 6).toString(), QStringLiteral("RW"));
+    QCOMPARE(workbook.read(6, 8).toString(), QStringLiteral("0x00000000"));
+    const auto firstRegisterCell = workbook.cellAt(6, 1);
+    const auto secondRegisterCell = workbook.cellAt(10, 1);
     QVERIFY(firstRegisterCell != nullptr);
     QVERIFY(secondRegisterCell != nullptr);
     QVERIFY(firstRegisterCell->format().patternForegroundColor() !=
             secondRegisterCell->format().patternForegroundColor());
+    QCOMPARE(firstRegisterCell->format().horizontalAlignment(),
+             QXlsx::Format::AlignHCenter);
+    const auto firstDescriptionCell = workbook.cellAt(6, 11);
+    QVERIFY(firstDescriptionCell != nullptr);
+    QCOMPARE(firstDescriptionCell->format().horizontalAlignment(),
+             QXlsx::Format::AlignLeft);
 
     QImage controlDiagram;
-    QVERIFY(workbook.getImage(4, 3, controlDiagram));
+    QVERIFY(workbook.getImage(6, 2, controlDiagram));
     QCOMPARE(controlDiagram.width(), 1240);
     QVERIFY(controlDiagram.height() >= 122);
-    QVERIFY(workbook.read(6, 4).toString().contains(
+    QVERIFY(workbook.read(8, 3).toString().contains(
         QString::fromStdString(control->fields.front().name)));
-    QCOMPARE(workbook.read(6, 7).toString(), QStringLiteral("bool"));
-    QVERIFY(workbook.isRowHidden(5));
-    QVERIFY(workbook.isRowHidden(6));
+    QCOMPARE(workbook.read(8, 4).toString(), QStringLiteral("bool"));
+    QVERIFY(workbook.isRowHidden(7));
+    QVERIFY(workbook.isRowHidden(8));
     QStringList expectedTags;
     for (const auto& tag : control->tags) {
         expectedTags.push_back(QString::fromStdString(tag));
     }
-    QCOMPARE(workbook.read(4, 13).toString(), expectedTags.join(QStringLiteral(", ")));
+    QCOMPARE(workbook.read(6, 9).toString(), expectedTags.join(QStringLiteral(", ")));
+    QCOMPARE(workbook.read(25, 1).toString(), QStringLiteral("0x43C0F01C"));
+    QCOMPARE(workbook.read(25, 3).toString(), QStringLiteral("[RESERVED] RESERVED_1C"));
+    QCOMPARE(workbook.read(25, 4).toString(), QStringLiteral("reserved"));
+    QCOMPARE(workbook.read(25, 6).toString(), QStringLiteral("NONE"));
+    QCOMPARE(workbook.read(25, 8).toString(), QStringLiteral("0x00000000"));
+    const auto reservedAddressCell = workbook.cellAt(25, 1);
+    const auto reservedNameCell = workbook.cellAt(25, 3);
+    QVERIFY(reservedAddressCell != nullptr);
+    QVERIFY(reservedNameCell != nullptr);
+    QCOMPARE(reservedAddressCell->format().fontName(), QStringLiteral("Cascadia Mono"));
+    QCOMPARE(reservedNameCell->format().patternForegroundColor(),
+             QColor(QStringLiteral("#E2E3E5")));
+    QCOMPARE(reservedNameCell->format().fontColor(), QColor(QStringLiteral("#9C0006")));
+    QVERIFY(reservedNameCell->format().fontBold());
+
+#ifdef Q_OS_WIN
+    const auto workbookArtifact =
+        std::ranges::find_if(generation.artifacts, [](const regmap::GeneratedArtifact& artifact) {
+            return artifact.kind == regmap::GenerationTargetKind::xlsx;
+        });
+    QVERIFY(workbookArtifact != generation.artifacts.end());
+    const HANDLE lockedWorkbook =
+        CreateFileW(workbookArtifact->path.wstring().c_str(), GENERIC_READ, FILE_SHARE_READ,
+                    nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    QVERIFY(lockedWorkbook != INVALID_HANDLE_VALUE);
+    const auto lockedDiagnostics = regmap::writeGeneratedArtifacts(
+        std::vector<regmap::GeneratedArtifact>{*workbookArtifact});
+    CloseHandle(lockedWorkbook);
+    QVERIFY(std::ranges::any_of(lockedDiagnostics, [](const regmap::Diagnostic& diagnostic) {
+        return diagnostic.code == "RM4000" &&
+               diagnostic.message.find("may be open in Excel") != std::string::npos;
+    }));
+#endif
 
     const auto header =
         std::ranges::find_if(generation.artifacts, [](const regmap::GeneratedArtifact& artifact) {

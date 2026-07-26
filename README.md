@@ -39,9 +39,9 @@ Workspace -> Page (Address Space) -> Register Block -> Register -> Field -> Enum
 - Managed RTL generation and reverse synchronization through an explicitly marked region.
 - Stable-ID, property-level three-way merge using the last synchronized model as the base.
 - Automatic merge for independent changes and explicit Workbench/RTL conflict resolution.
-- Deterministic, read-only XLSX, C header, and Markdown generation. The XLSX Register Map embeds
-  each register's static bitfield diagram and field tree as collapsible rows directly below its
-  register row.
+- Deterministic, read-only XLSX, C header, and Markdown generation. XLSX uses one worksheet per
+  Page, separates Blocks with section bands, and embeds collapsible bitfield details only for
+  structure registers.
 - Problems, Generated, and Diff views with source navigation.
 
 `regmap_core` owns the model, validation, persistence, synchronization, and generators.
@@ -90,12 +90,13 @@ resolved with one of the two conflict-resolution actions.
 
 XLSX, C header, and Markdown files are derivative views. Their filesystem permissions are set
 read-only after generation, they are never imported, and any external changes are replaced by
-the next successful generation. The workbook opens on **Register Map**, where light-blue
-register group rows can expand their initially collapsed field rows, including bit range, type,
-SW/HW access, reset, numeric range, and enum summary. The expanded group begins with a
-proportional bitfield diagram showing MSB/LSB orientation, named fields, bit ranges, reserved
-fields, and unassigned space. The workbook contains only **Register Map** and the flat
-**Registers** view.
+the next successful generation. The workbook opens on the first Page worksheet. Page base and
+address width appear once at the top; each Block has a section band containing its base and size.
+Register rows expose address, offset, type, width, access, initial/reset values, reset domain,
+tags, range or enum summary, and description. Structure registers can expand their initially
+collapsed proportional bitfield diagram and field rows. The header and first three columns stay
+visible while scrolling, and the table includes Excel filters. There is no duplicate flat
+`Registers` worksheet.
 
 See [architecture.md](docs/architecture.md), [manifest-schema.md](docs/manifest-schema.md),
 [rtl-sync.md](docs/rtl-sync.md), and [excel-schema.md](docs/excel-schema.md) for the contracts.

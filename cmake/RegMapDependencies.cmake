@@ -45,6 +45,12 @@ FetchContent_Declare(
         "-DSOURCE_DIR=<SOURCE_DIR>"
         "-DPATCH_FILE=${CMAKE_CURRENT_LIST_DIR}/patches/qxlsx-summary-rows-above.patch"
         -P "${CMAKE_CURRENT_LIST_DIR}/ApplyPatch.cmake"
+        COMMAND
+        "${CMAKE_COMMAND}"
+        "-DGIT_EXECUTABLE=${GIT_EXECUTABLE}"
+        "-DSOURCE_DIR=<SOURCE_DIR>"
+        "-DPATCH_FILE=${CMAKE_CURRENT_LIST_DIR}/patches/qxlsx-freeze-filter.patch"
+        -P "${CMAKE_CURRENT_LIST_DIR}/ApplyPatch.cmake"
 )
 FetchContent_MakeAvailable(QXlsx)
 

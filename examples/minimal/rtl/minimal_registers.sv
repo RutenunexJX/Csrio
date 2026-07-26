@@ -8,49 +8,49 @@ module minimal_registers ();
   localparam logic [63:0] RMW_BLOCK_CONTROL_05569506_BASE = 64'hF000; // RMW:VALUE {"id":"block-control","property":"base"}
   localparam logic [63:0] RMW_BLOCK_CONTROL_05569506_SIZE = 64'h1000; // RMW:VALUE {"id":"block-control","property":"size"}
 
-  // RMW:OBJECT {"id":"field-73f4f13f70d0fa2a","kind":"field","properties":{"description":"","hw_access":"none","lsb":"0","maximum":"","minimum":"","msb":"0","name":"NEW_FIELD","order":"0","parent":"reg-e56277710635ee09","read_side_effect":"none","reset":"0x0","reset_domain":"","sw_access":"rw","type":"bits","write_side_effect":"write"}}
+  // RMW:OBJECT {"id":"field-73f4f13f70d0fa2a","kind":"field","properties":{"description":"","hw_access":"none","lsb":"0","maximum":"","minimum":"","msb":"0","name":"NEW_FIELD","order":"0","parent":"reg-e56277710635ee09","read_side_effect":"none","reset":"0x0","sw_access":"rw","type":"bits","write_side_effect":"write"}}
   localparam int unsigned RMW_FIELD_73F4F13F70D0FA2A_5D741C5D_LSB = 0; // RMW:VALUE {"id":"field-73f4f13f70d0fa2a","property":"lsb"}
   localparam int unsigned RMW_FIELD_73F4F13F70D0FA2A_5D741C5D_MSB = 0; // RMW:VALUE {"id":"field-73f4f13f70d0fa2a","property":"msb"}
   localparam logic [0:0] RMW_FIELD_73F4F13F70D0FA2A_5D741C5D_RESET = 1'h0; // RMW:VALUE {"id":"field-73f4f13f70d0fa2a","property":"reset"}
 
-  // RMW:OBJECT {"id":"field-9f5da9c8400451c0","kind":"field","properties":{"description":"","hw_access":"none","lsb":"0","maximum":"","minimum":"","msb":"0","name":"NEW_FIELD","order":"2","parent":"reg-irq-status","read_side_effect":"none","reset":"0x0","reset_domain":"","sw_access":"rw","type":"bits","write_side_effect":"write"}}
+  // RMW:OBJECT {"id":"field-9f5da9c8400451c0","kind":"field","properties":{"description":"","hw_access":"none","lsb":"0","maximum":"","minimum":"","msb":"0","name":"NEW_FIELD","order":"2","parent":"reg-irq-status","read_side_effect":"none","reset":"0x0","sw_access":"rw","type":"bits","write_side_effect":"write"}}
   localparam int unsigned RMW_FIELD_9F5DA9C8400451C0_15510640_LSB = 0; // RMW:VALUE {"id":"field-9f5da9c8400451c0","property":"lsb"}
   localparam int unsigned RMW_FIELD_9F5DA9C8400451C0_15510640_MSB = 0; // RMW:VALUE {"id":"field-9f5da9c8400451c0","property":"msb"}
   localparam logic [0:0] RMW_FIELD_9F5DA9C8400451C0_15510640_RESET = 1'h0; // RMW:VALUE {"id":"field-9f5da9c8400451c0","property":"reset"}
 
-  // RMW:OBJECT {"id":"field-enable","kind":"field","properties":{"description":"Enables the block.","hw_access":"ro","lsb":"28","maximum":"","minimum":"","msb":"28","name":"sss","order":"0","parent":"reg-control","read_side_effect":"none","reset":"0x0","reset_domain":"csr_rst_n","sw_access":"rw","type":"bool","write_side_effect":"write"}}
+  // RMW:OBJECT {"id":"field-enable","kind":"field","properties":{"description":"Enables the block.","hw_access":"ro","lsb":"28","maximum":"","minimum":"","msb":"28","name":"sss","order":"0","parent":"reg-control","read_side_effect":"none","reset":"0x0","sw_access":"rw","type":"bool","write_side_effect":"write"}}
   localparam int unsigned RMW_FIELD_ENABLE_E59E1D9D_LSB = 28; // RMW:VALUE {"id":"field-enable","property":"lsb"}
   localparam int unsigned RMW_FIELD_ENABLE_E59E1D9D_MSB = 28; // RMW:VALUE {"id":"field-enable","property":"msb"}
   localparam logic [0:0] RMW_FIELD_ENABLE_E59E1D9D_RESET = 1'h0; // RMW:VALUE {"id":"field-enable","property":"reset"}
 
-  // RMW:OBJECT {"id":"field-error","kind":"field","properties":{"description":"Hardware error indicator.","hw_access":"wo","lsb":"1","maximum":"","minimum":"","msb":"1","name":"ERROR","order":"1","parent":"reg-status","read_side_effect":"none","reset":"0x0","reset_domain":"csr_rst_n","sw_access":"ro","type":"bool","write_side_effect":"none"}}
+  // RMW:OBJECT {"id":"field-error","kind":"field","properties":{"description":"Hardware error indicator.","hw_access":"wo","lsb":"1","maximum":"","minimum":"","msb":"1","name":"ERROR","order":"1","parent":"reg-status","read_side_effect":"none","reset":"0x0","sw_access":"ro","type":"bool","write_side_effect":"none"}}
   localparam int unsigned RMW_FIELD_ERROR_28D038A8_LSB = 1; // RMW:VALUE {"id":"field-error","property":"lsb"}
   localparam int unsigned RMW_FIELD_ERROR_28D038A8_MSB = 1; // RMW:VALUE {"id":"field-error","property":"msb"}
   localparam logic [0:0] RMW_FIELD_ERROR_28D038A8_RESET = 1'h0; // RMW:VALUE {"id":"field-error","property":"reset"}
 
-  // RMW:OBJECT {"id":"field-fc9c50920cb6a8a5","kind":"field","properties":{"description":"","hw_access":"none","lsb":"17","maximum":"","minimum":"","msb":"20","name":"NEW_FIELD","order":"1","parent":"reg-control","read_side_effect":"none","reset":"0x0","reset_domain":"","sw_access":"rw","type":"bits","write_side_effect":"write"}}
-  localparam int unsigned RMW_FIELD_FC9C50920CB6A8A5_42EB2931_LSB = 17; // RMW:VALUE {"id":"field-fc9c50920cb6a8a5","property":"lsb"}
-  localparam int unsigned RMW_FIELD_FC9C50920CB6A8A5_42EB2931_MSB = 20; // RMW:VALUE {"id":"field-fc9c50920cb6a8a5","property":"msb"}
+  // RMW:OBJECT {"id":"field-fc9c50920cb6a8a5","kind":"field","properties":{"description":"","hw_access":"none","lsb":"20","maximum":"","minimum":"","msb":"23","name":"NEW_FIELD","order":"1","parent":"reg-control","read_side_effect":"none","reset":"0x0","sw_access":"rw","type":"bits","write_side_effect":"write"}}
+  localparam int unsigned RMW_FIELD_FC9C50920CB6A8A5_42EB2931_LSB = 20; // RMW:VALUE {"id":"field-fc9c50920cb6a8a5","property":"lsb"}
+  localparam int unsigned RMW_FIELD_FC9C50920CB6A8A5_42EB2931_MSB = 23; // RMW:VALUE {"id":"field-fc9c50920cb6a8a5","property":"msb"}
   localparam logic [3:0] RMW_FIELD_FC9C50920CB6A8A5_42EB2931_RESET = 4'h0; // RMW:VALUE {"id":"field-fc9c50920cb6a8a5","property":"reset"}
 
-  // RMW:OBJECT {"id":"field-irq-reserved","kind":"field","properties":{"description":"Reserved; keep zero.","hw_access":"none","lsb":"27","maximum":"","minimum":"","msb":"31","name":"RESERVED","order":"1","parent":"reg-irq-status","read_side_effect":"none","reset":"0x0","reset_domain":"","sw_access":"none","type":"reserved","write_side_effect":"none"}}
+  // RMW:OBJECT {"id":"field-irq-reserved","kind":"field","properties":{"description":"Reserved; keep zero.","hw_access":"none","lsb":"27","maximum":"","minimum":"","msb":"31","name":"RESERVED","order":"1","parent":"reg-irq-status","read_side_effect":"none","reset":"0x0","sw_access":"none","type":"reserved","write_side_effect":"none"}}
   localparam int unsigned RMW_FIELD_IRQ_RESERVED_D1960003_LSB = 27; // RMW:VALUE {"id":"field-irq-reserved","property":"lsb"}
   localparam int unsigned RMW_FIELD_IRQ_RESERVED_D1960003_MSB = 31; // RMW:VALUE {"id":"field-irq-reserved","property":"msb"}
   localparam logic [4:0] RMW_FIELD_IRQ_RESERVED_D1960003_RESET = 5'h0; // RMW:VALUE {"id":"field-irq-reserved","property":"reset"}
 
-  // RMW:OBJECT {"id":"field-pending","kind":"field","properties":{"description":"Pending interrupt sources.","hw_access":"wo","lsb":"12","maximum":"","minimum":"","msb":"15","name":"PENDING","order":"0","parent":"reg-irq-status","read_side_effect":"none","reset":"0x0","reset_domain":"csr_rst_n","sw_access":"rw","type":"bits","write_side_effect":"w1c"}}
+  // RMW:OBJECT {"id":"field-pending","kind":"field","properties":{"description":"Pending interrupt sources.","hw_access":"wo","lsb":"12","maximum":"","minimum":"","msb":"15","name":"PENDING","order":"0","parent":"reg-irq-status","read_side_effect":"none","reset":"0x0","sw_access":"rw","type":"bits","write_side_effect":"w1c"}}
   localparam int unsigned RMW_FIELD_PENDING_5DE5B1E1_LSB = 12; // RMW:VALUE {"id":"field-pending","property":"lsb"}
   localparam int unsigned RMW_FIELD_PENDING_5DE5B1E1_MSB = 15; // RMW:VALUE {"id":"field-pending","property":"msb"}
   localparam logic [3:0] RMW_FIELD_PENDING_5DE5B1E1_RESET = 4'h0; // RMW:VALUE {"id":"field-pending","property":"reset"}
 
-  // RMW:OBJECT {"id":"field-ready","kind":"field","properties":{"description":"Hardware is ready.","hw_access":"wo","lsb":"0","maximum":"","minimum":"","msb":"0","name":"READY","order":"0","parent":"reg-status","read_side_effect":"none","reset":"0x1","reset_domain":"csr_rst_n","sw_access":"ro","type":"bool","write_side_effect":"none"}}
+  // RMW:OBJECT {"id":"field-ready","kind":"field","properties":{"description":"Hardware is ready.","hw_access":"wo","lsb":"0","maximum":"","minimum":"","msb":"0","name":"READY","order":"0","parent":"reg-status","read_side_effect":"none","reset":"0x1","sw_access":"ro","type":"bool","write_side_effect":"none"}}
   localparam int unsigned RMW_FIELD_READY_9B57E91D_LSB = 0; // RMW:VALUE {"id":"field-ready","property":"lsb"}
   localparam int unsigned RMW_FIELD_READY_9B57E91D_MSB = 0; // RMW:VALUE {"id":"field-ready","property":"msb"}
   localparam logic [0:0] RMW_FIELD_READY_9B57E91D_RESET = 1'h1; // RMW:VALUE {"id":"field-ready","property":"reset"}
 
   // RMW:OBJECT {"id":"minimal-example","kind":"workspace","properties":{"name":"Minimal Example"}}
 
-  // RMW:OBJECT {"id":"reg-5e1369c084a3f835","kind":"register","properties":{"access":"rw","array_count":"1","description":"","initial":"","maximum":"","minimum":"","name":"tt","offset":"0x10","order":"4","parent":"block-control","reserved":"false","reset":"0x0","stride":"0x4","tags":"[]","type":"unsigned","width":"32"}}
+  // RMW:OBJECT {"id":"reg-5e1369c084a3f835","kind":"register","properties":{"access":"rw","array_count":"1","description":"","initial":"","maximum":"545","minimum":"1","name":"tt","offset":"0x10","order":"4","parent":"block-control","reserved":"false","reset":"0x0","stride":"0x4","tags":"[]","type":"unsigned","width":"32"}}
   localparam int unsigned RMW_REG_5E1369C084A3F835_FE92F43E_ARRAY_COUNT = 1; // RMW:VALUE {"id":"reg-5e1369c084a3f835","property":"array_count"}
   localparam logic [63:0] RMW_REG_5E1369C084A3F835_FE92F43E_OFFSET = 64'h10; // RMW:VALUE {"id":"reg-5e1369c084a3f835","property":"offset"}
   localparam logic [31:0] RMW_REG_5E1369C084A3F835_FE92F43E_RESET = 32'h0; // RMW:VALUE {"id":"reg-5e1369c084a3f835","property":"reset"}
@@ -78,7 +78,7 @@ module minimal_registers ();
   localparam logic [63:0] RMW_REG_E56277710635EE09_6124215B_STRIDE = 64'h4; // RMW:VALUE {"id":"reg-e56277710635ee09","property":"stride"}
   localparam int unsigned RMW_REG_E56277710635EE09_6124215B_WIDTH = 32; // RMW:VALUE {"id":"reg-e56277710635ee09","property":"width"}
 
-  // RMW:OBJECT {"id":"reg-e9acdc7d5c2cb466","kind":"register","properties":{"access":"rw","array_count":"1","description":"测试","initial":"","maximum":"","minimum":"","name":"r","offset":"0xC","order":"3","parent":"block-control","reserved":"false","reset":"0x0","stride":"0x4","tags":"[]","type":"unsigned","width":"32"}}
+  // RMW:OBJECT {"id":"reg-e9acdc7d5c2cb466","kind":"register","properties":{"access":"rw","array_count":"1","description":"测试","initial":"","maximum":"295","minimum":"1","name":"r","offset":"0xC","order":"3","parent":"block-control","reserved":"false","reset":"0x0","stride":"0x4","tags":"[]","type":"unsigned","width":"32"}}
   localparam int unsigned RMW_REG_E9ACDC7D5C2CB466_48FE1EB1_ARRAY_COUNT = 1; // RMW:VALUE {"id":"reg-e9acdc7d5c2cb466","property":"array_count"}
   localparam logic [63:0] RMW_REG_E9ACDC7D5C2CB466_48FE1EB1_OFFSET = 64'hC; // RMW:VALUE {"id":"reg-e9acdc7d5c2cb466","property":"offset"}
   localparam logic [31:0] RMW_REG_E9ACDC7D5C2CB466_48FE1EB1_RESET = 32'h0; // RMW:VALUE {"id":"reg-e9acdc7d5c2cb466","property":"reset"}

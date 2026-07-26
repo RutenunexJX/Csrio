@@ -292,8 +292,6 @@ template <typename Enum, typename Parser>
     result.writeSideEffect =
         enumValue<WriteSideEffect>(node, "write_side_effect", WriteSideEffect::write,
                                    parseWriteSideEffect, filePath, path, diagnostics);
-    result.resetDomain =
-        scalar(node, "reset_domain", false, filePath, path, diagnostics).value_or("");
     result.description =
         scalar(node, "description", false, filePath, path, diagnostics).value_or("");
     result.minimumValue = scalar(node, "minimum", false, filePath, path, diagnostics);
@@ -524,9 +522,6 @@ void emitField(YAML::Emitter& output, const Field& field)
     output << YAML::Key << "read_side_effect" << YAML::Value
            << std::string(toString(field.readSideEffect)) << YAML::Key << "write_side_effect"
            << YAML::Value << std::string(toString(field.writeSideEffect));
-    if (!field.resetDomain.empty()) {
-        output << YAML::Key << "reset_domain" << YAML::Value << field.resetDomain;
-    }
     if (field.minimumValue) {
         output << YAML::Key << "minimum" << YAML::Value << *field.minimumValue;
     }

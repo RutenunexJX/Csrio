@@ -5,32 +5,41 @@ never imports it and does not observe Excel save events. The generated file is m
 applications that bypass this protection may change it, but the next generation replaces those
 changes.
 
-The workbook uses the same visual theme as Workbench and contains two sheets. Headers are on
-row 3, review-oriented column widths are applied, and internal identity columns are hidden.
+The workbook uses the same visual theme as Workbench and contains one worksheet per Page. Page
+names are converted to valid, unique Excel sheet names and limited to 31 characters. The first
+Page is selected when the workbook opens. There is no separate flat `Registers` worksheet.
 
-## `Registers`
+## Page worksheet
 
-One row per register:
+Each worksheet has the following fixed layout:
 
-- Page, Page Base, Block, Block Base, Register
-- Absolute Address, Offset, Width, Type, Range or Enum Values, Initial
-- Reset, Access, State, Tags, Description
-- hidden Register ID and Block ID
+- row 1: workbook and Page title;
+- row 2: Page Base, Address Width, and Page description;
+- row 3: visual spacer;
+- row 4: filterable column headers;
+- row 5 onward: Block bands and register groups.
 
-## `Register Map`
+A Block band records the Block name, base, size, and description once. Register rows below it use
+these columns:
 
-The default review sheet combines registers and fields so ordinary review does not require
-switching worksheets:
+1. Address
+2. Offset
+3. Register / Field
+4. Type
+5. Width / Bits
+6. Access
+7. Initial
+8. Reset
+9. Tags
+10. Range / Enum
+11. Description
 
-- each light-blue group row contains register address, page, block, width, type, access,
-  initial value, reset, range, tags, and description;
-- the first detail row contains a static proportional bitfield diagram with MSB/LSB orientation,
-  field names and ranges, reserved fields, and unassigned space;
-- subsequent indented rows contain that register's fields and recursive member fields;
-- the diagram and field rows are grouped and initially collapsed; Excel's outline `+`/`-`
-  controls expand or collapse each register's complete field detail;
-- field rows contain absolute bit range, type, SW/HW access, reset, reset domain, numeric range
-  or enum summary, and description.
+Register groups use alternating background colors. Reserved registers use a gray row with a
+bold red `[RESERVED]` label. Only registers whose type is `field` include detail rows: the first
+detail row is a static proportional bitfield diagram, followed by indented fields and recursive
+member fields. These rows are grouped and initially collapsed. Scalar registers remain a single
+row. Description cells are left-aligned; all other table cells are centered.
 
-Values that must remain exact are emitted as hexadecimal text rather than floating-point Excel
-numbers. Hidden IDs support traceability only; they do not make the workbook editable input.
+Rows 1 through 4 and columns A through C are frozen. AutoFilter covers columns A through K.
+Addresses, offsets, Block bases and sizes, and initial/reset values are fixed-width hexadecimal
+text in a monospaced font, so Excel cannot convert or round them.

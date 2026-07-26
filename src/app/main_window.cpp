@@ -98,7 +98,6 @@ enum FieldColumn {
     fieldSoftwareAccessColumn,
     fieldHardwareAccessColumn,
     fieldResetColumn,
-    fieldResetDomainColumn,
     fieldReadEffectColumn,
     fieldWriteEffectColumn,
     fieldDescriptionColumn,
@@ -254,6 +253,7 @@ enum EnumColumn {
 {
     auto* result = new QStandardItem(text);
     result->setEditable(false);
+    result->setTextAlignment(Qt::AlignCenter);
     return result;
 }
 
@@ -263,6 +263,8 @@ enum EnumColumn {
 {
     auto* result = new QStandardItem(text);
     result->setEditable(true);
+    result->setTextAlignment(property == "description" ? Qt::AlignLeft | Qt::AlignVCenter
+                                                        : Qt::AlignCenter);
     result->setData(fromUtf8(objectId), objectRole);
     result->setData(fromUtf8(property), propertyRole);
     return result;
@@ -1442,9 +1444,8 @@ void MainWindow::populateFields(const regmap::Register* reg)
         {QStringLiteral("Field"), QStringLiteral("Parent"), QStringLiteral("MSB"),
          QStringLiteral("LSB"), QStringLiteral("Width"), QStringLiteral("Type"),
          QStringLiteral("Minimum"), QStringLiteral("Maximum"), QStringLiteral("SW"),
-         QStringLiteral("HW"), QStringLiteral("Reset"), QStringLiteral("Reset Domain"),
-         QStringLiteral("Read Effect"), QStringLiteral("Write Effect"),
-         QStringLiteral("Description")});
+         QStringLiteral("HW"), QStringLiteral("Reset"), QStringLiteral("Read Effect"),
+         QStringLiteral("Write Effect"), QStringLiteral("Description")});
     bitfieldView_->setRegister(reg);
     if (reg == nullptr) {
         populateEnumValues(nullptr, nullptr);
@@ -1475,8 +1476,6 @@ void MainWindow::populateFields(const regmap::Register* reg)
                 << editableItem(accessText(field.hardwareAccess), field.id, "hw_access",
                                 objectIdRole, propertyRole)
                 << editableItem(valueText(field.resetValue), field.id, "reset", objectIdRole,
-                                propertyRole)
-                << editableItem(fromUtf8(field.resetDomain), field.id, "reset_domain", objectIdRole,
                                 propertyRole)
                 << editableItem(readSideEffectText(field.readSideEffect), field.id,
                                 "read_side_effect", objectIdRole, propertyRole)
@@ -1560,10 +1559,14 @@ void MainWindow::populateEnumValues(const regmap::Register* reg, const regmap::F
 
     enumContextLabel_->setText(QStringLiteral("%1 Enum Values — %2").arg(ownerKind, ownerName));
     if (type == regmap::FieldType::boolean && enumValues->empty()) {
-        enumModel_->appendRow({item(QStringLiteral("FALSE")), item(QStringLiteral("0")),
-                               item(QStringLiteral("Implicit"))});
-        enumModel_->appendRow({item(QStringLiteral("TRUE")), item(QStringLiteral("1")),
-                               item(QStringLiteral("Implicit"))});
+        auto* falseDescription = item(QStringLiteral("Implicit"));
+        falseDescription->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        enumModel_->appendRow(
+            {item(QStringLiteral("FALSE")), item(QStringLiteral("0")), falseDescription});
+        auto* trueDescription = item(QStringLiteral("Implicit"));
+        trueDescription->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        enumModel_->appendRow(
+            {item(QStringLiteral("TRUE")), item(QStringLiteral("1")), trueDescription});
     } else {
         for (const auto& enumValue : *enumValues) {
             enumModel_->appendRow({editableItem(fromUtf8(enumValue.name), enumValue.id, "name",
@@ -1778,13 +1781,11 @@ void MainWindow::applyPropertyEdit(const std::string& objectId, const std::strin
     }
 
     if (regmap::findField(*workspace, objectId) != nullptr) {
-        if (property == "name" || property == "reset_domain" || property == "description") {
+        if (property == "name" || property == "description") {
             controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
                 if (auto* field = regmap::findField(candidate, objectId)) {
                     if (property == "name") {
                         field->name = textValue;
-                    } else if (property == "reset_domain") {
-                        field->resetDomain = textValue;
                     } else {
                         field->description = textValue;
                     }

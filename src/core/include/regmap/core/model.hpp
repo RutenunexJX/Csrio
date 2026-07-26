@@ -78,7 +78,6 @@ struct Field {
     std::optional<UnsignedValue> resetValue;
     ReadSideEffect readSideEffect{ReadSideEffect::none};
     WriteSideEffect writeSideEffect{WriteSideEffect::write};
-    std::string resetDomain;
     std::string description;
     std::optional<std::string> minimumValue;
     std::optional<std::string> maximumValue;

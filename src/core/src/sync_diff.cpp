@@ -85,7 +85,6 @@ template <typename Enum> void appendEnum(std::ostringstream& output, Enum value)
     appendValue(output, value.resetValue);
     appendEnum(output, value.readSideEffect);
     appendEnum(output, value.writeSideEffect);
-    appendString(output, value.resetDomain);
     appendString(output, value.description);
     appendString(output, value.minimumValue.value_or(std::string{}));
     appendString(output, value.maximumValue.value_or(std::string{}));

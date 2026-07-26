@@ -48,8 +48,6 @@ workspace:
                   reset: 0x0
                   read_side_effect: none
                   write_side_effect: write
-
-                  reset_domain: csr_rst_n
                   description: Enables the block.
                   enum_values: []
                 - id: field-count
@@ -102,9 +100,11 @@ hexadecimal notation.
   retaining its address slot. Array count and stride remain serialized for backward
   compatibility but are not exposed in Workbench or XLSX.
 - Field: `id`, `name`, `msb`, `lsb`, `type`, `sw_access`, `hw_access`, optional `reset`,
-  `read_side_effect`, `write_side_effect`, `reset_domain`, optional `minimum`,
-  optional `maximum`, `description`, `enum_values`, and optional recursive `members`.
+  `read_side_effect`, `write_side_effect`, optional `minimum`, optional `maximum`,
+  `description`, `enum_values`, and optional recursive `members`.
 - Enum value: `id`, `name`, `value`, `description`.
+
+Legacy `reset_domain` keys are ignored when read and are omitted on the next save.
 
 Accepted tokens:
 

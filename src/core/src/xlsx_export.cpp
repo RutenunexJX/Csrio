@@ -30,6 +30,8 @@ namespace regmap {
 namespace {
 
 constexpr std::string_view exportFailureCode = "RM4100";
+constexpr int worksheetColumnCount = 11;
+constexpr int worksheetDescriptionColumn = worksheetColumnCount;
 
 struct WorkbookFormats {
     QXlsx::Format title;
@@ -41,6 +43,15 @@ struct WorkbookFormats {
     QXlsx::Format addressAlternate;
     QXlsx::Format section;
     QXlsx::Format sectionAlternate;
+    QXlsx::Format sectionAddress;
+    QXlsx::Format sectionAddressAlternate;
+    QXlsx::Format pageLabel;
+    QXlsx::Format pageValue;
+    QXlsx::Format pageAddress;
+    QXlsx::Format block;
+    QXlsx::Format blockAddress;
+    QXlsx::Format reserved;
+    QXlsx::Format reservedAddress;
 };
 
 [[nodiscard]] QString text(std::string_view value)
@@ -71,6 +82,7 @@ struct WorkbookFormats {
     result.header.setBorderStyle(QXlsx::Format::BorderThin);
     result.header.setBorderColor(QColor(QStringLiteral("#C6D2E1")));
     result.header.setVerticalAlignment(QXlsx::Format::AlignVCenter);
+    result.header.setHorizontalAlignment(QXlsx::Format::AlignHCenter);
     result.header.setTextWrap(true);
     result.header.setLocked(true);
 
@@ -83,6 +95,7 @@ struct WorkbookFormats {
     result.body.setBorderStyle(QXlsx::Format::BorderThin);
     result.body.setBorderColor(QColor(QStringLiteral("#DCE3EB")));
     result.body.setVerticalAlignment(QXlsx::Format::AlignVCenter);
+    result.body.setHorizontalAlignment(QXlsx::Format::AlignHCenter);
     result.body.setLocked(true);
 
     result.alternate = result.body;
@@ -96,11 +109,13 @@ struct WorkbookFormats {
 
     result.address = result.body;
     result.address.setFontName(QStringLiteral("Cascadia Mono"));
-    result.address.setHorizontalAlignment(QXlsx::Format::AlignRight);
+    result.address.setHorizontalAlignment(QXlsx::Format::AlignHCenter);
+    result.address.setNumberFormat(QStringLiteral("@"));
 
     result.addressAlternate = result.alternate;
     result.addressAlternate.setFontName(QStringLiteral("Cascadia Mono"));
-    result.addressAlternate.setHorizontalAlignment(QXlsx::Format::AlignRight);
+    result.addressAlternate.setHorizontalAlignment(QXlsx::Format::AlignHCenter);
+    result.addressAlternate.setNumberFormat(QStringLiteral("@"));
 
     result.section = result.body;
     result.section.setFontBold(true);
@@ -111,6 +126,52 @@ struct WorkbookFormats {
     result.sectionAlternate = result.section;
     result.sectionAlternate.setPatternForegroundColor(QColor(QStringLiteral("#EDF2F7")));
     result.sectionAlternate.setPatternBackgroundColor(QColor(QStringLiteral("#EDF2F7")));
+
+    result.sectionAddress = result.section;
+    result.sectionAddress.setFontName(QStringLiteral("Cascadia Mono"));
+    result.sectionAddress.setHorizontalAlignment(QXlsx::Format::AlignHCenter);
+    result.sectionAddress.setNumberFormat(QStringLiteral("@"));
+
+    result.sectionAddressAlternate = result.sectionAlternate;
+    result.sectionAddressAlternate.setFontName(QStringLiteral("Cascadia Mono"));
+    result.sectionAddressAlternate.setHorizontalAlignment(QXlsx::Format::AlignHCenter);
+    result.sectionAddressAlternate.setNumberFormat(QStringLiteral("@"));
+
+    result.pageLabel = result.metadata;
+    result.pageLabel.setFontBold(true);
+    result.pageLabel.setFontColor(QColor(QStringLiteral("#17365D")));
+
+    result.pageValue = result.body;
+    result.pageValue.setPatternForegroundColor(QColor(QStringLiteral("#FFFFFF")));
+    result.pageValue.setPatternBackgroundColor(QColor(QStringLiteral("#FFFFFF")));
+
+    result.pageAddress = result.pageValue;
+    result.pageAddress.setFontName(QStringLiteral("Cascadia Mono"));
+    result.pageAddress.setHorizontalAlignment(QXlsx::Format::AlignHCenter);
+    result.pageAddress.setNumberFormat(QStringLiteral("@"));
+
+    result.block = result.body;
+    result.block.setFontBold(true);
+    result.block.setFontColor(QColor(QStringLiteral("#17365D")));
+    result.block.setPatternForegroundColor(QColor(QStringLiteral("#B4C6E7")));
+    result.block.setPatternBackgroundColor(QColor(QStringLiteral("#B4C6E7")));
+    result.block.setTextWrap(true);
+
+    result.blockAddress = result.block;
+    result.blockAddress.setFontName(QStringLiteral("Cascadia Mono"));
+    result.blockAddress.setHorizontalAlignment(QXlsx::Format::AlignHCenter);
+    result.blockAddress.setNumberFormat(QStringLiteral("@"));
+
+    result.reserved = result.body;
+    result.reserved.setFontBold(true);
+    result.reserved.setFontColor(QColor(QStringLiteral("#9C0006")));
+    result.reserved.setPatternForegroundColor(QColor(QStringLiteral("#E2E3E5")));
+    result.reserved.setPatternBackgroundColor(QColor(QStringLiteral("#E2E3E5")));
+
+    result.reservedAddress = result.reserved;
+    result.reservedAddress.setFontName(QStringLiteral("Cascadia Mono"));
+    result.reservedAddress.setHorizontalAlignment(QXlsx::Format::AlignHCenter);
+    result.reservedAddress.setNumberFormat(QStringLiteral("@"));
 
     return result;
 }
@@ -123,27 +184,33 @@ void writeTitle(QXlsx::Document& document, const QString& title, int lastColumn,
     document.setRowHeight(1, 27.0);
 }
 
-void writeHeaders(QXlsx::Document& document, const QStringList& headers,
+void writeHeaders(QXlsx::Document& document, int row, const QStringList& headers,
                   const WorkbookFormats& style)
 {
     for (int column = 0; column < headers.size(); ++column) {
-        document.write(3, column + 1, headers[column], style.header);
+        document.write(row, column + 1, headers[column], style.header);
     }
-    document.setRowHeight(3, 30.0);
+    document.setRowHeight(row, 30.0);
 }
 
 void writeRow(QXlsx::Document& document, int row, const std::vector<QVariant>& values,
               const WorkbookFormats& style, const std::vector<int>& addressColumns = {},
-              const QXlsx::Format* overrideFormat = nullptr, bool alternateRow = false)
+              const QXlsx::Format* overrideFormat = nullptr, bool alternateRow = false,
+              const QXlsx::Format* overrideAddressFormat = nullptr)
 {
     for (std::size_t index = 0; index < values.size(); ++index) {
         const int column = static_cast<int>(index) + 1;
         const bool address = std::ranges::find(addressColumns, column) != addressColumns.end();
-        const QXlsx::Format& format =
+        QXlsx::Format format =
             overrideFormat != nullptr
-                ? *overrideFormat
+                ? (address && overrideAddressFormat != nullptr ? *overrideAddressFormat
+                                                              : *overrideFormat)
                 : (address ? (alternateRow ? style.addressAlternate : style.address)
                            : (alternateRow ? style.alternate : style.body));
+        if (values.size() == worksheetColumnCount &&
+            column == worksheetDescriptionColumn) {
+            format.setHorizontalAlignment(QXlsx::Format::AlignLeft);
+        }
         const QVariant& value = values[index];
         const bool emptyText =
             value.metaType() == QMetaType::fromType<QString>() && value.toString().isEmpty();
@@ -156,6 +223,52 @@ void configureColumns(QXlsx::Document& document, const std::vector<double>& widt
     for (std::size_t index = 0; index < widths.size(); ++index) {
         document.setColumnWidth(static_cast<int>(index) + 1, widths[index]);
     }
+}
+
+[[nodiscard]] QString fixedHex(const UnsignedValue& value, std::uint32_t bitWidth)
+{
+    const int minimumDigits =
+        std::max(1, static_cast<int>((static_cast<std::uint64_t>(bitWidth) + 3) / 4));
+    const QString digits = text(value.toHexString(false)).toUpper();
+    return QStringLiteral("0x") + digits.rightJustified(minimumDigits, QLatin1Char('0'));
+}
+
+[[nodiscard]] QString fixedHex(std::uint64_t value, std::uint32_t bitWidth)
+{
+    return fixedHex(UnsignedValue(value), bitWidth);
+}
+
+[[nodiscard]] QString accessText(AccessMode access)
+{
+    return text(toString(access)).toUpper();
+}
+
+[[nodiscard]] QString fieldAccessText(const Field& field)
+{
+    return QStringLiteral("SW %1 / HW %2")
+        .arg(accessText(field.softwareAccess), accessText(field.hardwareAccess));
+}
+
+[[nodiscard]] QString sanitizedSheetName(const QString& requested, const QStringList& usedNames)
+{
+    QString base = requested.trimmed();
+    for (const QChar invalid : QStringLiteral("[]:*?/\\"))
+        base.replace(invalid, QLatin1Char('_'));
+    if (base.isEmpty())
+        base = QStringLiteral("Page");
+    base = base.left(31);
+
+    auto alreadyUsed = [&usedNames](const QString& candidate) {
+        return std::ranges::any_of(usedNames, [&candidate](const QString& used) {
+            return used.compare(candidate, Qt::CaseInsensitive) == 0;
+        });
+    };
+    QString candidate = base;
+    for (int suffixNumber = 2; alreadyUsed(candidate); ++suffixNumber) {
+        const QString suffix = QStringLiteral(" (%1)").arg(suffixNumber);
+        candidate = base.left(31 - suffix.size()) + suffix;
+    }
+    return candidate;
 }
 
 [[nodiscard]] std::uint64_t absoluteAddress(const AddressSpace& space, const RegisterBlock& block,
@@ -310,7 +423,7 @@ void configureColumns(QXlsx::Document& document, const std::vector<double>& widt
     painter.setPen(QColor(QStringLiteral("#17365D")));
     painter.drawText(QRect(horizontalMargin, 6, imageWidth - horizontalMargin * 2, 20),
                      Qt::AlignLeft | Qt::AlignVCenter,
-                     QStringLiteral("%1 · %2-bit field layout").arg(text(reg.name)).arg(reg.width));
+                     QStringLiteral("%1 - %2-bit field layout").arg(text(reg.name)).arg(reg.width));
 
     QFont markerFont(QStringLiteral("Aptos"), 8);
     painter.setFont(markerFont);
@@ -400,50 +513,26 @@ void configureColumns(QXlsx::Document& document, const std::vector<double>& widt
     return image;
 }
 
-void writeRegistersSheet(QXlsx::Document& document, const Workspace& workspace,
-                         const WorkbookFormats& style)
+void writePageMetadata(QXlsx::Document& document, const AddressSpace& space,
+                       const WorkbookFormats& style)
 {
-    writeTitle(document, text(workspace.name + " — Registers"), 18, style);
-    writeHeaders(document,
-                 {QStringLiteral("Page"), QStringLiteral("Page Base"), QStringLiteral("Block"),
-                  QStringLiteral("Block Base"), QStringLiteral("Register"),
-                  QStringLiteral("Absolute Address"), QStringLiteral("Offset"),
-                  QStringLiteral("Width"), QStringLiteral("Type"), QStringLiteral("Range"),
-                  QStringLiteral("Initial"), QStringLiteral("Reset"), QStringLiteral("Access"),
-                  QStringLiteral("State"), QStringLiteral("Tags"), QStringLiteral("Description"),
-                  QStringLiteral("Register ID"), QStringLiteral("Block ID")},
-                 style);
-    int row = 4;
-    std::size_t registerIndex = 0;
-    for (const auto& space : workspace.addressSpaces) {
-        for (const auto& block : space.blocks) {
-            for (const auto& reg : block.registers) {
-                const bool alternateRow = (registerIndex++ % 2) != 0;
-                writeRow(document, row++,
-                         {text(space.name), text(UnsignedValue(space.baseAddress).toHexString()),
-                          text(block.name), text(UnsignedValue(block.baseAddress).toHexString()),
-                          text(reg.name),
-                          text(UnsignedValue(absoluteAddress(space, block, reg)).toHexString()),
-                          text(UnsignedValue(reg.offset).toHexString()), reg.width,
-                          valueTypeText(reg.type, reg.width), registerRangeText(reg),
-                          reg.initialValue ? text(reg.initialValue->toHexString()) : QVariant{},
-                          reg.resetValue ? text(reg.resetValue->toHexString()) : QVariant{},
-                          text(toString(reg.access)),
-                          reg.reserved ? QStringLiteral("reserved") : QStringLiteral("active"),
-                          joinedTags(reg.tags), text(reg.description), text(reg.id),
-                          text(block.id)},
-                         style, {2, 4, 6, 7, 11, 12}, nullptr, alternateRow);
-            }
-        }
-    }
-    configureColumns(document,
-                     {18, 15, 18, 15, 24, 18, 14, 10, 13, 18, 14, 14, 10, 12, 24, 38, 28, 28});
-    document.setColumnHidden(17, 18, true);
+    document.write(2, 1, QStringLiteral("Page Base"), style.pageLabel);
+    document.write(2, 2, fixedHex(space.baseAddress, space.addressWidth), style.pageAddress);
+    document.write(2, 3, QStringLiteral("Address Width"), style.pageLabel);
+    document.write(2, 4, QStringLiteral("%1 bits").arg(space.addressWidth), style.pageValue);
+    document.write(2, 5, QStringLiteral("Description"), style.pageLabel);
+    QXlsx::Format pageDescription = style.pageValue;
+    pageDescription.setHorizontalAlignment(QXlsx::Format::AlignLeft);
+    document.mergeCells(QXlsx::CellRange(2, 6, 2, worksheetColumnCount), pageDescription);
+    if (!space.description.empty())
+        document.write(2, 6, text(space.description), pageDescription);
+    document.setRowHeight(2, 24.0);
+    document.setRowHeight(3, 9.0);
 }
 
-void writeMapFieldRows(QXlsx::Document& document, int& row, const std::vector<Field>& fields,
-                       std::uint64_t parentLsb, int depth, const WorkbookFormats& style,
-                       bool alternateGroup)
+void writeFieldRows(QXlsx::Document& document, int& row, const std::vector<Field>& fields,
+                    std::uint64_t parentLsb, int depth, const WorkbookFormats& style,
+                    bool alternateGroup)
 {
     for (const auto& field : fields) {
         const std::uint64_t absoluteLsb = parentLsb + field.lsb;
@@ -451,87 +540,114 @@ void writeMapFieldRows(QXlsx::Document& document, int& row, const std::vector<Fi
         const QString bits = absoluteMsb == absoluteLsb
                                  ? QString::number(absoluteLsb)
                                  : QStringLiteral("%1:%2").arg(absoluteMsb).arg(absoluteLsb);
-        const QString prefix = QString(depth * 2, QLatin1Char(' ')) + QStringLiteral("↳ ");
+        const QString prefix =
+            QString(depth * 2, QLatin1Char(' ')) + QChar(0x21B3) + QLatin1Char(' ');
         writeRow(document, row,
-                 {QVariant{}, QVariant{}, QVariant{}, prefix + text(field.name),
-                  field.type == FieldType::structure ? QStringLiteral("Compound Field")
-                                                     : QStringLiteral("Field"),
-                  bits, fieldTypeText(field), text(toString(field.softwareAccess)),
-                  text(toString(field.hardwareAccess)), QVariant{},
-                  field.resetValue ? text(field.resetValue->toHexString()) : QVariant{},
-                  text(field.resetDomain), fieldRangeText(field), text(field.description)},
-                 style, {11}, nullptr, alternateGroup);
+                 {QVariant{}, QVariant{}, prefix + text(field.name), fieldTypeText(field), bits,
+                  fieldAccessText(field), QVariant{},
+                  field.resetValue ? fixedHex(*field.resetValue,
+                                              static_cast<std::uint32_t>(field.width()))
+                                   : QVariant{},
+                  QVariant{}, fieldRangeText(field), text(field.description)},
+                 style, {8}, nullptr, alternateGroup);
         document.setRowHeight(row, 22.0);
         ++row;
-        writeMapFieldRows(document, row, field.members, absoluteLsb, depth + 1, style,
-                          alternateGroup);
+        writeFieldRows(document, row, field.members, absoluteLsb, depth + 1, style,
+                       alternateGroup);
     }
 }
 
-[[nodiscard]] bool writeMapSheet(QXlsx::Document& document, const Workspace& workspace,
-                                 const WorkbookFormats& style)
+[[nodiscard]] bool writePageSheet(QXlsx::Document& document, const Workspace& workspace,
+                                  const AddressSpace& space, const WorkbookFormats& style)
 {
     auto* worksheet = document.currentWorksheet();
     if (worksheet == nullptr) {
         return false;
     }
     worksheet->setSummaryRowsBelow(false);
-    writeTitle(document, text(workspace.name + " — Register Map"), 14, style);
-    writeHeaders(document,
-                 {QStringLiteral("Address"), QStringLiteral("Page"), QStringLiteral("Block"),
-                  QStringLiteral("Register / Field"), QStringLiteral("Kind"),
-                  QStringLiteral("Bits"), QStringLiteral("Type"), QStringLiteral("SW Access"),
-                  QStringLiteral("HW Access"), QStringLiteral("Initial"), QStringLiteral("Reset"),
-                  QStringLiteral("Reset Domain"), QStringLiteral("Tags / Range / Enum"),
+    worksheet->setGridLinesVisible(false);
+    worksheet->freezePanes(4, 3);
+    writeTitle(document, text(workspace.name) + QStringLiteral(" - ") + text(space.name),
+               worksheetColumnCount, style);
+    writePageMetadata(document, space, style);
+    writeHeaders(document, 4,
+                 {QStringLiteral("Address"), QStringLiteral("Offset"),
+                  QStringLiteral("Register / Field"), QStringLiteral("Type"),
+                  QStringLiteral("Width / Bits"), QStringLiteral("Access"),
+                  QStringLiteral("Initial"), QStringLiteral("Reset"),
+                  QStringLiteral("Tags"), QStringLiteral("Range / Enum"),
                   QStringLiteral("Description")},
                  style);
-    int row = 4;
+    int row = 5;
     std::size_t registerIndex = 0;
-    for (const auto& space : workspace.addressSpaces) {
-        for (const auto& block : space.blocks) {
-            for (const auto& reg : block.registers) {
-                const bool alternateGroup = (registerIndex++ % 2) != 0;
-                QString metadata = joinedTags(reg.tags);
-                const QString range = registerRangeText(reg);
-                if (!range.isEmpty()) {
-                    if (!metadata.isEmpty()) {
-                        metadata += QStringLiteral(" | ");
-                    }
-                    metadata += range;
-                }
-                const QXlsx::Format& sectionFormat =
-                    alternateGroup ? style.sectionAlternate : style.section;
-                writeRow(document, row,
-                         {text(UnsignedValue(absoluteAddress(space, block, reg)).toHexString()),
-                          text(space.name), text(block.name), text(reg.name),
-                          reg.reserved ? QStringLiteral("Reserved") : QStringLiteral("Register"),
-                          reg.width, valueTypeText(reg.type, reg.width), text(toString(reg.access)),
-                          QVariant{},
-                          reg.initialValue ? text(reg.initialValue->toHexString()) : QVariant{},
-                          reg.resetValue ? text(reg.resetValue->toHexString()) : QVariant{},
-                          QVariant{}, metadata, text(reg.description)},
-                         style, {}, &sectionFormat);
-                document.setRowHeight(row, 24.0);
-                ++row;
-                if (reg.type != FieldType::structure) {
-                    continue;
-                }
-                const int firstDetailRow = row;
-                const QImage diagram = renderBitfieldDiagram(reg, alternateGroup);
-                writeRow(document, row, std::vector<QVariant>(14), style, {}, nullptr,
-                         alternateGroup);
-                document.setRowHeight(row, static_cast<double>(diagram.height()) * 0.75);
-                if (worksheet->insertImage(row - 1, 3, row, 14, diagram) == 0) {
-                    return false;
-                }
-                ++row;
-                writeMapFieldRows(document, row, reg.fields, 0, 1, style, alternateGroup);
-                document.groupRows(firstDetailRow, row - 1, true);
-            }
+    for (const auto& block : space.blocks) {
+        writeRow(document, row,
+                 {QStringLiteral("BLOCK"), text(block.name), QStringLiteral("Base"),
+                  fixedHex(block.baseAddress, space.addressWidth), QStringLiteral("Size"),
+                  block.size ? fixedHex(*block.size, space.addressWidth)
+                             : QString(QChar(0x2014)),
+                  QVariant{}, QVariant{}, QVariant{}, QVariant{},
+                  text(block.description)},
+                 style, {4, 6}, &style.block, false, &style.blockAddress);
+        document.setRowHeight(row, 24.0);
+        ++row;
+        for (const auto& reg : block.registers) {
+            const bool alternateGroup = (registerIndex++ % 2) != 0;
+            const QXlsx::Format& sectionFormat =
+                alternateGroup ? style.sectionAlternate : style.section;
+            const QXlsx::Format& sectionAddressFormat =
+                alternateGroup ? style.sectionAddressAlternate : style.sectionAddress;
+            const QXlsx::Format* rowFormat = reg.reserved ? &style.reserved : &sectionFormat;
+            const QXlsx::Format* addressFormat =
+                reg.reserved ? &style.reservedAddress : &sectionAddressFormat;
+            const QString registerName =
+                reg.reserved ? QStringLiteral("[RESERVED] ") + text(reg.name) : text(reg.name);
+            const QString registerType =
+                reg.reserved ? QStringLiteral("reserved") : valueTypeText(reg.type, reg.width);
+            writeRow(document, row,
+                     {fixedHex(absoluteAddress(space, block, reg), space.addressWidth),
+                      fixedHex(reg.offset, space.addressWidth), registerName, registerType,
+                      reg.width, accessText(reg.access),
+                      reg.initialValue ? fixedHex(*reg.initialValue, reg.width) : QVariant{},
+                      reg.resetValue ? fixedHex(*reg.resetValue, reg.width) : QVariant{},
+                      joinedTags(reg.tags), registerRangeText(reg), text(reg.description)},
+                     style, {1, 2, 7, 8}, rowFormat, alternateGroup, addressFormat);
+            document.setRowHeight(row, 24.0);
+            ++row;
+            if (reg.reserved || reg.type != FieldType::structure)
+                continue;
+            const int firstDetailRow = row;
+            const QImage diagram = renderBitfieldDiagram(reg, alternateGroup);
+            writeRow(document, row, std::vector<QVariant>(worksheetColumnCount), style, {}, nullptr,
+                     alternateGroup);
+            document.setRowHeight(row, static_cast<double>(diagram.height()) * 0.75);
+            if (worksheet->insertImage(row - 1, 2, row, worksheetColumnCount, diagram) == 0)
+                return false;
+            ++row;
+            writeFieldRows(document, row, reg.fields, 0, 1, style, alternateGroup);
+            document.groupRows(firstDetailRow, row - 1, true);
         }
     }
-    configureColumns(document, {16, 16, 18, 28, 15, 12, 14, 11, 11, 14, 14, 18, 30, 44});
+
+    const int lastRow = std::max(4, row - 1);
+    if (!worksheet->setAutoFilter(
+            QXlsx::CellRange(4, 1, lastRow, worksheetColumnCount)))
+        return false;
+    configureColumns(document, {16, 14, 28, 14, 14, 20, 16, 16, 24, 30, 44});
     return true;
+}
+
+void writeEmptyWorkbook(QXlsx::Document& document, const Workspace& workspace,
+                        const WorkbookFormats& style)
+{
+    auto* worksheet = document.currentWorksheet();
+    if (worksheet != nullptr)
+        worksheet->setGridLinesVisible(false);
+    writeTitle(document, text(workspace.name) + QStringLiteral(" - Register Map"),
+               worksheetColumnCount, style);
+    document.mergeCells(QXlsx::CellRange(2, 1, 2, worksheetColumnCount), style.pageValue);
+    document.write(2, 1, QStringLiteral("No pages defined."), style.pageValue);
+    configureColumns(document, {16, 14, 28, 14, 14, 20, 16, 16, 24, 30, 44});
 }
 
 void addDiagnostic(std::vector<Diagnostic>& diagnostics, std::string message)
@@ -550,26 +666,44 @@ XlsxExportResult exportReadOnlyWorkbook(const Workspace& workspace)
     QXlsx::Document document;
     const auto style = formats();
     const QString firstSheet = document.sheetNames().value(0);
-    const bool registersReady = firstSheet.isEmpty()
-                                    ? document.addSheet(QStringLiteral("Registers"))
-                                    : document.renameSheet(firstSheet, QStringLiteral("Registers"));
-    if (!registersReady) {
-        addDiagnostic(result.diagnostics, "Cannot initialize the Registers worksheet.");
-        return result;
-    }
-    if (!document.addSheet(QStringLiteral("Register Map"))) {
-        addDiagnostic(result.diagnostics, "Cannot initialize the generated workbook sheets.");
-        return result;
+    QString firstGeneratedSheet;
+    QStringList generatedSheetNames;
+
+    if (workspace.addressSpaces.empty()) {
+        const QString emptySheetName = QStringLiteral("Register Map");
+        const bool ready = firstSheet.isEmpty() ? document.addSheet(emptySheetName)
+                                                : document.renameSheet(firstSheet, emptySheetName);
+        if (!ready || !document.selectSheet(emptySheetName)) {
+            addDiagnostic(result.diagnostics, "Cannot initialize the generated workbook.");
+            return result;
+        }
+        firstGeneratedSheet = emptySheetName;
+        writeEmptyWorkbook(document, workspace, style);
+    } else {
+        for (std::size_t index = 0; index < workspace.addressSpaces.size(); ++index) {
+            const auto& space = workspace.addressSpaces[index];
+            const QString sheetName = sanitizedSheetName(text(space.name), generatedSheetNames);
+            const bool ready =
+                index == 0
+                    ? (firstSheet.isEmpty() ? document.addSheet(sheetName)
+                                            : document.renameSheet(firstSheet, sheetName))
+                    : document.addSheet(sheetName);
+            if (!ready || !document.selectSheet(sheetName)) {
+                addDiagnostic(result.diagnostics, "Cannot initialize a Page worksheet.");
+                return result;
+            }
+            if (index == 0)
+                firstGeneratedSheet = sheetName;
+            generatedSheetNames.push_back(sheetName);
+            if (!writePageSheet(document, workspace, space, style)) {
+                addDiagnostic(result.diagnostics,
+                              "Cannot draw or configure a generated Page worksheet.");
+                return result;
+            }
+        }
     }
 
-    document.selectSheet(QStringLiteral("Registers"));
-    writeRegistersSheet(document, workspace, style);
-    document.selectSheet(QStringLiteral("Register Map"));
-    if (!writeMapSheet(document, workspace, style)) {
-        addDiagnostic(result.diagnostics, "Cannot draw the generated register bitfield diagrams.");
-        return result;
-    }
-    document.selectSheet(QStringLiteral("Register Map"));
+    document.selectSheet(firstGeneratedSheet);
     document.setDocumentProperty(QStringLiteral("title"), text(workspace.name + " Register Map"));
     document.setDocumentProperty(
         QStringLiteral("comments"),
