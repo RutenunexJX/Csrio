@@ -2338,6 +2338,11 @@ void MainWindow::applyPropertyEdit(const std::string& objectId, const std::strin
             }
             const auto* currentField = regmap::findField(*workspace, objectId);
             const auto* owner = findRegisterContainingField(*workspace, objectId);
+            if (currentField != nullptr && *parsed != regmap::FieldType::structure &&
+                !currentField->members.empty()) {
+                reject(QStringLiteral("field/compound type while the field contains members"));
+                return;
+            }
             if (numericWidth &&
                 (currentField == nullptr || owner == nullptr ||
                  *numericWidth > maximumEditableWidth ||
@@ -2346,24 +2351,46 @@ void MainWindow::applyPropertyEdit(const std::string& objectId, const std::strin
                 reject(QStringLiteral("a numeric type width that fits the field position"));
                 return;
             }
-            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+            const bool enumerationLike =
+                *parsed == regmap::FieldType::enumeration ||
+                *parsed == regmap::FieldType::boolean;
+            const bool numeric = *parsed == regmap::FieldType::signedInteger ||
+                                 *parsed == regmap::FieldType::unsignedInteger;
+            const bool clearsEnumValues =
+                currentField != nullptr && !enumerationLike && !currentField->enumValues.empty();
+            const bool clearsRange = currentField != nullptr && !numeric &&
+                                     (currentField->minimumValue || currentField->maximumValue);
+            if (controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
                 if (auto* field = regmap::findField(candidate, objectId)) {
                     field->type = *parsed;
                     if (numericWidth) {
                         field->msb = field->lsb + *numericWidth - 1;
                     } else if (*parsed == regmap::FieldType::boolean) {
                         field->msb = field->lsb;
-                    } else if (*parsed == regmap::FieldType::structure) {
+                    } else if (*parsed == regmap::FieldType::structure ||
+                               *parsed == regmap::FieldType::reserved) {
                         field->softwareAccess = regmap::AccessMode::none;
                         field->hardwareAccess = regmap::AccessMode::none;
                         field->readSideEffect = regmap::ReadSideEffect::none;
                         field->writeSideEffect = regmap::WriteSideEffect::none;
                     }
+                    if (!enumerationLike) {
+                        field->enumValues.clear();
+                    }
+                    if (!numeric) {
+                        field->minimumValue.reset();
+                        field->maximumValue.reset();
+                    }
                     if (auto* reg = findRegisterContainingField(candidate, objectId)) {
                         refreshRegisterFieldResets(*reg);
                     }
                 }
-            });
+            }) && (clearsEnumValues || clearsRange)) {
+                statusBar()->showMessage(
+                    QStringLiteral(
+                        "Type changed · incompatible Enum/Range data cleared · Ctrl+Z to restore"),
+                    6000);
+            }
             return;
         }
         if (property == "sw_access" || property == "hw_access") {

@@ -22,6 +22,7 @@
 #include <QFont>
 #include <QFrame>
 #include <QHeaderView>
+#include <QKeySequence>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMenu>
@@ -1108,6 +1109,104 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
             enums->model()->index(row, 0).data(Qt::UserRole + 1).toString() == fieldEnumId;
     }
     QVERIFY(foundFieldEnum);
+
+    memberRow = fieldRowForId(memberFieldId);
+    QVERIFY(memberRow >= 0);
+    QVERIFY(fields->model()->setData(fields->model()->index(memberRow, 5),
+                                     QStringLiteral("bits")));
+    QTRY_VERIFY_WITH_TIMEOUT(!enums->isVisible(), 2000);
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("Ctrl+Z")));
+
+    const auto actions = window.findChildren<QAction*>();
+    const auto undo = std::ranges::find_if(actions, [](const QAction* action) {
+        return action->shortcut().matches(QKeySequence::Undo) == QKeySequence::ExactMatch;
+    });
+    QVERIFY(undo != actions.end());
+    QVERIFY((*undo)->isEnabled());
+    (*undo)->trigger();
+    QTRY_VERIFY_WITH_TIMEOUT(fieldRowForId(memberFieldId) >= 0, 2000);
+    memberRow = fieldRowForId(memberFieldId);
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(memberRow, 5).data().toString(),
+                              QStringLiteral("enum"), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(enums->isVisible(), 2000);
+    bool restoredGuardedFieldEnum = false;
+    bool restoredNewFieldEnum = false;
+    for (int row = 0; row < enums->model()->rowCount(); ++row) {
+        const QString id =
+            enums->model()->index(row, 0).data(Qt::UserRole + 1).toString();
+        restoredGuardedFieldEnum |= id == guardedFieldEnumId;
+        restoredNewFieldEnum |= id == fieldEnumId;
+    }
+    QVERIFY(restoredGuardedFieldEnum);
+    QVERIFY(restoredNewFieldEnum);
+    QVERIFY(fields->model()->setData(fields->model()->index(memberRow, 5),
+                                     QStringLiteral("bits")));
+    QTRY_VERIFY_WITH_TIMEOUT(!enums->isVisible(), 2000);
+
+    memberRow = fieldRowForId(memberFieldId);
+    QVERIFY(memberRow >= 0);
+    QVERIFY(fields->model()->setData(fields->model()->index(memberRow, 5),
+                                     QStringLiteral("enum")));
+    QTRY_VERIFY_WITH_TIMEOUT(enums->isVisible(), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(enums->model()->rowCount(), 1, 2000);
+    QCOMPARE(enums->model()->index(0, 0).data().toString(), QStringLiteral("+"));
+
+    memberRow = fieldRowForId(memberFieldId);
+    QVERIFY(memberRow >= 0);
+    QVERIFY(fields->model()->setData(fields->model()->index(memberRow, 5),
+                                     QStringLiteral("uint2")));
+    QTRY_VERIFY_WITH_TIMEOUT(!enums->isVisible(), 2000);
+    memberRow = fieldRowForId(memberFieldId);
+    QVERIFY(memberRow >= 0);
+    QVERIFY(fields->model()->setData(fields->model()->index(memberRow, 6),
+                                     QStringLiteral("0")));
+    memberRow = fieldRowForId(memberFieldId);
+    QVERIFY(memberRow >= 0);
+    QVERIFY(fields->model()->setData(fields->model()->index(memberRow, 7),
+                                     QStringLiteral("3")));
+    memberRow = fieldRowForId(memberFieldId);
+    QVERIFY(memberRow >= 0);
+    QVERIFY(fields->model()->setData(fields->model()->index(memberRow, 5),
+                                     QStringLiteral("bits")));
+    QTRY_VERIFY_WITH_TIMEOUT(fieldRowForId(memberFieldId) >= 0, 2000);
+    memberRow = fieldRowForId(memberFieldId);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fields->model()->index(memberRow, 6).data().toString().isEmpty(), 2000);
+    QVERIFY(fields->model()->index(memberRow, 7).data().toString().isEmpty());
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("Ctrl+Z")));
+
+    const int parentRowBeforeRejectedType = fieldRowForId(parentFieldId);
+    QVERIFY(parentRowBeforeRejectedType >= 0);
+    QVERIFY(fields->model()->setData(fields->model()->index(parentRowBeforeRejectedType, 5),
+                                     QStringLiteral("bits")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fields->model()->index(fieldRowForId(parentFieldId), 5).data().toString(),
+        QStringLiteral("field"), 2000);
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("members")));
+
+    memberRow = fieldRowForId(memberFieldId);
+    QVERIFY(memberRow >= 0);
+    QVERIFY(fields->model()->setData(fields->model()->index(memberRow, 8),
+                                     QStringLiteral("rw")));
+    QVERIFY(fields->model()->setData(fields->model()->index(memberRow, 9),
+                                     QStringLiteral("wo")));
+    QVERIFY(fields->model()->setData(fields->model()->index(memberRow, 11),
+                                     QStringLiteral("clear")));
+    QVERIFY(fields->model()->setData(fields->model()->index(memberRow, 12),
+                                     QStringLiteral("w1c")));
+    memberRow = fieldRowForId(memberFieldId);
+    QVERIFY(fields->model()->setData(fields->model()->index(memberRow, 5),
+                                     QStringLiteral("reserved")));
+    QTRY_VERIFY_WITH_TIMEOUT(fieldRowForId(memberFieldId) >= 0, 2000);
+    memberRow = fieldRowForId(memberFieldId);
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(memberRow, 8).data().toString(),
+                              QStringLiteral("none"), 2000);
+    QCOMPARE(fields->model()->index(memberRow, 9).data().toString(),
+             QStringLiteral("none"));
+    QCOMPARE(fields->model()->index(memberRow, 11).data().toString(),
+             QStringLiteral("none"));
+    QCOMPARE(fields->model()->index(memberRow, 12).data().toString(),
+             QStringLiteral("none"));
 
     makeGeneratedFilesWritable(directory.path());
 }
