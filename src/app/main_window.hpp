@@ -151,14 +151,15 @@ private:
     void applyPropertyEdit(const std::string& objectId, const std::string& property,
                            const QString& value);
     void addAddressSpace();
-    void addBlock();
-    void addRegister();
+    void addBlock(std::string parentId = {});
+    void addRegister(std::string parentId = {});
     void insertRegisterAt(int row);
     [[nodiscard]] bool canInsertRegisterAt(int row) const;
     void addField();
     void addSubfield();
     void addEnumValue();
     void deleteSelection();
+    void deleteObject(const std::string& id, bool deletingEnumValue = false);
     void editRegisterTags(const QModelIndex& index);
     void editRegisterAccess(const QModelIndex& index);
     void openFieldsAt(const QModelIndex& index);

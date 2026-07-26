@@ -7,6 +7,7 @@
 #include "regmap/core/workspace_store.hpp"
 
 #include <QAction>
+#include <QAbstractButton>
 #include <QApplication>
 #include <QByteArray>
 #include <QClipboard>
@@ -26,6 +27,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMenu>
+#include <QMessageBox>
 #include <QPalette>
 #include <QSplitter>
 #include <QStandardItemModel>
@@ -54,6 +56,7 @@ private slots:
     void createsWorkbenchFirstProject();
     void opensProjectAndPopulatesEditableViews();
     void navigatesHierarchyAndOpensFieldsExplicitly();
+    void hierarchyContextActionsUseRightClickedTarget();
     void switchesProjectsWithoutReusingFieldWorkspaceState();
     void reloadsProjectWithoutLosingFieldWorkspaceContext();
     void navigatesFieldProblemsAndFallsBackForHiddenFields();
@@ -201,6 +204,25 @@ void makeGeneratedFilesWritable(const QString& root)
         QFile::setPermissions(directory.filePath(name),
                               QFileDevice::ReadOwner | QFileDevice::WriteOwner);
     }
+}
+
+QModelIndex hierarchyIndexByObjectId(QAbstractItemModel* model, const QString& objectId,
+                                     const QModelIndex& parent = {})
+{
+    if (model == nullptr || objectId.isEmpty()) {
+        return {};
+    }
+    for (int row = 0; row < model->rowCount(parent); ++row) {
+        const QModelIndex index = model->index(row, 0, parent);
+        if (index.data(Qt::UserRole + 1).toString() == objectId) {
+            return index;
+        }
+        const QModelIndex descendant = hierarchyIndexByObjectId(model, objectId, index);
+        if (descendant.isValid()) {
+            return descendant;
+        }
+    }
+    return {};
 }
 
 void editManagedRtlValue(const QString& path, const QString& objectId, const QString& property,
@@ -637,6 +659,335 @@ void GuiSmokeTests::navigatesHierarchyAndOpensFieldsExplicitly()
                  .data(Qt::UserRole + 1).toString(),
              otherRegisterId);
     QCOMPARE(fields->model()->rowCount(), 0);
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::hierarchyContextActionsUseRightClickedTarget()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+
+    auto* hierarchy = window.findChild<QTreeView*>(QStringLiteral("hierarchyView"));
+    auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    QVERIFY(hierarchy != nullptr);
+    QVERIFY(registers != nullptr);
+
+    const auto visibleEditor = [](QWidget* parent) -> QLineEdit* {
+        const auto editors = parent->findChildren<QLineEdit*>();
+        const auto visible = std::ranges::find_if(
+            editors, [](const QLineEdit* editor) { return editor->isVisible(); });
+        return visible == editors.end() ? nullptr : *visible;
+    };
+    const auto openHierarchyMenu = [&](const QString& targetId) -> QMenu* {
+        const QModelIndex target =
+            hierarchyIndexByObjectId(hierarchy->model(), targetId);
+        if (!target.isValid()) {
+            return nullptr;
+        }
+        if (QWidget* popup = QApplication::activePopupWidget()) {
+            popup->close();
+            QCoreApplication::processEvents();
+        }
+        hierarchy->expandAll();
+        hierarchy->scrollTo(target);
+        QCoreApplication::processEvents();
+        const QRect rectangle = hierarchy->visualRect(target);
+        if (!rectangle.isValid()) {
+            return nullptr;
+        }
+        const QPoint localPosition = rectangle.center();
+        QContextMenuEvent event(QContextMenuEvent::Mouse, localPosition,
+                                hierarchy->viewport()->mapToGlobal(localPosition));
+        QCoreApplication::sendEvent(hierarchy->viewport(), &event);
+        QCoreApplication::processEvents();
+        auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        return menu != nullptr &&
+                       menu->objectName() == QStringLiteral("hierarchyContextMenu")
+                   ? menu
+                   : nullptr;
+    };
+    const auto clickMenuAction = [](QMenu* menu, const QString& objectName) {
+        if (menu == nullptr) {
+            return false;
+        }
+        auto* action = menu->findChild<QAction*>(objectName);
+        if (action == nullptr || !action->isEnabled()) {
+            return false;
+        }
+        const QRect rectangle = menu->actionGeometry(action);
+        if (!rectangle.isValid()) {
+            return false;
+        }
+        QTest::mouseClick(menu, Qt::LeftButton, Qt::NoModifier, rectangle.center());
+        return true;
+    };
+    const auto registerExists = [registers](const QString& objectId) {
+        for (int row = 0; row < registers->model()->rowCount(); ++row) {
+            if (registers->model()
+                    ->index(row, 0)
+                    .data(Qt::UserRole + 1)
+                    .toString() == objectId) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    const QString workspaceId = QStringLiteral("gui-workspace");
+    const QString pageAId = QStringLiteral("space-main");
+    const QString blockAId = QStringLiteral("block-control");
+    QModelIndex workspaceIndex =
+        hierarchyIndexByObjectId(hierarchy->model(), workspaceId);
+    QModelIndex pageAIndex =
+        hierarchyIndexByObjectId(hierarchy->model(), pageAId);
+    QModelIndex blockAIndex =
+        hierarchyIndexByObjectId(hierarchy->model(), blockAId);
+    QVERIFY(workspaceIndex.isValid());
+    QVERIFY(pageAIndex.isValid());
+    QVERIFY(blockAIndex.isValid());
+    QCOMPARE(pageAIndex.parent(), workspaceIndex);
+    QCOMPARE(blockAIndex.parent(), pageAIndex);
+
+    hierarchy->setCurrentIndex(pageAIndex);
+    hierarchy->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
+    QCOMPARE(hierarchy->currentIndex().data(Qt::UserRole + 1).toString(), pageAId);
+    const int originalPageCount = hierarchy->model()->rowCount(workspaceIndex);
+    QMenu* workspaceMenu = openHierarchyMenu(workspaceId);
+    QVERIFY(workspaceMenu != nullptr);
+    QCOMPARE(hierarchy->currentIndex().data(Qt::UserRole + 1).toString(), workspaceId);
+    QVERIFY(clickMenuAction(workspaceMenu, QStringLiteral("newPageContextAction")));
+    QTRY_VERIFY_WITH_TIMEOUT(visibleEditor(hierarchy) != nullptr, 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        hierarchy->model()->rowCount(
+            hierarchyIndexByObjectId(hierarchy->model(), workspaceId)),
+        originalPageCount + 1, 2000);
+    const QString pageBId =
+        hierarchy->currentIndex().data(Qt::UserRole + 1).toString();
+    QVERIFY(!pageBId.isEmpty());
+    QVERIFY(pageBId != pageAId);
+    QCOMPARE(hierarchy->currentIndex().parent().data(Qt::UserRole + 1).toString(),
+             workspaceId);
+    QCOMPARE(visibleEditor(hierarchy)->text(), QStringLiteral("NEW_PAGE"));
+    QTest::keyClick(visibleEditor(hierarchy), Qt::Key_Escape);
+    QCoreApplication::processEvents();
+
+    pageAIndex = hierarchyIndexByObjectId(hierarchy->model(), pageAId);
+    QModelIndex pageBIndex =
+        hierarchyIndexByObjectId(hierarchy->model(), pageBId);
+    QVERIFY(pageAIndex.isValid());
+    QVERIFY(pageBIndex.isValid());
+    hierarchy->setCurrentIndex(pageAIndex);
+    hierarchy->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
+    QCOMPARE(hierarchy->currentIndex().data(Qt::UserRole + 1).toString(), pageAId);
+    QMenu* pageRenameMenu = openHierarchyMenu(pageBId);
+    QVERIFY(pageRenameMenu != nullptr);
+    QCOMPARE(hierarchy->currentIndex().data(Qt::UserRole + 1).toString(), pageBId);
+    QVERIFY(clickMenuAction(pageRenameMenu, QStringLiteral("renameContextAction")));
+    QTRY_VERIFY_WITH_TIMEOUT(visibleEditor(hierarchy) != nullptr, 2000);
+    QCOMPARE(visibleEditor(hierarchy)->text(), QStringLiteral("NEW_PAGE"));
+    visibleEditor(hierarchy)->selectAll();
+    QTest::keyClicks(visibleEditor(hierarchy), QStringLiteral("TARGET_PAGE"));
+    QTest::keyClick(visibleEditor(hierarchy), Qt::Key_Return);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        hierarchyIndexByObjectId(hierarchy->model(), pageBId).data().toString(),
+        QStringLiteral("TARGET_PAGE"), 2000);
+    QCOMPARE(hierarchyIndexByObjectId(hierarchy->model(), pageAId).data().toString(),
+             QStringLiteral("Main"));
+    QCOMPARE(hierarchyIndexByObjectId(hierarchy->model(), pageBId)
+                 .parent()
+                 .data(Qt::UserRole + 1)
+                 .toString(),
+             workspaceId);
+
+    pageAIndex = hierarchyIndexByObjectId(hierarchy->model(), pageAId);
+    pageBIndex = hierarchyIndexByObjectId(hierarchy->model(), pageBId);
+    QVERIFY(pageAIndex.isValid());
+    QVERIFY(pageBIndex.isValid());
+    const int pageABlockCount = hierarchy->model()->rowCount(pageAIndex);
+    const int pageBBlockCount = hierarchy->model()->rowCount(pageBIndex);
+    hierarchy->setCurrentIndex(pageAIndex);
+    hierarchy->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
+    QCOMPARE(hierarchy->currentIndex().data(Qt::UserRole + 1).toString(), pageAId);
+    QMenu* pageMenu = openHierarchyMenu(pageBId);
+    QVERIFY(pageMenu != nullptr);
+    QCOMPARE(hierarchy->currentIndex().data(Qt::UserRole + 1).toString(), pageBId);
+    const QModelIndex pageADriftIndex =
+        hierarchyIndexByObjectId(hierarchy->model(), pageAId);
+    QVERIFY(pageADriftIndex.isValid());
+    hierarchy->setCurrentIndex(pageADriftIndex);
+    QCoreApplication::processEvents();
+    QVERIFY(pageMenu->isVisible());
+    QCOMPARE(hierarchy->currentIndex().data(Qt::UserRole + 1).toString(), pageAId);
+    QVERIFY(clickMenuAction(pageMenu, QStringLiteral("newBlockContextAction")));
+    QTRY_VERIFY_WITH_TIMEOUT(visibleEditor(hierarchy) != nullptr, 2000);
+    const QString blockBId =
+        hierarchy->currentIndex().data(Qt::UserRole + 1).toString();
+    QVERIFY(!blockBId.isEmpty());
+    QVERIFY(blockBId != blockAId);
+    QCOMPARE(hierarchy->currentIndex().parent().data(Qt::UserRole + 1).toString(),
+             pageBId);
+    QCOMPARE(visibleEditor(hierarchy)->text(), QStringLiteral("NEW_BLOCK"));
+    QTest::keyClick(visibleEditor(hierarchy), Qt::Key_Escape);
+    QCoreApplication::processEvents();
+    QTRY_COMPARE_WITH_TIMEOUT(
+        hierarchy->model()->rowCount(
+            hierarchyIndexByObjectId(hierarchy->model(), pageBId)),
+        pageBBlockCount + 1, 2000);
+    QCOMPARE(hierarchy->model()->rowCount(
+                 hierarchyIndexByObjectId(hierarchy->model(), pageAId)),
+             pageABlockCount);
+    QCOMPARE(hierarchyIndexByObjectId(hierarchy->model(), blockBId)
+                 .parent()
+                 .data(Qt::UserRole + 1)
+                 .toString(),
+             pageBId);
+
+    blockAIndex = hierarchyIndexByObjectId(hierarchy->model(), blockAId);
+    QModelIndex blockBIndex =
+        hierarchyIndexByObjectId(hierarchy->model(), blockBId);
+    QVERIFY(blockAIndex.isValid());
+    QVERIFY(blockBIndex.isValid());
+    hierarchy->setCurrentIndex(blockBIndex);
+    QCoreApplication::processEvents();
+    const int blockBRegisterRows = registers->model()->rowCount();
+    QVERIFY(!registerExists(QStringLiteral("reg-status")));
+    hierarchy->setCurrentIndex(blockAIndex);
+    hierarchy->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
+    QCOMPARE(hierarchy->currentIndex().data(Qt::UserRole + 1).toString(), blockAId);
+    QVERIFY(registerExists(QStringLiteral("reg-status")));
+    const int blockARegisterRows = registers->model()->rowCount();
+    QMenu* blockMenu = openHierarchyMenu(blockBId);
+    QVERIFY(blockMenu != nullptr);
+    QCOMPARE(hierarchy->currentIndex().data(Qt::UserRole + 1).toString(), blockBId);
+    const QModelIndex blockADriftIndex =
+        hierarchyIndexByObjectId(hierarchy->model(), blockAId);
+    QVERIFY(blockADriftIndex.isValid());
+    hierarchy->setCurrentIndex(blockADriftIndex);
+    QCoreApplication::processEvents();
+    QVERIFY(blockMenu->isVisible());
+    QCOMPARE(hierarchy->currentIndex().data(Qt::UserRole + 1).toString(), blockAId);
+    QVERIFY(clickMenuAction(blockMenu, QStringLiteral("newRegisterContextAction")));
+    QTRY_VERIFY_WITH_TIMEOUT(visibleEditor(registers) != nullptr, 2000);
+    const QString registerBId =
+        registers->currentIndex().data(Qt::UserRole + 1).toString();
+    QVERIFY(!registerBId.isEmpty());
+    QVERIFY(registerBId != QStringLiteral("reg-status"));
+    QCOMPARE(hierarchy->currentIndex().data(Qt::UserRole + 1).toString(), blockBId);
+    QCOMPARE(visibleEditor(registers)->text(), QStringLiteral("NEW_REGISTER"));
+    QTest::keyClick(visibleEditor(registers), Qt::Key_Escape);
+    QCoreApplication::processEvents();
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->rowCount(),
+                              blockBRegisterRows + 1, 2000);
+    QVERIFY(registerExists(registerBId));
+    QVERIFY(!registerExists(QStringLiteral("reg-status")));
+
+    blockAIndex = hierarchyIndexByObjectId(hierarchy->model(), blockAId);
+    hierarchy->setCurrentIndex(blockAIndex);
+    QCoreApplication::processEvents();
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->rowCount(),
+                              blockARegisterRows, 2000);
+    QVERIFY(registerExists(QStringLiteral("reg-status")));
+    QVERIFY(!registerExists(registerBId));
+    blockBIndex = hierarchyIndexByObjectId(hierarchy->model(), blockBId);
+    hierarchy->setCurrentIndex(blockBIndex);
+    QCoreApplication::processEvents();
+    QTRY_VERIFY_WITH_TIMEOUT(registerExists(registerBId), 2000);
+    QVERIFY(!registerExists(QStringLiteral("reg-status")));
+
+    pageAIndex = hierarchyIndexByObjectId(hierarchy->model(), pageAId);
+    hierarchy->setCurrentIndex(pageAIndex);
+    hierarchy->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
+    QCOMPARE(hierarchy->currentIndex().data(Qt::UserRole + 1).toString(), pageAId);
+    QMenu* deleteMenu = openHierarchyMenu(pageBId);
+    QVERIFY(deleteMenu != nullptr);
+    QCOMPARE(hierarchy->currentIndex().data(Qt::UserRole + 1).toString(), pageBId);
+    const QModelIndex deleteDriftIndex =
+        hierarchyIndexByObjectId(hierarchy->model(), pageAId);
+    QVERIFY(deleteDriftIndex.isValid());
+    hierarchy->setCurrentIndex(deleteDriftIndex);
+    QCoreApplication::processEvents();
+    QVERIFY(deleteMenu->isVisible());
+    QCOMPARE(hierarchy->currentIndex().data(Qt::UserRole + 1).toString(), pageAId);
+    bool confirmationSeen = false;
+    bool confirmationDescribesTarget = false;
+    QTimer::singleShot(0, &window, [&] {
+        auto* dialog = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (dialog == nullptr) {
+            return;
+        }
+        confirmationSeen = true;
+        const QString text = dialog->text();
+        confirmationDescribesTarget =
+            text.contains(QStringLiteral("TARGET_PAGE")) &&
+            text.contains(QStringLiteral("1 block(s)")) &&
+            text.contains(QStringLiteral("1 register(s)"));
+        if (auto* confirm = dialog->button(QMessageBox::Yes)) {
+            QTest::mouseClick(confirm, Qt::LeftButton);
+        } else {
+            dialog->reject();
+        }
+    });
+    QVERIFY(clickMenuAction(deleteMenu, QStringLiteral("deleteContextAction")));
+    QVERIFY(confirmationSeen);
+    QVERIFY(confirmationDescribesTarget);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !hierarchyIndexByObjectId(hierarchy->model(), pageBId).isValid(), 2000);
+    QVERIFY(hierarchyIndexByObjectId(hierarchy->model(), pageAId).isValid());
+    QVERIFY(!hierarchyIndexByObjectId(hierarchy->model(), blockBId).isValid());
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("TARGET_PAGE")));
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("Ctrl+Z")));
+
+    const auto actions = window.findChildren<QAction*>();
+    const auto undo = std::ranges::find_if(actions, [](const QAction* action) {
+        return action->shortcut().matches(QKeySequence::Undo) == QKeySequence::ExactMatch;
+    });
+    QVERIFY(undo != actions.end());
+    QVERIFY((*undo)->isEnabled());
+    QVERIFY((*undo)->text().contains(QStringLiteral("TARGET_PAGE")));
+    (*undo)->trigger();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        hierarchyIndexByObjectId(hierarchy->model(), pageBId).isValid(), 2000);
+    pageBIndex = hierarchyIndexByObjectId(hierarchy->model(), pageBId);
+    blockBIndex = hierarchyIndexByObjectId(hierarchy->model(), blockBId);
+    QVERIFY(pageBIndex.isValid());
+    QVERIFY(blockBIndex.isValid());
+    QCOMPARE(pageBIndex.data().toString(), QStringLiteral("TARGET_PAGE"));
+    QCOMPARE(pageBIndex.parent().data(Qt::UserRole + 1).toString(), workspaceId);
+    QCOMPARE(blockBIndex.data().toString(), QStringLiteral("NEW_BLOCK"));
+    QCOMPARE(blockBIndex.parent().data(Qt::UserRole + 1).toString(), pageBId);
+    QVERIFY(hierarchyIndexByObjectId(hierarchy->model(), pageAId).isValid());
+    QVERIFY(hierarchyIndexByObjectId(hierarchy->model(), blockAId).isValid());
+    hierarchy->setCurrentIndex(blockBIndex);
+    QCoreApplication::processEvents();
+    QTRY_VERIFY_WITH_TIMEOUT(registerExists(registerBId), 2000);
+    int registerBRow = -1;
+    for (int row = 0; row < registers->model()->rowCount(); ++row) {
+        if (registers->model()
+                ->index(row, 0)
+                .data(Qt::UserRole + 1)
+                .toString() == registerBId) {
+            registerBRow = row;
+            break;
+        }
+    }
+    QVERIFY(registerBRow >= 0);
+    QCOMPARE(registers->model()->index(registerBRow, 0).data().toString(),
+             QStringLiteral("NEW_REGISTER"));
+    QVERIFY(!registerExists(QStringLiteral("reg-status")));
 
     makeGeneratedFilesWritable(directory.path());
 }
@@ -1225,8 +1576,27 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     fields->setCurrentIndex(parentNameIndex);
     QCoreApplication::processEvents();
     const auto addMemberThroughContextMenu =
-        [&](const QModelIndex& fieldIndex, QString& failure) {
+        [&](const QString& targetFieldId, QString& failure) {
             bool triggered = false;
+            QCoreApplication::processEvents();
+            QModelIndex fieldIndex;
+            for (int row = 0; row < fields->model()->rowCount(); ++row) {
+                const QModelIndex candidate = fields->model()->index(row, 0);
+                if (candidate.data(Qt::UserRole + 1).toString() == targetFieldId) {
+                    fieldIndex = candidate;
+                    break;
+                }
+            }
+            if (!fieldIndex.isValid()) {
+                failure = QStringLiteral("Field target no longer exists");
+                return false;
+            }
+            fields->scrollTo(fieldIndex);
+            const QRect fieldRectangle = fields->visualRect(fieldIndex);
+            if (!fieldRectangle.isValid()) {
+                failure = QStringLiteral("Field target is not visible");
+                return false;
+            }
             QTimer::singleShot(0, &window, [&] {
                 auto* action =
                     window.findChild<QAction*>(QStringLiteral("addMemberFieldAction"));
@@ -1246,7 +1616,7 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
                 QTest::mouseClick(menu, Qt::LeftButton, Qt::NoModifier,
                                   menu->actionGeometry(action).center());
             });
-            const QPoint localPosition = fields->visualRect(fieldIndex).center();
+            const QPoint localPosition = fieldRectangle.center();
             QContextMenuEvent event(QContextMenuEvent::Mouse, localPosition,
                                     fields->viewport()->mapToGlobal(localPosition));
             QCoreApplication::sendEvent(fields->viewport(), &event);
@@ -1255,7 +1625,7 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
 
     QString memberMenuFailure;
     const bool memberActionTriggered =
-        addMemberThroughContextMenu(parentNameIndex, memberMenuFailure);
+        addMemberThroughContextMenu(parentFieldId, memberMenuFailure);
     QVERIFY2(memberMenuFailure.isEmpty(), qPrintable(memberMenuFailure));
     QVERIFY(memberActionTriggered);
     QTRY_COMPARE_WITH_TIMEOUT(fields->model()->rowCount(), 3, 2000);
@@ -1291,7 +1661,7 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     fields->setCurrentIndex(refreshedParentNameIndex);
     QString guardedMemberMenuFailure;
     const bool guardedMemberActionTriggered =
-        addMemberThroughContextMenu(refreshedParentNameIndex, guardedMemberMenuFailure);
+        addMemberThroughContextMenu(parentFieldId, guardedMemberMenuFailure);
     QVERIFY2(guardedMemberMenuFailure.isEmpty(), qPrintable(guardedMemberMenuFailure));
     QVERIFY(guardedMemberActionTriggered);
     const QString guardedFieldId =

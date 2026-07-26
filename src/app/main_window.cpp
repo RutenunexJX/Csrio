@@ -2779,15 +2779,24 @@ void MainWindow::addAddressSpace()
     }
 }
 
-void MainWindow::addBlock()
+void MainWindow::addBlock(std::string parentId)
 {
     const auto* workspace = controller_.workspace();
     if (workspace == nullptr || workspace->addressSpaces.empty()) {
         statusBar()->showMessage(QStringLiteral("Add a page first"), 5000);
         return;
     }
-    std::string parentId = selectedAddressId_;
+    const bool explicitParent = !parentId.empty();
+    if (parentId.empty()) {
+        parentId = selectedAddressId_;
+    }
     if (regmap::findAddressSpace(*workspace, parentId) == nullptr) {
+        if (explicitParent) {
+            statusBar()->showMessage(
+                QStringLiteral("The target Page no longer exists; reopen the menu and try again"),
+                5000);
+            return;
+        }
         parentId = workspace->addressSpaces.front().id;
     }
     regmap::RegisterBlock block;
@@ -2819,20 +2828,39 @@ void MainWindow::addBlock()
     }
 }
 
-void MainWindow::addRegister()
+void MainWindow::addRegister(std::string parentId)
 {
     const auto* workspace = controller_.workspace();
     if (workspace == nullptr) {
         return;
     }
-    std::string parentId = selectedBlockId_;
-    const auto* parent = regmap::findRegisterBlock(*workspace, parentId);
+    const bool explicitParent = !parentId.empty();
+    if (parentId.empty()) {
+        parentId = selectedBlockId_;
+    }
+    const regmap::RegisterBlock* parent = nullptr;
+    std::string parentAddressId;
+    for (const auto& space : workspace->addressSpaces) {
+        const auto block = std::ranges::find(space.blocks, parentId, &regmap::RegisterBlock::id);
+        if (block != space.blocks.end()) {
+            parent = &*block;
+            parentAddressId = space.id;
+            break;
+        }
+    }
     if (parent == nullptr) {
+        if (explicitParent) {
+            statusBar()->showMessage(
+                QStringLiteral("The target Register Block no longer exists; reopen the menu and "
+                               "try again"),
+                5000);
+            return;
+        }
         for (const auto& space : workspace->addressSpaces) {
             if (!space.blocks.empty()) {
                 parent = &space.blocks.front();
                 parentId = parent->id;
-                selectedAddressId_ = space.id;
+                parentAddressId = space.id;
                 break;
             }
         }
@@ -2870,6 +2898,7 @@ void MainWindow::addRegister()
                     block->registers.push_back(std::move(reg));
                 }
             })) {
+        selectedAddressId_ = parentAddressId;
         selectedBlockId_ = parentId;
         selectedRegisterId_ = newId;
         selectedFieldId_.clear();
@@ -3436,31 +3465,33 @@ void MainWindow::showHierarchyContextMenu(const QPoint& position)
         });
     }
     if (newBlock != nullptr) {
-        connect(newBlock, &QAction::triggered, this, [this, menu] {
+        connect(newBlock, &QAction::triggered, this, [this, menu, objectId] {
             menu->close();
-            addBlock();
+            addBlock(objectId);
         });
     }
     if (newRegister != nullptr) {
-        connect(newRegister, &QAction::triggered, this, [this, menu] {
+        connect(newRegister, &QAction::triggered, this, [this, menu, objectId] {
             menu->close();
-            addRegister();
+            addRegister(objectId);
         });
     }
     if (rename != nullptr) {
-        connect(rename, &QAction::triggered, this, [this, menu, index] {
+        connect(rename, &QAction::triggered, this, [this, menu, objectId] {
             menu->close();
-            hierarchyView_->setCurrentIndex(index);
-            hierarchyView_->setFocus(Qt::OtherFocusReason);
-            hierarchyView_->edit(index);
+            if (!navigateToObject(objectId)) {
+                statusBar()->showMessage(
+                    QStringLiteral("The target no longer exists; reopen the menu and try again"),
+                    5000);
+                return;
+            }
+            beginHierarchyRename(objectId);
         });
     }
     if (remove != nullptr) {
-        connect(remove, &QAction::triggered, this, [this, menu, index] {
+        connect(remove, &QAction::triggered, this, [this, menu, objectId] {
             menu->close();
-            hierarchyView_->setCurrentIndex(index);
-            hierarchyView_->setFocus(Qt::OtherFocusReason);
-            deleteSelection();
+            deleteObject(objectId);
         });
     }
     connect(expand, &QAction::triggered, this, [this, menu] {
@@ -3956,58 +3987,80 @@ void MainWindow::deleteSelection()
     if (id.empty()) {
         return;
     }
+    deleteObject(id, deletingEnumValue);
+}
 
+void MainWindow::deleteObject(const std::string& id, bool deletingEnumValue)
+{
+    if (id.empty()) {
+        return;
+    }
     QString label = fromUtf8(id);
     QString compositeImpact;
     const auto* workspace = controller_.workspace();
-    if (workspace != nullptr) {
-        if (const auto* page = regmap::findAddressSpace(*workspace, id)) {
-            std::size_t registerCount = 0;
-            for (const auto& block : page->blocks) {
-                registerCount += block.registers.size();
-            }
-            label = QStringLiteral("page %1").arg(fromUtf8(page->name));
-            compositeImpact =
-                QStringLiteral("This removes %1 block(s) and %2 register(s).")
-                    .arg(page->blocks.size())
-                    .arg(registerCount);
-        } else if (const auto* block = regmap::findRegisterBlock(*workspace, id)) {
-            label = QStringLiteral("block %1").arg(fromUtf8(block->name));
-            compositeImpact =
-                QStringLiteral("This removes %1 register(s).").arg(block->registers.size());
-        } else if (const auto* reg = regmap::findRegister(*workspace, id)) {
-            label = QStringLiteral("register %1").arg(fromUtf8(reg->name));
-        } else if (const auto* field = regmap::findField(*workspace, id)) {
-            label = QStringLiteral("field %1").arg(fromUtf8(field->name));
+    if (workspace == nullptr) {
+        return;
+    }
+    bool deletingPage = false;
+    bool deletingBlock = false;
+    bool deletingRegister = false;
+    bool deletingField = false;
+    if (const auto* page = regmap::findAddressSpace(*workspace, id)) {
+        deletingPage = true;
+        std::size_t registerCount = 0;
+        for (const auto& block : page->blocks) {
+            registerCount += block.registers.size();
         }
+        label = QStringLiteral("page %1").arg(fromUtf8(page->name));
+        compositeImpact = QStringLiteral("This removes %1 block(s) and %2 register(s).")
+                              .arg(page->blocks.size())
+                              .arg(registerCount);
+    } else if (const auto* block = regmap::findRegisterBlock(*workspace, id)) {
+        deletingBlock = true;
+        label = QStringLiteral("block %1").arg(fromUtf8(block->name));
+        compositeImpact =
+            QStringLiteral("This removes %1 register(s).").arg(block->registers.size());
+    } else if (const auto* reg = regmap::findRegister(*workspace, id)) {
+        deletingRegister = true;
+        label = QStringLiteral("register %1").arg(fromUtf8(reg->name));
+    } else if (const auto* field = regmap::findField(*workspace, id)) {
+        deletingField = true;
+        label = QStringLiteral("field %1").arg(fromUtf8(field->name));
+    } else if (const auto* enumValue = regmap::findEnumValue(*workspace, id)) {
+        deletingEnumValue = true;
+        label = QStringLiteral("enum value %1").arg(fromUtf8(enumValue->name));
+    } else {
+        statusBar()->showMessage(
+            QStringLiteral("The target no longer exists; reopen the menu and try again"), 5000);
+        return;
     }
     if (!compositeImpact.isEmpty() &&
-        QMessageBox::warning(
-            this, QStringLiteral("Delete Register-Map Objects"),
-            QStringLiteral("Delete %1?\n\n%2\n\nThis can be restored with Ctrl+Z.")
-                .arg(label, compositeImpact),
-            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) {
+        QMessageBox::warning(this, QStringLiteral("Delete Register-Map Objects"),
+                             QStringLiteral("Delete %1?\n\n%2\n\nThis can be restored with Ctrl+Z.")
+                                 .arg(label, compositeImpact),
+                             QMessageBox::Yes | QMessageBox::No,
+                             QMessageBox::No) != QMessageBox::Yes) {
         return;
     }
 
-    if (controller_.editWorkspace(QStringLiteral("Delete object"),
+    if (controller_.editWorkspace(QStringLiteral("Delete %1").arg(label),
                                   [id](regmap::Workspace& candidate) {
                                       static_cast<void>(regmap::removeObject(candidate, id));
                                   })) {
         if (deletingEnumValue) {
             // Keep the current register/field context while its value list refreshes.
-        } else if (id == selectedFieldId_) {
+        } else if (deletingField && id == selectedFieldId_) {
             selectedFieldId_.clear();
-        } else if (id == selectedRegisterId_) {
+        } else if (deletingRegister && id == selectedRegisterId_) {
             selectedRegisterId_.clear();
             selectedFieldId_.clear();
             openFieldsRegisterId_.clear();
-        } else if (id == selectedBlockId_) {
+        } else if (deletingBlock && id == selectedBlockId_) {
             selectedBlockId_.clear();
             selectedRegisterId_.clear();
             selectedFieldId_.clear();
             openFieldsRegisterId_.clear();
-        } else {
+        } else if (deletingPage && id == selectedAddressId_) {
             selectedAddressId_.clear();
             selectedBlockId_.clear();
             selectedRegisterId_.clear();
@@ -4015,8 +4068,7 @@ void MainWindow::deleteSelection()
             openFieldsRegisterId_.clear();
         }
         refreshProject();
-        statusBar()->showMessage(
-            QStringLiteral("Deleted %1 · Ctrl+Z to restore").arg(label), 5000);
+        statusBar()->showMessage(QStringLiteral("Deleted %1 · Ctrl+Z to restore").arg(label), 5000);
     }
 }
 
