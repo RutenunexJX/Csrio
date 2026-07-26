@@ -5,9 +5,11 @@
 #include "regmap/core/model.hpp"
 
 #include <QMainWindow>
+#include <QString>
 
 #include <optional>
 #include <string>
+#include <vector>
 
 class QAction;
 class BitfieldView;
@@ -17,11 +19,13 @@ class QLabel;
 class QLineEdit;
 class QPoint;
 class QModelIndex;
+class QPushButton;
 class QStandardItem;
 class QStandardItemModel;
 class QTabWidget;
 class QTableView;
 class QTreeView;
+class QWidget;
 
 class MainWindow final : public QMainWindow {
     Q_OBJECT
@@ -56,12 +60,21 @@ private:
     QComboBox* tagFilter_{nullptr};
     QTableView* fieldView_{nullptr};
     BitfieldView* bitfieldView_{nullptr};
+    QWidget* fieldPanel_{nullptr};
     QLabel* enumContextLabel_{nullptr};
     QTableView* enumView_{nullptr};
     QTabWidget* tabs_{nullptr};
     QTableView* problemsView_{nullptr};
     QTableView* generatedView_{nullptr};
     QTableView* diffView_{nullptr};
+    QLineEdit* globalSearchEdit_{nullptr};
+    QLabel* searchResultLabel_{nullptr};
+    QLabel* syncStateLabel_{nullptr};
+    QPushButton* retryOutputsButton_{nullptr};
+    QWidget* conflictBar_{nullptr};
+    QLabel* conflictSummaryLabel_{nullptr};
+    QPushButton* keepWorkbenchButton_{nullptr};
+    QPushButton* useRtlButton_{nullptr};
 
     QStandardItemModel* hierarchyModel_{nullptr};
     QStandardItemModel* registerModel_{nullptr};
@@ -81,6 +94,9 @@ private:
     QAction* useRtlAction_{nullptr};
     QAction* openSourceAction_{nullptr};
     QAction* deleteAction_{nullptr};
+    QAction* copyAction_{nullptr};
+    QAction* pasteAction_{nullptr};
+    QAction* showAdvancedFieldsAction_{nullptr};
 
     std::string selectedAddressId_;
     std::string selectedBlockId_;
@@ -91,6 +107,10 @@ private:
     bool refreshing_{false};
     bool modelEditInProgress_{false};
     bool refreshPending_{false};
+    QString lastSyncMessage_;
+    QString searchQuery_;
+    std::vector<std::string> searchResults_;
+    int searchResultIndex_{-1};
 
     void buildUi();
     void buildActions();
@@ -102,6 +122,9 @@ private:
     void refreshDiagnostics();
     void refreshGenerated();
     void refreshDiff();
+    void updateBottomPanelVisibility();
+    void updateSyncPresentation(const QString& message = {});
+    void applyFieldColumnVisibility();
     void populateHierarchy();
     void populateRegisters();
     void populateFields(const regmap::Register* reg);
@@ -130,6 +153,11 @@ private:
     void moveField(const std::string& fieldId, std::uint32_t lsb, std::uint32_t msb);
     void updateTagFilter();
     void updateEditActions();
+    bool navigateToObject(const std::string& id);
+    void rebuildSearchResults();
+    void runSearch(bool reverse = false);
+    void copySelection();
+    void pasteSelection();
 
     void closeEvent(QCloseEvent* event) override;
 

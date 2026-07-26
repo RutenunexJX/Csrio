@@ -12,6 +12,7 @@
 #include "regmap/core/three_way_merge.hpp"
 
 #include <xlsxcell.h>
+#include <xlsxcellrange.h>
 #include <xlsxdocument.h>
 #include <xlsxformat.h>
 
@@ -793,6 +794,15 @@ void CoreTests::generatesReadOnlyArtifacts()
     opened.workspace->addressSpaces.front().blocks.front().registers.push_back(
         std::move(reservedRegister));
 
+    regmap::RegisterBlock secondaryBlock;
+    secondaryBlock.id = "block-secondary-test";
+    secondaryBlock.name = "Secondary";
+    secondaryBlock.baseAddress = 0x2000;
+    secondaryBlock.size = 0x100;
+    secondaryBlock.description = "Second block used to verify block-band colors.";
+    opened.workspace->addressSpaces.front().blocks.push_back(
+        std::move(secondaryBlock));
+
     regmap::AddressSpace secondaryPage;
     secondaryPage.id = "space-debug";
     secondaryPage.name = "Debug/Trace";
@@ -827,22 +837,26 @@ void CoreTests::generatesReadOnlyArtifacts()
 
     QXlsx::Document workbook(QString::fromStdWString(generation.artifacts.front().path.wstring()));
     QVERIFY(workbook.load());
-    QCOMPARE(workbook.sheetNames(),
-             QStringList({QStringLiteral("Main"), QStringLiteral("Debug_Trace")}));
+    const QStringList sheetNames = workbook.sheetNames();
+    QCOMPARE(sheetNames.size(), 2);
+    QCOMPARE(sheetNames.at(1), QStringLiteral("Debug_Trace"));
     QVERIFY(workbook.selectSheet(QStringLiteral("Debug_Trace")));
     QVERIFY(!workbook.currentWorksheet()->isGridLinesVisible());
     QCOMPARE(workbook.currentWorksheet()->frozenRowCount(), 4);
-    QCOMPARE(workbook.currentWorksheet()->frozenColumnCount(), 3);
+    QCOMPARE(workbook.currentWorksheet()->frozenColumnCount(), 0);
     QCOMPARE(workbook.currentWorksheet()->autoFilter().toString(), QStringLiteral("A4:K4"));
 
-    QVERIFY(workbook.selectSheet(QStringLiteral("Main")));
+    QVERIFY(workbook.selectSheet(sheetNames.front()));
     const auto* worksheet = workbook.currentWorksheet();
     QVERIFY(worksheet != nullptr);
     QVERIFY(!worksheet->areSummaryRowsBelow());
     QVERIFY(!worksheet->isGridLinesVisible());
     QCOMPARE(worksheet->frozenRowCount(), 4);
-    QCOMPARE(worksheet->frozenColumnCount(), 3);
-    QCOMPARE(worksheet->autoFilter().toString(), QStringLiteral("A4:K25"));
+    QCOMPARE(worksheet->frozenColumnCount(), 0);
+    QCOMPARE(worksheet->autoFilter().toString(), QStringLiteral("A4:K26"));
+    QCOMPARE(workbook.read(1, 1).toString(),
+             QStringLiteral("Page - ") +
+                 QString::fromStdString(opened.workspace->addressSpaces.front().name));
     uint expectedDiagramCount = 0;
     for (const auto& space : opened.workspace->addressSpaces) {
         for (const auto& block : space.blocks) {
@@ -858,15 +872,31 @@ void CoreTests::generatesReadOnlyArtifacts()
     QVERIFY(workbook.read(2, 6).toString().isEmpty());
     QCOMPARE(workbook.read(4, 1).toString(), QStringLiteral("Address"));
     QCOMPARE(workbook.read(4, 2).toString(), QStringLiteral("Offset"));
-    QCOMPARE(workbook.read(4, 3).toString(), QStringLiteral("Register / Field"));
-    QCOMPARE(workbook.read(4, 7).toString(), QStringLiteral("Initial"));
+    QCOMPARE(workbook.read(4, 3).toString(), QStringLiteral("Name"));
+    QCOMPARE(workbook.read(4, 7).toString(), QStringLiteral("Initial Value"));
+    QCOMPARE(workbook.read(4, 8).toString(), QStringLiteral("Reset Value"));
     QCOMPARE(workbook.read(4, 9).toString(), QStringLiteral("Tags"));
-    QCOMPARE(workbook.read(4, 10).toString(), QStringLiteral("Range / Enum"));
+    QCOMPARE(workbook.read(4, 10).toString(), QStringLiteral("Range"));
     QCOMPARE(workbook.read(4, 11).toString(), QStringLiteral("Description"));
-    QCOMPARE(workbook.read(5, 1).toString(), QStringLiteral("BLOCK"));
-    QCOMPARE(workbook.read(5, 2).toString(), QStringLiteral("Control"));
-    QCOMPARE(workbook.read(5, 4).toString(), QStringLiteral("0x0000F000"));
-    QCOMPARE(workbook.read(5, 6).toString(), QStringLiteral("0x00001000"));
+    QVERIFY(workbook.read(5, 1).toString().contains(QStringLiteral("Block - Control")));
+    QVERIFY(workbook.read(5, 1).toString().contains(QStringLiteral("Base: 0x0000F000")));
+    QVERIFY(workbook.read(5, 1).toString().contains(QStringLiteral("Size: 0x00001000")));
+    QVERIFY(std::ranges::any_of(worksheet->mergedCells(), [](const QXlsx::CellRange& range) {
+        return range.toString() == QStringLiteral("A5:K5");
+    }));
+    QVERIFY(std::ranges::any_of(worksheet->mergedCells(), [](const QXlsx::CellRange& range) {
+        return range.toString() == QStringLiteral("A26:K26");
+    }));
+    QVERIFY(workbook.read(26, 1).toString().contains(QStringLiteral("Block - Secondary")));
+    const auto firstBlockCell = workbook.cellAt(5, 1);
+    const auto secondBlockCell = workbook.cellAt(26, 1);
+    QVERIFY(firstBlockCell != nullptr);
+    QVERIFY(secondBlockCell != nullptr);
+    QVERIFY(firstBlockCell->format().patternForegroundColor() !=
+            secondBlockCell->format().patternForegroundColor());
+    QCOMPARE(firstBlockCell->format().patternForegroundColor(),
+             QColor(QStringLiteral("#4472C4")));
+    QCOMPARE(firstBlockCell->format().fontColor(), QColor(QStringLiteral("#FFFFFF")));
     QCOMPARE(workbook.read(6, 1).toString(), QStringLiteral("0x43C0F000"));
     QCOMPARE(workbook.read(6, 2).toString(), QStringLiteral("0x00000000"));
     QVERIFY(workbook.read(6, 3).toString().contains(QStringLiteral("CONTROL")));
@@ -889,9 +919,22 @@ void CoreTests::generatesReadOnlyArtifacts()
     QVERIFY(workbook.getImage(6, 2, controlDiagram));
     QCOMPARE(controlDiagram.width(), 1240);
     QVERIFY(controlDiagram.height() >= 122);
-    QVERIFY(workbook.read(8, 3).toString().contains(
-        QString::fromStdString(control->fields.front().name)));
+    QCOMPARE(workbook.read(8, 3).toString(),
+             QString::fromStdString(control->fields.front().name));
     QCOMPARE(workbook.read(8, 4).toString(), QStringLiteral("bool"));
+    QCOMPARE(workbook.read(8, 6).toString(), QStringLiteral("RW"));
+    QVERIFY(!workbook.read(8, 3).toString().contains(QChar(0x21B3)));
+    const auto firstFieldCell = workbook.cellAt(8, 3);
+    const auto alternateFieldCell = workbook.cellAt(12, 3);
+    QVERIFY(firstFieldCell != nullptr);
+    QVERIFY(alternateFieldCell != nullptr);
+    QCOMPARE(firstFieldCell->format().patternForegroundColor(),
+             QColor(QStringLiteral("#FFF2CC")));
+    QCOMPARE(firstFieldCell->format().patternForegroundColor(),
+             alternateFieldCell->format().patternForegroundColor());
+    QCOMPARE(firstFieldCell->format().fontColor(), QColor(QStringLiteral("#7F6000")));
+    QVERIFY(firstFieldCell->format().fontColor() !=
+            firstRegisterCell->format().fontColor());
     QVERIFY(workbook.isRowHidden(7));
     QVERIFY(workbook.isRowHidden(8));
     QStringList expectedTags;

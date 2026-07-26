@@ -6,7 +6,11 @@
 #include "regmap/core/project.hpp"
 #include "regmap/core/workspace_store.hpp"
 
+#include <QAction>
 #include <QApplication>
+#include <QClipboard>
+#include <QLabel>
+#include <QPushButton>
 #include <QColor>
 #include <QComboBox>
 #include <QDir>
@@ -44,9 +48,14 @@ private slots:
     void supportsTrailingRowsAndFieldMovement();
     void editsTagsAndAccessFromSingleClick();
     void insertsRegisterBetweenRows();
+    void showsUnifiedSyncStateAndGeneratedResults();
+    void searchesAndNavigatesProblems();
+    void copiesAndPastesEditableCells();
+    void deletesFocusedRegisterAndRestoresIt();
     void editsUndoesAndSavesProject();
     void rejectsInvalidManagedRtl();
     void synchronizesManagedRtlEdits();
+    void resolvesRtlConflictFromDiffPanel();
     void reportsAndResolvesRtlConflicts();
 };
 
@@ -315,6 +324,13 @@ void GuiSmokeTests::opensProjectAndPopulatesEditableViews()
     QCOMPARE(fields->font().pointSizeF(), 10.0);
     QVERIFY(hierarchy->uniformRowHeights());
     QVERIFY(tabs->documentMode());
+    QVERIFY(fields->isColumnHidden(1));
+    QVERIFY(fields->isColumnHidden(9));
+    QVERIFY(fields->isColumnHidden(11));
+    QVERIFY(fields->isColumnHidden(12));
+    QVERIFY(!tabs->isTabVisible(0));
+    QVERIFY(tabs->isTabVisible(1));
+    QVERIFY(!tabs->isTabVisible(2));
     const QList<QSplitter*> splitters = window.findChildren<QSplitter*>();
     QCOMPARE(splitters.size(), 3);
     for (const auto* splitter : splitters) {
@@ -361,7 +377,8 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     QCOMPARE(registers->model()->index(1, 0).data().toString(), QStringLiteral("NEW_REGISTER"));
     QCOMPARE(registers->model()->index(1, 4).data().toString(), QStringLiteral("uint32"));
     QCOMPARE(registers->model()->index(1, 6).data().toString(), QStringLiteral("0x0"));
-    QCOMPARE(fields->model()->rowCount(), 1);
+    QCOMPARE(fields->model()->rowCount(), 0);
+    QVERIFY(!fields->isVisible());
     QVERIFY(
         registers->model()->setData(registers->model()->index(1, 5), QStringLiteral("0 .. 255")));
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 5).data().toString(),
@@ -377,6 +394,11 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     QCOMPARE(enums->model()->index(0, 0).data().toString(), QStringLiteral("NEW_VALUE"));
     QCOMPARE(enums->model()->index(0, 1).data().toString(), QStringLiteral("0x0"));
     QCOMPARE(registers->model()->index(1, 4).data().toString(), QStringLiteral("enum"));
+
+    QVERIFY(registers->model()->setData(registers->model()->index(1, 4),
+                                        QStringLiteral("field")));
+    QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->rowCount(), 1, 2000);
 
     Q_EMIT fields->clicked(fields->model()->index(0, 0));
     QCOMPARE(fields->model()->rowCount(), 2);
@@ -550,6 +572,209 @@ void GuiSmokeTests::insertsRegisterBetweenRows()
     makeGeneratedFilesWritable(directory.path());
 }
 
+void GuiSmokeTests::showsUnifiedSyncStateAndGeneratedResults()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1200, 760);
+    window.show();
+    QTest::qWait(50);
+
+    auto* state = window.findChild<QLabel*>(QStringLiteral("syncStateBadge"));
+    auto* generated = window.findChild<QTableView*>(QStringLiteral("generatedView"));
+    auto* retry = window.findChild<QPushButton*>(QStringLiteral("retryOutputsButton"));
+    auto* save = window.findChild<QAction*>(QStringLiteral("saveSyncAction"));
+    auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    QVERIFY(state != nullptr);
+    QVERIFY(generated != nullptr);
+    QVERIFY(retry != nullptr);
+    QVERIFY(save != nullptr);
+    QVERIFY(registers != nullptr);
+
+    QTRY_VERIFY_WITH_TIMEOUT(state->text().startsWith(QStringLiteral("Synchronized")), 2000);
+    QCOMPARE(generated->model()->rowCount(), 3);
+    QCOMPARE(generated->model()->columnCount(), 4);
+    for (int row = 0; row < generated->model()->rowCount(); ++row) {
+        QCOMPARE(generated->model()->index(row, 2).data().toString(),
+                 QStringLiteral("Synchronized"));
+        QVERIFY(!generated->model()->index(row, 3).data().toString().isEmpty());
+    }
+    QVERIFY(!retry->isVisible());
+    QCOMPARE(save->text(), QStringLiteral("Save && Sync"));
+    QVERIFY(save->isEnabled());
+
+    QVERIFY(registers->model()->setData(registers->model()->index(0, 10),
+                                        QStringLiteral("Edited status description.")));
+    QTRY_VERIFY_WITH_TIMEOUT(state->text().startsWith(QStringLiteral("Unsaved")), 2000);
+    save->trigger();
+    QTRY_VERIFY_WITH_TIMEOUT(state->text().startsWith(QStringLiteral("Synchronized")), 4000);
+    QCOMPARE(generated->model()->rowCount(), 3);
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::searchesAndNavigatesProblems()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createTwoRegisterProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1200, 760);
+    window.show();
+    QTest::qWait(50);
+
+    auto* search = window.findChild<QLineEdit*>(QStringLiteral("globalSearchEdit"));
+    auto* searchResult = window.findChild<QLabel*>(QStringLiteral("searchResultLabel"));
+    auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* fields = window.findChild<QTableView*>(QStringLiteral("fieldView"));
+    auto* problems = window.findChild<QTableView*>(QStringLiteral("problemsView"));
+    auto* state = window.findChild<QLabel*>(QStringLiteral("syncStateBadge"));
+    QVERIFY(search != nullptr);
+    QVERIFY(searchResult != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+    QVERIFY(problems != nullptr);
+    QVERIFY(state != nullptr);
+
+    search->setText(QStringLiteral("CONTROL"));
+    Q_EMIT search->returnPressed();
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->currentIndex().data(Qt::UserRole + 1).toString(),
+        QStringLiteral("reg-control"), 2000);
+    QVERIFY(searchResult->text().startsWith(QStringLiteral("1/")));
+
+    search->setText(QStringLiteral("READY"));
+    Q_EMIT search->returnPressed();
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->currentIndex().data(Qt::UserRole + 1).toString(),
+        QStringLiteral("reg-status"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(fields->currentIndex().data(Qt::UserRole + 1).toString(),
+                              QStringLiteral("field-ready"), 2000);
+
+    QVERIFY(registers->model()->setData(registers->model()->index(1, 1),
+                                        QStringLiteral("0x0")));
+    QTRY_VERIFY_WITH_TIMEOUT(problems->model()->rowCount() > 0, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(state->text().startsWith(QStringLiteral("Blocked")), 2000);
+
+    int problemRow = -1;
+    QString targetId;
+    for (int row = 0; row < problems->model()->rowCount(); ++row) {
+        const QString candidate = problems->model()->index(row, 3).data().toString();
+        if (candidate == QStringLiteral("reg-status") ||
+            candidate == QStringLiteral("reg-control")) {
+            problemRow = row;
+            targetId = candidate;
+            break;
+        }
+    }
+    QVERIFY(problemRow >= 0);
+    const QString otherId = targetId == QStringLiteral("reg-status")
+        ? QStringLiteral("reg-control")
+        : QStringLiteral("reg-status");
+    for (int row = 0; row < registers->model()->rowCount(); ++row) {
+        if (registers->model()->index(row, 0).data(Qt::UserRole + 1).toString() == otherId) {
+            registers->setCurrentIndex(registers->model()->index(row, 0));
+            break;
+        }
+    }
+    Q_EMIT problems->doubleClicked(problems->model()->index(problemRow, 2));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->currentIndex().data(Qt::UserRole + 1).toString(), targetId, 2000);
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::copiesAndPastesEditableCells()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createTwoRegisterProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+    auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    QVERIFY(registers != nullptr);
+
+    const QModelIndex statusName = registers->model()->index(0, 0);
+    registers->setCurrentIndex(statusName);
+    registers->selectionModel()->select(
+        statusName, QItemSelectionModel::ClearAndSelect);
+    registers->setFocus();
+    QTest::keyClick(registers, Qt::Key_C, Qt::ControlModifier);
+    QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("STATUS"));
+
+    QApplication::clipboard()->setText(QStringLiteral("CONTROL_RENAMED\t0x8"));
+    registers->setCurrentIndex(registers->model()->index(1, 0));
+    QTest::keyClick(registers, Qt::Key_V, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 0).data().toString(),
+                              QStringLiteral("CONTROL_RENAMED"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 1).data().toString(),
+                              QStringLiteral("0x8"), 2000);
+
+    QTest::keyClick(&window, Qt::Key_Z, Qt::ControlModifier);
+    QTest::keyClick(&window, Qt::Key_Z, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 0).data().toString(),
+                              QStringLiteral("CONTROL"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 1).data().toString(),
+                              QStringLiteral("0x4"), 2000);
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::deletesFocusedRegisterAndRestoresIt()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createTwoRegisterProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+    auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* fields = window.findChild<QTableView*>(QStringLiteral("fieldView"));
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+    QCOMPARE(fields->currentIndex().data(Qt::UserRole + 1).toString(),
+             QStringLiteral("field-ready"));
+
+    registers->setCurrentIndex(registers->model()->index(0, 0));
+    registers->setFocus();
+    QTest::keyClick(registers, Qt::Key_Delete);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->rowCount(), 2, 2000);
+    bool foundStatus = false;
+    for (int row = 0; row < registers->model()->rowCount(); ++row) {
+        foundStatus |= registers->model()->index(row, 0).data(Qt::UserRole + 1).toString() ==
+            QStringLiteral("reg-status");
+    }
+    QVERIFY(!foundStatus);
+
+    QTest::keyClick(&window, Qt::Key_Z, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->rowCount(), 3, 2000);
+    foundStatus = false;
+    for (int row = 0; row < registers->model()->rowCount(); ++row) {
+        foundStatus |= registers->model()->index(row, 0).data(Qt::UserRole + 1).toString() ==
+            QStringLiteral("reg-status");
+    }
+    QVERIFY(foundStatus);
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
 void GuiSmokeTests::editsUndoesAndSavesProject()
 {
     QTemporaryDir directory;
@@ -637,6 +862,59 @@ void GuiSmokeTests::synchronizesManagedRtlEdits()
     const auto reopened = regmap::openProject(std::filesystem::path(manifestPath.toStdWString()));
     QVERIFY(reopened.workspace.has_value());
     QCOMPARE(regmap::findRegister(*reopened.workspace, "reg-status")->offset, std::uint64_t{8});
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::resolvesRtlConflictFromDiffPanel()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifestPath = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    const QString rtlPath = directory.filePath(QStringLiteral("rtl/gui_registers.sv"));
+    createProject(manifestPath);
+
+    MainWindow window;
+    window.openProjectPath(manifestPath);
+    window.resize(1200, 760);
+    window.show();
+    QTest::qWait(50);
+    auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* diff = window.findChild<QTableView*>(QStringLiteral("diffView"));
+    auto* conflictBar = window.findChild<QWidget*>(QStringLiteral("conflictBar"));
+    auto* conflictSummary = window.findChild<QLabel*>(QStringLiteral("conflictSummaryLabel"));
+    auto* keepWorkbench =
+        window.findChild<QPushButton*>(QStringLiteral("keepWorkbenchButton"));
+    auto* useRtl = window.findChild<QPushButton*>(QStringLiteral("useRtlButton"));
+    auto* state = window.findChild<QLabel*>(QStringLiteral("syncStateBadge"));
+    QVERIFY(registers != nullptr);
+    QVERIFY(diff != nullptr);
+    QVERIFY(conflictBar != nullptr);
+    QVERIFY(conflictSummary != nullptr);
+    QVERIFY(keepWorkbench != nullptr);
+    QVERIFY(useRtl != nullptr);
+    QVERIFY(state != nullptr);
+    QVERIFY(!conflictBar->isVisible());
+
+    QVERIFY(registers->model()->setData(registers->model()->index(0, 1),
+                                        QStringLiteral("0x4")));
+    QTRY_VERIFY_WITH_TIMEOUT(state->text().startsWith(QStringLiteral("Unsaved")), 2000);
+    editManagedRtlValue(rtlPath, QStringLiteral("reg-status"), QStringLiteral("offset"),
+                        QStringLiteral("64'h8"));
+
+    QTRY_VERIFY_WITH_TIMEOUT(conflictBar->isVisible(), 8000);
+    QVERIFY(conflictSummary->text().contains(QStringLiteral("1 RTL conflict")));
+    QVERIFY(keepWorkbench->isVisible());
+    QVERIFY(useRtl->isVisible());
+    QVERIFY(diff->model()->rowCount() >= 1);
+    QTRY_VERIFY_WITH_TIMEOUT(state->text().startsWith(QStringLiteral("Conflict")), 2000);
+
+    QTest::mouseClick(useRtl, Qt::LeftButton);
+    QTRY_VERIFY_WITH_TIMEOUT(!conflictBar->isVisible(), 8000);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 1).data().toString(),
+                              QStringLiteral("0x8"), 8000);
+    QTRY_VERIFY_WITH_TIMEOUT(state->text().startsWith(QStringLiteral("Synchronized")), 8000);
+    QVERIFY(state->toolTip().startsWith(QStringLiteral("Conflicts resolved")));
+    QVERIFY(!state->toolTip().contains(QStringLiteral("paused"), Qt::CaseInsensitive));
     makeGeneratedFilesWritable(directory.path());
 }
 

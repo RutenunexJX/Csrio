@@ -135,6 +135,47 @@ QToolBar QToolButton:disabled {
     color: #9FB0C4;
 }
 
+QToolBar QLineEdit#globalSearchEdit {
+    min-width: 230px;
+    max-width: 330px;
+    background: white;
+    color: #0B1F33;
+    border: 1px solid #9FB0C4;
+    border-radius: 3px;
+    padding: 4px 7px;
+}
+QToolBar QLabel#searchResultLabel {
+    color: #DCE6F1;
+    min-width: 42px;
+    padding: 0 3px;
+}
+QToolBar QLabel#syncStateBadge {
+    color: white;
+    background: #385D8A;
+    border: 1px solid #6F8FB2;
+    border-radius: 9px;
+    padding: 3px 9px;
+    margin-left: 5px;
+}
+QToolBar QLabel#syncStateBadge[state="synced"] {
+    background: #2F6B45;
+    border-color: #8CC6A0;
+}
+QToolBar QLabel#syncStateBadge[state="dirty"] {
+    background: #8A5A00;
+    border-color: #E2B95B;
+}
+QToolBar QLabel#syncStateBadge[state="busy"] {
+    background: #385D8A;
+    border-color: #9FB0C4;
+}
+QToolBar QLabel#syncStateBadge[state="blocked"],
+QToolBar QLabel#syncStateBadge[state="conflict"],
+QToolBar QLabel#syncStateBadge[state="partial"] {
+    background: #8B2F2A;
+    border-color: #E6A19C;
+}
+
 QHeaderView::section {
     background: #17365D;
     color: white;
@@ -194,6 +235,19 @@ QLineEdit#blockBaseEdit {
     color: #17365D;
     font-family: "Cascadia Mono", "Consolas", monospace;
     font-weight: 500;
+}
+
+QWidget#conflictBar {
+    background: #FFF2CC;
+    border: 1px solid #D6B656;
+    border-radius: 3px;
+}
+QLabel#conflictSummaryLabel {
+    color: #7F6000;
+    font-weight: 600;
+}
+QWidget#conflictBar QPushButton {
+    background: white;
 }
 
 QTabWidget::pane {

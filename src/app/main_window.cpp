@@ -12,6 +12,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QBrush>
+#include <QClipboard>
 #include <QCloseEvent>
 #include <QColor>
 #include <QComboBox>
@@ -41,6 +42,8 @@
 #include <QScopedValueRollback>
 #include <QScreen>
 #include <QSignalBlocker>
+#include <QSizePolicy>
+#include <QStyle>
 #include <QSplitter>
 #include <QStandardItem>
 #include <QStandardItemModel>
@@ -484,8 +487,8 @@ private:
 
 void configureTable(QTableView* view)
 {
-    view->setSelectionBehavior(QAbstractItemView::SelectRows);
-    view->setSelectionMode(QAbstractItemView::SingleSelection);
+    view->setSelectionBehavior(QAbstractItemView::SelectItems);
+    view->setSelectionMode(QAbstractItemView::ExtendedSelection);
     view->setAlternatingRowColors(true);
     view->setSortingEnabled(false);
     view->setShowGrid(true);
@@ -687,7 +690,8 @@ void MainWindow::buildUi()
 
     bitfieldView_ = new BitfieldView(this);
     bitfieldView_->setObjectName(QStringLiteral("bitfieldView"));
-    auto* fieldPanel = new QWidget(this);
+    fieldPanel_ = new QWidget(this);
+    auto* fieldPanel = fieldPanel_;
     auto* fieldLayout = new QVBoxLayout(fieldPanel);
     fieldLayout->setContentsMargins(0, 0, 0, 0);
     fieldLayout->setSpacing(6);
@@ -738,11 +742,50 @@ void MainWindow::buildUi()
     configureTable(diffView_);
 
     tabs_ = new QTabWidget(this);
+    tabs_->setObjectName(QStringLiteral("resultTabs"));
     tabs_->setDocumentMode(true);
     tabs_->addTab(problemsView_, QStringLiteral("Problems"));
-    tabs_->addTab(generatedView_, QStringLiteral("Generated"));
-    tabs_->addTab(diffView_, QStringLiteral("Diff"));
-    tabs_->setMinimumHeight(190);
+    auto* generatedPanel = new QWidget(tabs_);
+    auto* generatedLayout = new QVBoxLayout(generatedPanel);
+    generatedLayout->setContentsMargins(0, 0, 0, 0);
+    generatedLayout->setSpacing(4);
+    auto* generatedActions = new QHBoxLayout;
+    generatedActions->setContentsMargins(6, 4, 6, 0);
+    generatedActions->addStretch();
+    retryOutputsButton_ = new QPushButton(QStringLiteral("Retry outputs"), generatedPanel);
+    retryOutputsButton_->setObjectName(QStringLiteral("retryOutputsButton"));
+    retryOutputsButton_->setVisible(false);
+    generatedActions->addWidget(retryOutputsButton_);
+    generatedLayout->addLayout(generatedActions);
+    generatedLayout->addWidget(generatedView_, 1);
+    tabs_->addTab(generatedPanel, QStringLiteral("Generated"));
+    auto* diffPanel = new QWidget(tabs_);
+    auto* diffLayout = new QVBoxLayout(diffPanel);
+    diffLayout->setContentsMargins(0, 0, 0, 0);
+    diffLayout->setSpacing(4);
+    conflictBar_ = new QWidget(diffPanel);
+    conflictBar_->setObjectName(QStringLiteral("conflictBar"));
+    auto* conflictLayout = new QHBoxLayout(conflictBar_);
+    conflictLayout->setContentsMargins(8, 5, 8, 5);
+    conflictSummaryLabel_ = new QLabel(conflictBar_);
+    conflictSummaryLabel_->setObjectName(QStringLiteral("conflictSummaryLabel"));
+    conflictLayout->addWidget(conflictSummaryLabel_, 1);
+    keepWorkbenchButton_ =
+        new QPushButton(QStringLiteral("Keep Workbench changes"), conflictBar_);
+    keepWorkbenchButton_->setObjectName(QStringLiteral("keepWorkbenchButton"));
+    keepWorkbenchButton_->setToolTip(
+        QStringLiteral("Use Workbench values for every listed conflict, then synchronize."));
+    conflictLayout->addWidget(keepWorkbenchButton_);
+    useRtlButton_ = new QPushButton(QStringLiteral("Use RTL changes"), conflictBar_);
+    useRtlButton_->setObjectName(QStringLiteral("useRtlButton"));
+    useRtlButton_->setToolTip(
+        QStringLiteral("Use RTL values for every listed conflict, then synchronize."));
+    conflictLayout->addWidget(useRtlButton_);
+    conflictBar_->setVisible(false);
+    diffLayout->addWidget(conflictBar_);
+    diffLayout->addWidget(diffView_, 1);
+    tabs_->addTab(diffPanel, QStringLiteral("Diff"));
+    tabs_->setMinimumHeight(170);
 
     auto* mainSplitter = new QSplitter(Qt::Vertical, this);
     mainSplitter->addWidget(topSplitter);
@@ -793,7 +836,8 @@ void MainWindow::buildActions()
         }
     });
 
-    saveAction_ = new QAction(QStringLiteral("Save"), this);
+    saveAction_ = new QAction(QStringLiteral("Save && Sync"), this);
+    saveAction_->setObjectName(QStringLiteral("saveSyncAction"));
     saveAction_->setShortcut(QKeySequence::Save);
     saveAction_->setEnabled(false);
     connect(saveAction_, &QAction::triggered, &controller_, &ProjectController::save);
@@ -863,6 +907,32 @@ void MainWindow::buildActions()
     deleteAction_->setEnabled(false);
     connect(deleteAction_, &QAction::triggered, this, &MainWindow::deleteSelection);
 
+    copyAction_ = new QAction(QStringLiteral("Copy"), this);
+    copyAction_->setShortcut(QKeySequence::Copy);
+    connect(copyAction_, &QAction::triggered, this, &MainWindow::copySelection);
+    pasteAction_ = new QAction(QStringLiteral("Paste"), this);
+    pasteAction_->setShortcut(QKeySequence::Paste);
+    connect(pasteAction_, &QAction::triggered, this, &MainWindow::pasteSelection);
+
+    auto* findAction = new QAction(QStringLiteral("Find"), this);
+    findAction->setShortcut(QKeySequence::Find);
+    connect(findAction, &QAction::triggered, this, [this] {
+        globalSearchEdit_->setFocus();
+        globalSearchEdit_->selectAll();
+    });
+    auto* findNextAction = new QAction(QStringLiteral("Find Next"), this);
+    findNextAction->setShortcut(QKeySequence(Qt::Key_F3));
+    connect(findNextAction, &QAction::triggered, this, [this] { runSearch(false); });
+    auto* findPreviousAction = new QAction(QStringLiteral("Find Previous"), this);
+    findPreviousAction->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F3));
+    connect(findPreviousAction, &QAction::triggered, this, [this] { runSearch(true); });
+
+    showAdvancedFieldsAction_ = new QAction(QStringLiteral("Show Advanced Field Columns"), this);
+    showAdvancedFieldsAction_->setCheckable(true);
+    showAdvancedFieldsAction_->setChecked(false);
+    connect(showAdvancedFieldsAction_, &QAction::toggled, this,
+            [this] { applyFieldColumnVisibility(); });
+
     auto* exitAction = new QAction(QStringLiteral("Exit"), this);
     exitAction->setShortcut(QKeySequence::Quit);
     connect(exitAction, &QAction::triggered, this, &QWidget::close);
@@ -878,11 +948,21 @@ void MainWindow::buildActions()
     editMenu->addAction(undoAction_);
     editMenu->addAction(redoAction_);
     editMenu->addSeparator();
+    editMenu->addAction(copyAction_);
+    editMenu->addAction(pasteAction_);
+    editMenu->addSeparator();
+    editMenu->addAction(findAction);
+    editMenu->addAction(findNextAction);
+    editMenu->addAction(findPreviousAction);
+    editMenu->addSeparator();
     editMenu->addAction(addAddressAction);
     editMenu->addAction(addBlockAction);
     editMenu->addAction(addEnumAction);
     editMenu->addSeparator();
     editMenu->addAction(deleteAction_);
+
+    QMenu* viewMenu = menuBar()->addMenu(QStringLiteral("View"));
+    viewMenu->addAction(showAdvancedFieldsAction_);
 
     QMenu* projectMenu = menuBar()->addMenu(QStringLiteral("Project"));
     projectMenu->addAction(synchronizeAction_);
@@ -907,9 +987,41 @@ void MainWindow::buildActions()
     toolbar->addAction(addBlockAction);
     toolbar->addAction(deleteAction_);
     toolbar->addSeparator();
-    toolbar->addAction(synchronizeAction_);
-    toolbar->addAction(generateAction_);
     toolbar->addAction(openSourceAction_);
+
+    auto* spacer = new QWidget(toolbar);
+    spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    toolbar->addWidget(spacer);
+    globalSearchEdit_ = new QLineEdit(toolbar);
+    globalSearchEdit_->setObjectName(QStringLiteral("globalSearchEdit"));
+    globalSearchEdit_->setClearButtonEnabled(true);
+    globalSearchEdit_->setPlaceholderText(
+        QStringLiteral("Search name, address, tag, description…  Ctrl+F"));
+    globalSearchEdit_->setToolTip(
+        QStringLiteral("Press Enter or F3 for the next match; Shift+F3 for the previous match."));
+    toolbar->addWidget(globalSearchEdit_);
+    searchResultLabel_ = new QLabel(toolbar);
+    searchResultLabel_->setObjectName(QStringLiteral("searchResultLabel"));
+    toolbar->addWidget(searchResultLabel_);
+    syncStateLabel_ = new QLabel(QStringLiteral("No project"), toolbar);
+    syncStateLabel_->setObjectName(QStringLiteral("syncStateBadge"));
+    syncStateLabel_->setProperty("state", QStringLiteral("idle"));
+    toolbar->addWidget(syncStateLabel_);
+
+    connect(globalSearchEdit_, &QLineEdit::textChanged, this, [this] {
+        searchQuery_.clear();
+        searchResults_.clear();
+        searchResultIndex_ = -1;
+        searchResultLabel_->clear();
+    });
+    connect(globalSearchEdit_, &QLineEdit::returnPressed, this,
+            [this] { runSearch(false); });
+    connect(retryOutputsButton_, &QPushButton::clicked, &controller_,
+            &ProjectController::generateNow);
+    connect(keepWorkbenchButton_, &QPushButton::clicked, &controller_,
+            &ProjectController::useWorkbenchForConflicts);
+    connect(useRtlButton_, &QPushButton::clicked, &controller_,
+            &ProjectController::useRtlForConflicts);
 }
 
 void MainWindow::connectSignals()
@@ -929,7 +1041,10 @@ void MainWindow::connectSignals()
             &MainWindow::updateEditActions);
     connect(&controller_, &ProjectController::conflictsChanged, this, &MainWindow::refreshDiff);
     connect(&controller_, &ProjectController::syncStatusChanged, this,
-            [this](const QString& text) { statusBar()->showMessage(text); });
+            [this](const QString& text) {
+                statusBar()->showMessage(text);
+                updateSyncPresentation(text);
+            });
 
     connect(hierarchyView_->selectionModel(), &QItemSelectionModel::currentChanged, this,
             [this](const QModelIndex& current) {
@@ -1112,7 +1227,11 @@ void MainWindow::connectSignals()
             problemsModel_->index(index.row(), 0).data(rowIndexRole).toInt();
         if (diagnosticIndex >= 0 &&
             static_cast<std::size_t>(diagnosticIndex) < controller_.diagnostics().size()) {
-            openSource(controller_.diagnostics()[static_cast<std::size_t>(diagnosticIndex)].source);
+            const auto& diagnostic =
+                controller_.diagnostics()[static_cast<std::size_t>(diagnosticIndex)];
+            if (diagnostic.objectId.empty() || !navigateToObject(diagnostic.objectId)) {
+                openSource(diagnostic.source);
+            }
         }
     });
     connect(generatedView_, &QTableView::doubleClicked, this, [this](const QModelIndex& index) {
@@ -1130,7 +1249,13 @@ void MainWindow::connectSignals()
         if (changeIndex >= 0 &&
             static_cast<std::size_t>(changeIndex) < controller_.changes().size()) {
             const auto& change = controller_.changes()[static_cast<std::size_t>(changeIndex)];
-            openSource(change.afterSource.empty() ? change.beforeSource : change.afterSource);
+            if (!navigateToObject(change.id)) {
+                openSource(change.afterSource.empty() ? change.beforeSource : change.afterSource);
+            }
+        } else {
+            const std::string objectId =
+                diffModel_->index(index.row(), 3).data().toString().toUtf8().toStdString();
+            static_cast<void>(navigateToObject(objectId));
         }
     });
 
@@ -1209,6 +1334,8 @@ void MainWindow::refreshProject()
     } else {
         setWindowTitle(QStringLiteral("Register Map Workbench"));
     }
+    updateSyncPresentation();
+    updateBottomPanelVisibility();
 }
 
 void MainWindow::updateContextBar()
@@ -1447,8 +1574,14 @@ void MainWindow::populateFields(const regmap::Register* reg)
          QStringLiteral("HW"), QStringLiteral("Reset"), QStringLiteral("Read Effect"),
          QStringLiteral("Write Effect"), QStringLiteral("Description")});
     bitfieldView_->setRegister(reg);
-    if (reg == nullptr) {
-        populateEnumValues(nullptr, nullptr);
+    const bool showFieldEditor =
+        reg != nullptr && !reg->reserved && reg->type == regmap::FieldType::structure;
+    bitfieldView_->setVisible(showFieldEditor);
+    fieldView_->setVisible(showFieldEditor);
+    if (!showFieldEditor) {
+        selectedFieldId_.clear();
+        populateEnumValues(reg, nullptr);
+        applyFieldColumnVisibility();
         return;
     }
 
@@ -1524,6 +1657,7 @@ void MainWindow::populateFields(const regmap::Register* reg)
         populateEnumValues(reg, nullptr);
         setCurrentSource(reg->source);
     }
+    applyFieldColumnVisibility();
 }
 
 void MainWindow::populateEnumValues(const regmap::Register* reg, const regmap::Field* field)
@@ -1553,6 +1687,7 @@ void MainWindow::populateEnumValues(const regmap::Register* reg, const regmap::F
                                   type == regmap::FieldType::enumeration || !enumValues->empty());
     enumContextLabel_->setVisible(visible);
     enumView_->setVisible(visible);
+    fieldPanel_->setVisible(fieldView_->isVisible() || visible);
     if (!visible) {
         return;
     }
@@ -1614,25 +1749,56 @@ void MainWindow::refreshDiagnostics()
     if (errorCount > 0) {
         tabs_->setCurrentIndex(0);
     }
+    updateBottomPanelVisibility();
+    updateSyncPresentation();
 }
 
 void MainWindow::refreshGenerated()
 {
     generatedModel_->clear();
     generatedModel_->setHorizontalHeaderLabels(
-        {QStringLiteral("Target"), QStringLiteral("Path"), QStringLiteral("Status")});
+        {QStringLiteral("Target"), QStringLiteral("Path"), QStringLiteral("Status"),
+         QStringLiteral("Updated")});
     const auto& artifacts = controller_.artifacts();
+    bool retryNeeded = false;
     for (std::size_t index = 0; index < artifacts.size(); ++index) {
         const auto& artifact = artifacts[index];
         auto* kind = item(fromUtf8(regmap::toString(artifact.kind)));
         kind->setData(static_cast<int>(index), rowIndexRole);
+        QString failure;
+        for (const auto& diagnostic : controller_.diagnostics()) {
+            if (diagnostic.severity == regmap::DiagnosticSeverity::error &&
+                diagnostic.code == "RM4000" &&
+                diagnostic.source.workbook.lexically_normal() == artifact.path.lexically_normal()) {
+                failure = fromUtf8(diagnostic.message);
+                break;
+            }
+        }
+        const QFileInfo information(fromPath(artifact.path));
+        QString status = QStringLiteral("Synchronized");
+        if (!failure.isEmpty()) {
+            status = QStringLiteral("Failed");
+            retryNeeded = true;
+        } else if (!information.exists()) {
+            status = QStringLiteral("Missing");
+            retryNeeded = true;
+        }
+        auto* statusItem = item(status);
+        statusItem->setToolTip(failure);
+        if (status != QStringLiteral("Synchronized")) {
+            statusItem->setForeground(QColor(QStringLiteral("#B3261E")));
+        }
         generatedModel_->appendRow(
-            {kind, item(fromPath(artifact.path)),
-             item(QFileInfo::exists(fromPath(artifact.path)) ? QStringLiteral("Generated")
-                                                             : QStringLiteral("Missing"))});
+            {kind, item(fromPath(artifact.path)), statusItem,
+             item(information.exists()
+                      ? information.lastModified().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"))
+                      : QStringLiteral("—"))});
     }
     generatedView_->resizeColumnsToContents();
     tabs_->setTabText(1, QStringLiteral("Generated (%1)").arg(artifacts.size()));
+    retryOutputsButton_->setVisible(retryNeeded);
+    updateBottomPanelVisibility();
+    updateSyncPresentation();
 }
 
 void MainWindow::refreshDiff()
@@ -1671,8 +1837,94 @@ void MainWindow::refreshDiff()
     diffView_->resizeColumnsToContents();
     tabs_->setTabText(
         2, QStringLiteral("Diff (%1)").arg(changes.size() + controller_.conflicts().size()));
-    if (!controller_.conflicts().empty()) {
+    const std::size_t conflictCount = controller_.conflicts().size();
+    conflictBar_->setVisible(conflictCount > 0);
+    conflictSummaryLabel_->setText(
+        QStringLiteral("%1 RTL conflict(s) require a choice. No file is overwritten yet.")
+            .arg(conflictCount));
+    if (conflictCount > 0) {
         tabs_->setCurrentIndex(2);
+    }
+    updateBottomPanelVisibility();
+    updateSyncPresentation();
+}
+
+void MainWindow::updateBottomPanelVisibility()
+{
+    const bool showProblems = problemsModel_->rowCount() > 0;
+    const bool showGenerated = generatedModel_->rowCount() > 0;
+    const bool showDiff = diffModel_->rowCount() > 0;
+    tabs_->setTabVisible(0, showProblems);
+    tabs_->setTabVisible(1, showGenerated);
+    tabs_->setTabVisible(2, showDiff);
+    tabs_->setVisible(showProblems || showGenerated || showDiff);
+}
+
+void MainWindow::updateSyncPresentation(const QString& message)
+{
+    if (syncStateLabel_ == nullptr) {
+        return;
+    }
+    if (!message.isEmpty()) {
+        lastSyncMessage_ = message;
+    }
+
+    QString state = QStringLiteral("idle");
+    QString text = QStringLiteral("No project");
+    const auto* workspace = controller_.workspace();
+    const bool outputFailure =
+        std::ranges::any_of(controller_.diagnostics(), [](const regmap::Diagnostic& diagnostic) {
+            return diagnostic.severity == regmap::DiagnosticSeverity::error &&
+                diagnostic.code.starts_with("RM4");
+        });
+    const bool busy = lastSyncMessage_.startsWith(QStringLiteral("Loading")) ||
+        lastSyncMessage_.startsWith(QStringLiteral("Synchronizing")) ||
+        lastSyncMessage_.startsWith(QStringLiteral("Merging")) ||
+        lastSyncMessage_.startsWith(QStringLiteral("Generating")) ||
+        lastSyncMessage_.startsWith(QStringLiteral("Waiting"));
+
+    if (workspace == nullptr) {
+        // Keep the no-project state.
+    } else if (controller_.hasConflicts()) {
+        state = QStringLiteral("conflict");
+        text = QStringLiteral("Conflict · %1").arg(controller_.conflicts().size());
+    } else if (outputFailure) {
+        state = QStringLiteral("partial");
+        text = QStringLiteral("Saved · output failed");
+    } else if (controller_.hasProjectErrors()) {
+        state = QStringLiteral("blocked");
+        text = QStringLiteral("Blocked · see Problems");
+    } else if (controller_.isDirty()) {
+        state = QStringLiteral("dirty");
+        text = QStringLiteral("Unsaved · %1 change(s)").arg(controller_.changes().size());
+    } else if (busy) {
+        state = QStringLiteral("busy");
+        text = QStringLiteral("Synchronizing…");
+    } else {
+        state = QStringLiteral("synced");
+        text = QStringLiteral("Synchronized · %1 output(s)").arg(controller_.artifacts().size());
+    }
+
+    syncStateLabel_->setText(text);
+    syncStateLabel_->setToolTip(lastSyncMessage_);
+    if (syncStateLabel_->property("state").toString() != state) {
+        syncStateLabel_->setProperty("state", state);
+        syncStateLabel_->style()->unpolish(syncStateLabel_);
+        syncStateLabel_->style()->polish(syncStateLabel_);
+    }
+}
+
+void MainWindow::applyFieldColumnVisibility()
+{
+    if (fieldView_ == nullptr) {
+        return;
+    }
+    const bool advanced =
+        showAdvancedFieldsAction_ != nullptr && showAdvancedFieldsAction_->isChecked();
+    for (const int column :
+         {fieldParentColumn, fieldHardwareAccessColumn, fieldReadEffectColumn,
+          fieldWriteEffectColumn}) {
+        fieldView_->setColumnHidden(column, !advanced);
     }
 }
 
@@ -2811,7 +3063,7 @@ void MainWindow::showRegisterContextMenu(const QPoint& position)
     QMenu menu(this);
     QAction* editTags = menu.addAction(QStringLiteral("编辑标签…"));
     menu.addSeparator();
-    QAction* reserve = menu.addAction(QStringLiteral("悬空（保留偏移）"));
+    QAction* reserve = menu.addAction(QStringLiteral("设为 Reserved（保留偏移）"));
     QFont reserveFont = reserve->font();
     reserveFont.setWeight(QFont::DemiBold);
     reserve->setFont(reserveFont);
@@ -2912,6 +3164,8 @@ void MainWindow::convertSelectedRegisterToReserved()
         selectedRegisterId_ = registerId;
         refreshProject();
         selectRegister(registerId);
+        statusBar()->showMessage(QStringLiteral("Register set to Reserved · Ctrl+Z to restore"),
+                                 5000);
     }
 }
 
@@ -2923,6 +3177,12 @@ void MainWindow::deleteSelectedRegisterAndShift()
     }
     std::string blockId;
     std::string nextId;
+    std::string registerName;
+    std::uint64_t registerOffset = 0;
+    std::uint64_t shift = 0;
+    std::uint64_t firstFollowingOffset = 0;
+    std::uint64_t lastFollowingOffset = 0;
+    std::size_t affectedCount = 0;
     for (const auto& space : workspace->addressSpaces) {
         for (const auto& block : space.blocks) {
             const auto iterator =
@@ -2931,10 +3191,16 @@ void MainWindow::deleteSelectedRegisterAndShift()
                 continue;
             }
             blockId = block.id;
+            registerName = iterator->name;
+            registerOffset = iterator->offset;
+            shift = registerExtent(*iterator);
             const auto index =
                 static_cast<std::size_t>(std::distance(block.registers.begin(), iterator));
-            if (index + 1 < block.registers.size()) {
+            affectedCount = block.registers.size() - index - 1;
+            if (affectedCount > 0) {
                 nextId = block.registers[index + 1].id;
+                firstFollowingOffset = block.registers[index + 1].offset;
+                lastFollowingOffset = block.registers.back().offset;
             } else if (index > 0) {
                 nextId = block.registers[index - 1].id;
             }
@@ -2947,6 +3213,27 @@ void MainWindow::deleteSelectedRegisterAndShift()
     if (blockId.empty()) {
         return;
     }
+
+    QString impact = QStringLiteral("No following register will move.");
+    if (affectedCount > 0) {
+        const auto shifted = [shift](std::uint64_t offset) {
+            return offset >= shift ? offset - shift : 0;
+        };
+        impact =
+            QStringLiteral("%1 following register(s) will shift by %2:\n%3 … %4  →  %5 … %6")
+                .arg(affectedCount)
+                .arg(hex(shift), hex(firstFollowingOffset), hex(lastFollowingOffset),
+                     hex(shifted(firstFollowingOffset)), hex(shifted(lastFollowingOffset)));
+    }
+    const QString prompt =
+        QStringLiteral("Delete %1 at offset %2?\n\n%3\n\nThis can be restored with Ctrl+Z.")
+            .arg(fromUtf8(registerName), hex(registerOffset), impact);
+    if (QMessageBox::warning(this, QStringLiteral("Delete and Shift Registers"), prompt,
+                             QMessageBox::Yes | QMessageBox::No, QMessageBox::No) !=
+        QMessageBox::Yes) {
+        return;
+    }
+
     const std::string registerId = selectedRegisterId_;
     if (controller_.editWorkspace(
             QStringLiteral("Delete register and shift following offsets"),
@@ -2960,10 +3247,10 @@ void MainWindow::deleteSelectedRegisterAndShift()
                 if (iterator == block->registers.end()) {
                     return;
                 }
-                const std::uint64_t shift = registerExtent(*iterator);
+                const std::uint64_t extent = registerExtent(*iterator);
                 const auto firstFollowing = block->registers.erase(iterator);
                 for (auto current = firstFollowing; current != block->registers.end(); ++current) {
-                    current->offset = current->offset >= shift ? current->offset - shift : 0;
+                    current->offset = current->offset >= extent ? current->offset - extent : 0;
                 }
             })) {
         selectedRegisterId_ = nextId;
@@ -2972,6 +3259,11 @@ void MainWindow::deleteSelectedRegisterAndShift()
         if (!nextId.empty()) {
             selectRegister(nextId);
         }
+        statusBar()->showMessage(
+            QStringLiteral("Deleted %1 · shifted %2 register(s) · Ctrl+Z to restore")
+                .arg(fromUtf8(registerName))
+                .arg(affectedCount),
+            6000);
     }
 }
 
@@ -3100,13 +3392,20 @@ void MainWindow::moveField(const std::string& fieldId, std::uint32_t lsb, std::u
 
 void MainWindow::deleteSelection()
 {
+    const QWidget* focus = QApplication::focusWidget();
+    const auto focusInside = [focus](const QWidget* widget) {
+        return focus == widget || (focus != nullptr && widget->isAncestorOf(focus));
+    };
     std::string id;
-    const bool deletingEnumValue = enumView_->hasFocus();
+    const bool deletingEnumValue = focusInside(enumView_);
     if (deletingEnumValue) {
         id = enumView_->currentIndex().data(objectIdRole).toString().toUtf8().toStdString();
-        if (id.empty()) {
-            return;
-        }
+    } else if (focusInside(fieldView_) || focusInside(bitfieldView_)) {
+        id = selectedFieldId_;
+    } else if (focusInside(registerView_)) {
+        id = selectedRegisterId_;
+    } else if (focusInside(hierarchyView_)) {
+        id = !selectedBlockId_.empty() ? selectedBlockId_ : selectedAddressId_;
     } else if (!selectedFieldId_.empty()) {
         id = selectedFieldId_;
     } else if (!selectedRegisterId_.empty()) {
@@ -3119,6 +3418,40 @@ void MainWindow::deleteSelection()
     if (id.empty()) {
         return;
     }
+
+    QString label = fromUtf8(id);
+    QString compositeImpact;
+    const auto* workspace = controller_.workspace();
+    if (workspace != nullptr) {
+        if (const auto* page = regmap::findAddressSpace(*workspace, id)) {
+            std::size_t registerCount = 0;
+            for (const auto& block : page->blocks) {
+                registerCount += block.registers.size();
+            }
+            label = QStringLiteral("page %1").arg(fromUtf8(page->name));
+            compositeImpact =
+                QStringLiteral("This removes %1 block(s) and %2 register(s).")
+                    .arg(page->blocks.size())
+                    .arg(registerCount);
+        } else if (const auto* block = regmap::findRegisterBlock(*workspace, id)) {
+            label = QStringLiteral("block %1").arg(fromUtf8(block->name));
+            compositeImpact =
+                QStringLiteral("This removes %1 register(s).").arg(block->registers.size());
+        } else if (const auto* reg = regmap::findRegister(*workspace, id)) {
+            label = QStringLiteral("register %1").arg(fromUtf8(reg->name));
+        } else if (const auto* field = regmap::findField(*workspace, id)) {
+            label = QStringLiteral("field %1").arg(fromUtf8(field->name));
+        }
+    }
+    if (!compositeImpact.isEmpty() &&
+        QMessageBox::warning(
+            this, QStringLiteral("Delete Register-Map Objects"),
+            QStringLiteral("Delete %1?\n\n%2\n\nThis can be restored with Ctrl+Z.")
+                .arg(label, compositeImpact),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) {
+        return;
+    }
+
     if (controller_.editWorkspace(QStringLiteral("Delete object"),
                                   [id](regmap::Workspace& candidate) {
                                       static_cast<void>(regmap::removeObject(candidate, id));
@@ -3141,13 +3474,331 @@ void MainWindow::deleteSelection()
             selectedFieldId_.clear();
         }
         refreshProject();
+        statusBar()->showMessage(
+            QStringLiteral("Deleted %1 · Ctrl+Z to restore").arg(label), 5000);
     }
+}
+
+bool MainWindow::navigateToObject(const std::string& id)
+{
+    const auto* workspace = controller_.workspace();
+    if (workspace == nullptr || id.empty()) {
+        return false;
+    }
+
+    if (workspace->id == id) {
+        selectedAddressId_.clear();
+        selectedBlockId_.clear();
+        selectedRegisterId_.clear();
+        selectedFieldId_.clear();
+        selectedTagFilter_.clear();
+        refreshProject();
+        statusBar()->showMessage(QStringLiteral("Located workspace"), 3000);
+        return true;
+    }
+
+    for (const auto& page : workspace->addressSpaces) {
+        if (page.id == id) {
+            selectedAddressId_ = page.id;
+            selectedBlockId_.clear();
+            selectedRegisterId_.clear();
+            selectedFieldId_.clear();
+            selectedTagFilter_.clear();
+            refreshProject();
+            statusBar()->showMessage(
+                QStringLiteral("Located page %1").arg(fromUtf8(page.name)), 3000);
+            return true;
+        }
+        for (const auto& block : page.blocks) {
+            if (block.id == id) {
+                selectedAddressId_ = page.id;
+                selectedBlockId_ = block.id;
+                selectedRegisterId_.clear();
+                selectedFieldId_.clear();
+                selectedTagFilter_.clear();
+                refreshProject();
+                statusBar()->showMessage(
+                    QStringLiteral("Located block %1").arg(fromUtf8(block.name)), 3000);
+                return true;
+            }
+            for (const auto& reg : block.registers) {
+                bool registerMatch = reg.id == id;
+                if (!registerMatch) {
+                    registerMatch = std::ranges::any_of(
+                        reg.enumValues, [&](const regmap::EnumValue& value) {
+                            return value.id == id;
+                        });
+                }
+                std::string fieldId;
+                const auto findFieldOwner =
+                    [&](const auto& self, const std::vector<regmap::Field>& fields) -> bool {
+                    for (const auto& field : fields) {
+                        if (field.id == id ||
+                            std::ranges::any_of(
+                                field.enumValues, [&](const regmap::EnumValue& value) {
+                                    return value.id == id;
+                                })) {
+                            fieldId = field.id;
+                            return true;
+                        }
+                        if (self(self, field.members)) {
+                            return true;
+                        }
+                    }
+                    return false;
+                };
+                if (!registerMatch && !findFieldOwner(findFieldOwner, reg.fields)) {
+                    continue;
+                }
+
+                selectedAddressId_ = page.id;
+                selectedBlockId_ = block.id;
+                selectedRegisterId_ = reg.id;
+                selectedFieldId_ = fieldId;
+                selectedTagFilter_.clear();
+                refreshProject();
+                selectRegister(reg.id);
+                if (!fieldId.empty()) {
+                    selectField(fieldId);
+                }
+                QString located =
+                    QStringLiteral("Located register %1").arg(fromUtf8(reg.name));
+                if (!fieldId.empty()) {
+                    if (const auto* field = findField(reg, fieldId)) {
+                        located = QStringLiteral("Located field %1").arg(fromUtf8(field->name));
+                    } else {
+                        located = QStringLiteral("Located field");
+                    }
+                }
+                statusBar()->showMessage(located, 3000);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+void MainWindow::rebuildSearchResults()
+{
+    searchResults_.clear();
+    searchResultIndex_ = -1;
+    searchQuery_ = globalSearchEdit_->text().trimmed();
+    const auto* workspace = controller_.workspace();
+    if (workspace == nullptr || searchQuery_.isEmpty()) {
+        return;
+    }
+
+    std::set<std::string> seen;
+    const auto addIfMatch = [&](const std::string& id, const QStringList& values) {
+        if (seen.contains(id)) {
+            return;
+        }
+        const bool exact = std::ranges::any_of(values, [&](const QString& value) {
+            return value.compare(searchQuery_, Qt::CaseInsensitive) == 0;
+        });
+        const bool partial = exact || std::ranges::any_of(values, [&](const QString& value) {
+            return value.contains(searchQuery_, Qt::CaseInsensitive);
+        });
+        if (partial) {
+            seen.insert(id);
+            if (exact) {
+                searchResults_.insert(searchResults_.begin(), id);
+            } else {
+                searchResults_.push_back(id);
+            }
+        }
+    };
+    const auto enumText = [](const std::vector<regmap::EnumValue>& values) {
+        QStringList text;
+        for (const auto& value : values) {
+            text << fromUtf8(value.name) << fromUtf8(value.value.toHexString())
+                 << fromUtf8(value.description);
+        }
+        return text;
+    };
+
+    addIfMatch(workspace->id, {fromUtf8(workspace->name), fromUtf8(workspace->id)});
+    for (const auto& page : workspace->addressSpaces) {
+        addIfMatch(page.id, {fromUtf8(page.name), fromUtf8(page.id), hex(page.baseAddress),
+                             fromUtf8(page.description)});
+        for (const auto& block : page.blocks) {
+            addIfMatch(block.id, {fromUtf8(block.name), fromUtf8(block.id),
+                                  hex(block.baseAddress), fromUtf8(block.description)});
+            for (const auto& reg : block.registers) {
+                std::uint64_t pageBlockAddress = 0;
+                std::uint64_t absoluteAddress = 0;
+                const bool addressOverflow =
+                    addOverflow(page.baseAddress, block.baseAddress, pageBlockAddress) ||
+                    addOverflow(pageBlockAddress, reg.offset, absoluteAddress);
+                QStringList registerValues{
+                    fromUtf8(reg.name), fromUtf8(reg.id), hex(reg.offset),
+                    addressOverflow ? QStringLiteral("overflow") : hex(absoluteAddress),
+                    registerTypeText(reg), accessText(reg.access), tagsText(reg.tags),
+                    fromUtf8(reg.description)};
+                registerValues.append(enumText(reg.enumValues));
+                addIfMatch(reg.id, registerValues);
+
+                const auto visitFields =
+                    [&](const auto& self, const std::vector<regmap::Field>& fields,
+                        const QString& parentPath) -> void {
+                    for (const auto& field : fields) {
+                        const QString path = parentPath.isEmpty()
+                            ? fromUtf8(field.name)
+                            : parentPath + QStringLiteral(".") + fromUtf8(field.name);
+                        QStringList fieldValues{
+                            fromUtf8(field.name), fromUtf8(field.id), path,
+                            QString::number(field.msb), QString::number(field.lsb),
+                            fieldTypeText(field), accessText(field.softwareAccess),
+                            fromUtf8(field.description)};
+                        fieldValues.append(enumText(field.enumValues));
+                        addIfMatch(field.id, fieldValues);
+                        self(self, field.members, path);
+                    }
+                };
+                visitFields(visitFields, reg.fields, {});
+            }
+        }
+    }
+}
+
+void MainWindow::runSearch(bool reverse)
+{
+    if (globalSearchEdit_->text().trimmed().isEmpty()) {
+        globalSearchEdit_->setFocus();
+        searchResultLabel_->clear();
+        return;
+    }
+    if (searchQuery_ != globalSearchEdit_->text().trimmed() || searchResults_.empty()) {
+        rebuildSearchResults();
+    }
+    if (searchResults_.empty()) {
+        searchResultLabel_->setText(QStringLiteral("0/0"));
+        statusBar()->showMessage(QStringLiteral("No matching register-map object"), 3000);
+        return;
+    }
+
+    const int count = static_cast<int>(searchResults_.size());
+    if (reverse) {
+        searchResultIndex_ = searchResultIndex_ <= 0 ? count - 1 : searchResultIndex_ - 1;
+    } else {
+        searchResultIndex_ = (searchResultIndex_ + 1) % count;
+    }
+    static_cast<void>(navigateToObject(
+        searchResults_[static_cast<std::size_t>(searchResultIndex_)]));
+    searchResultLabel_->setText(
+        QStringLiteral("%1/%2").arg(searchResultIndex_ + 1).arg(count));
+}
+
+void MainWindow::copySelection()
+{
+    QWidget* focus = QApplication::focusWidget();
+    if (auto* edit = qobject_cast<QLineEdit*>(focus)) {
+        edit->copy();
+        return;
+    }
+    QTableView* view = nullptr;
+    for (QTableView* candidate :
+         {registerView_, fieldView_, enumView_, problemsView_, generatedView_, diffView_}) {
+        if (focus == candidate || (focus != nullptr && candidate->isAncestorOf(focus))) {
+            view = candidate;
+            break;
+        }
+    }
+    if (view == nullptr || !view->currentIndex().isValid()) {
+        return;
+    }
+    QModelIndexList indexes = view->selectionModel()->selectedIndexes();
+    if (indexes.empty()) {
+        indexes.push_back(view->currentIndex());
+    }
+    int firstRow = indexes.front().row();
+    int lastRow = firstRow;
+    int firstColumn = indexes.front().column();
+    int lastColumn = firstColumn;
+    for (const QModelIndex& index : indexes) {
+        firstRow = std::min(firstRow, index.row());
+        lastRow = std::max(lastRow, index.row());
+        firstColumn = std::min(firstColumn, index.column());
+        lastColumn = std::max(lastColumn, index.column());
+    }
+    QStringList lines;
+    for (int row = firstRow; row <= lastRow; ++row) {
+        QStringList values;
+        for (int column = firstColumn; column <= lastColumn; ++column) {
+            const QModelIndex index = view->model()->index(row, column);
+            values << (view->selectionModel()->isSelected(index) ||
+                               (indexes.size() == 1 && index == indexes.front())
+                           ? index.data().toString()
+                           : QString{});
+        }
+        lines << values.join('\t');
+    }
+    QApplication::clipboard()->setText(lines.join('\n'));
+    statusBar()->showMessage(QStringLiteral("Copied %1 cell(s)").arg(indexes.size()), 2000);
+}
+
+void MainWindow::pasteSelection()
+{
+    QWidget* focus = QApplication::focusWidget();
+    if (auto* edit = qobject_cast<QLineEdit*>(focus)) {
+        edit->paste();
+        return;
+    }
+    QTableView* view = nullptr;
+    for (QTableView* candidate : {registerView_, fieldView_, enumView_}) {
+        if (focus == candidate || (focus != nullptr && candidate->isAncestorOf(focus))) {
+            view = candidate;
+            break;
+        }
+    }
+    if (view == nullptr || !view->currentIndex().isValid()) {
+        return;
+    }
+
+    QString clipboard = QApplication::clipboard()->text();
+    clipboard.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+    clipboard.replace('\r', '\n');
+    QStringList rows = clipboard.split('\n', Qt::KeepEmptyParts);
+    if (!rows.empty() && rows.back().isEmpty()) {
+        rows.removeLast();
+    }
+    if (rows.empty()) {
+        return;
+    }
+
+    const QModelIndex start = view->currentIndex();
+    int editableCells = 0;
+    const QScopedValueRollback editGuard(modelEditInProgress_, true);
+    for (int rowOffset = 0; rowOffset < rows.size(); ++rowOffset) {
+        const QStringList cells = rows[rowOffset].split('\t', Qt::KeepEmptyParts);
+        for (int columnOffset = 0; columnOffset < cells.size(); ++columnOffset) {
+            const QModelIndex target =
+                view->model()->index(start.row() + rowOffset, start.column() + columnOffset);
+            if (!target.isValid() || target.data(addRowRole).toBool() ||
+                !(target.flags() & Qt::ItemIsEditable)) {
+                continue;
+            }
+            const std::string objectId =
+                target.data(objectIdRole).toString().toUtf8().toStdString();
+            const std::string property =
+                target.data(propertyRole).toString().toUtf8().toStdString();
+            if (objectId.empty() || property.empty()) {
+                continue;
+            }
+            ++editableCells;
+            applyPropertyEdit(objectId, property, cells[columnOffset]);
+        }
+    }
+    statusBar()->showMessage(
+        QStringLiteral("Pasted into %1 editable cell(s); rejected values remain unchanged")
+            .arg(editableCells),
+        4000);
 }
 
 void MainWindow::updateEditActions()
 {
     const bool hasWorkspace = controller_.workspace() != nullptr;
-    saveAction_->setEnabled(hasWorkspace && controller_.isDirty());
+    saveAction_->setEnabled(hasWorkspace);
     synchronizeAction_->setEnabled(hasWorkspace);
     useWorkbenchAction_->setEnabled(controller_.hasConflicts());
     useRtlAction_->setEnabled(controller_.hasConflicts());
@@ -3162,6 +3813,7 @@ void MainWindow::updateEditActions()
     deleteAction_->setEnabled(hasWorkspace &&
                               (!selectedAddressId_.empty() || !selectedBlockId_.empty() ||
                                !selectedRegisterId_.empty() || !selectedFieldId_.empty()));
+    updateSyncPresentation();
 }
 
 void MainWindow::closeEvent(QCloseEvent* event)

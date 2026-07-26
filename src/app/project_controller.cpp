@@ -470,7 +470,10 @@ void ProjectController::resolveConflicts(regmap::MergePreference preference)
     emit conflictsChanged();
     emit projectChanged();
     emit editStateChanged();
-    static_cast<void>(persistSynchronizedModel());
+    if (persistSynchronizedModel()) {
+        emit syncStatusChanged(
+            QStringLiteral("Conflicts resolved; Workbench, RTL, and read-only outputs synchronized"));
+    }
 }
 
 bool ProjectController::persistSynchronizedModel()
@@ -518,6 +521,10 @@ bool ProjectController::persistSynchronizedModel()
     loadDiagnostics_.clear();
     generationDiagnostics_.clear();
     generateImpl(true);
+    if (containsErrors(generationDiagnostics_)) {
+        emit syncStatusChanged(
+            QStringLiteral("Model and RTL saved; one or more read-only outputs failed"));
+    }
     rebuildDiagnostics();
     refreshWatchPaths();
     emit projectChanged();

@@ -28,7 +28,7 @@ Workspace -> Page (Address Space) -> Register Block -> Register -> Field -> Enum
 - Reserved address slots and delete-with-offset-shift operations from the register context menu.
 - Multi-tag register assignment with existing-tag selection, new-tag creation, and tag filtering.
 - Single-click cell editing for register and field properties, including register type, value
-  range, initial value, reset value, and reset domain.
+  range, initial value, and reset value.
 - Editable field width with derived read-only LSB, live MSB/LSB labels, top-layer bit-view
   dragging, and explicit overlap resolution by trimming either the moving field or the fields
   it covers.
@@ -36,13 +36,22 @@ Workspace -> Page (Address Space) -> Register Block -> Register -> Field -> Enum
 - Continuous validation of identity, address ranges and overlap, field ranges and overlap,
   access and side-effect combinations, reset values, and enum values.
 - Undo, redo, dirty-state tracking, atomic project save, and close-time save protection.
+- One visible **Save & Sync** action and a persistent state badge for unsaved, synchronizing,
+  synchronized, blocked, partial-output-failure, and conflict states.
+- Per-output status and update time for XLSX, C header, and Markdown, with a direct retry action.
+- Global `Ctrl+F` search across pages, blocks, register/field names, addresses, tags, enum values,
+  and descriptions; Enter/F3 cycles results and selects the matching Workbench object.
+- Spreadsheet-style cell selection plus tab-separated copy and paste for editable table cells.
 - Managed RTL generation and reverse synchronization through an explicitly marked region.
 - Stable-ID, property-level three-way merge using the last synchronized model as the base.
-- Automatic merge for independent changes and explicit Workbench/RTL conflict resolution.
+- Automatic merge for independent changes and explicit Workbench/RTL conflict resolution from
+  the Diff panel; no conflicting file is overwritten before the user chooses a side.
 - Deterministic, read-only XLSX, C header, and Markdown generation. XLSX uses one worksheet per
   Page, separates Blocks with section bands, and embeds collapsible bitfield details only for
   structure registers.
-- Problems, Generated, and Diff views with source navigation.
+- Problems rows navigate to their Workbench object before falling back to source navigation.
+  Problems and Diff are hidden when empty; non-structure registers hide the Field editor, and
+  low-frequency Field columns are available from **View > Show Advanced Field Columns**.
 
 `regmap_core` owns the model, validation, persistence, synchronization, and generators.
 `RegMapWorkbench` owns the Qt editing experience.
@@ -79,23 +88,30 @@ Register types use the same value-type vocabulary. A register's **Range** cell u
 enum values for the selected register are edited in the same table below the field table.
 
 `Ctrl+S` validates and saves the project, synchronizes managed RTL, advances the merge baseline,
-and regenerates all three read-only outputs.
+and regenerates all three read-only outputs. The persistent badge confirms whether the operation
+completed, was blocked by Problems, stopped for an RTL conflict, or saved with an output failure.
+The Generated view lists each output's path, result, and last update time. If Excel is holding the
+XLSX file open, the model and RTL remain saved, the XLSX row reports failure, and **Retry outputs**
+runs the output step again after the workbook is closed.
+
+Use `Ctrl+F` to focus global search. Press Enter or `F3` for the next result and `Shift+F3` for the
+previous result. Double-clicking a Problem or Diff row selects the corresponding Workbench object.
 
 The RTL file is created on the first successful synchronization. Numeric properties are exposed
 as `localparam` declarations carrying `RMW:VALUE` metadata. Text and token properties are stored
 in `RMW:OBJECT` JSON comments. Code outside the `RMW:BEGIN` and `RMW:END` markers is user-owned
 and preserved. Saving a valid RTL edit triggers synchronization. Independent Workbench and RTL
 changes merge automatically; competing edits to the same property appear in **Diff** and must be
-resolved with one of the two conflict-resolution actions.
+resolved with **Keep Workbench changes** or **Use RTL changes** in the conflict bar.
 
 XLSX, C header, and Markdown files are derivative views. Their filesystem permissions are set
 read-only after generation, they are never imported, and any external changes are replaced by
 the next successful generation. The workbook opens on the first Page worksheet. Page base and
 address width appear once at the top; each Block has a section band containing its base and size.
-Register rows expose address, offset, type, width, access, initial/reset values, reset domain,
+Register rows expose address, offset, type, width, access, initial/reset values,
 tags, range or enum summary, and description. Structure registers can expand their initially
-collapsed proportional bitfield diagram and field rows. The header and first three columns stay
-visible while scrolling, and the table includes Excel filters. There is no duplicate flat
+collapsed proportional bitfield diagram and field rows. Only the table header stays visible
+while scrolling, and the table includes Excel filters. There is no duplicate flat
 `Registers` worksheet.
 
 See [architecture.md](docs/architecture.md), [manifest-schema.md](docs/manifest-schema.md),
