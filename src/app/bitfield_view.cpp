@@ -1,6 +1,7 @@
 #include "bitfield_view.hpp"
 
 #include <QColor>
+#include <QEvent>
 #include <QFontMetrics>
 #include <QMouseEvent>
 #include <QPaintEvent>
@@ -44,11 +45,9 @@ BitfieldView::BitfieldView(QWidget* parent)
 
 void BitfieldView::setRegister(const regmap::Register* reg)
 {
+    cancelDrag();
     register_ = reg == nullptr ? std::nullopt : std::optional<regmap::Register>{*reg};
     selectedFieldId_.clear();
-    dragging_ = false;
-    draggedFieldId_.clear();
-    previewLsb_.reset();
     update();
 }
 
@@ -56,6 +55,22 @@ void BitfieldView::setSelectedField(const regmap::Field* field)
 {
     selectedFieldId_ = field == nullptr ? regmap::ObjectId{} : field->id;
     update();
+}
+
+bool BitfieldView::event(QEvent* event)
+{
+    if (dragging_) {
+        switch (event->type()) {
+        case QEvent::UngrabMouse:
+        case QEvent::WindowDeactivate:
+        case QEvent::Hide:
+            cancelDrag();
+            break;
+        default:
+            break;
+        }
+    }
+    return QWidget::event(event);
 }
 
 void BitfieldView::paintEvent(QPaintEvent* event)
@@ -235,11 +250,7 @@ void BitfieldView::mouseReleaseEvent(QMouseEvent* event)
         const QString id = draggedFieldId_;
         const std::uint32_t lsb = previewLsb_.value_or(0);
         const std::uint32_t msb = lsb + draggedWidth_ - 1;
-        releaseMouse();
-        dragging_ = false;
-        draggedFieldId_.clear();
-        previewLsb_.reset();
-        update();
+        cancelDrag();
         emit fieldMoveRequested(id, lsb, msb);
         event->accept();
         return;
@@ -268,6 +279,23 @@ std::uint32_t BitfieldView::bitAtX(qreal x) const
     const auto fromMsb =
         static_cast<std::uint32_t>(relative * static_cast<qreal>(register_->width));
     return register_->width - 1 - std::min(fromMsb, register_->width - 1);
+}
+
+void BitfieldView::cancelDrag()
+{
+    const bool changed = dragging_ || !draggedFieldId_.isEmpty() || previewLsb_.has_value();
+    dragging_ = false;
+    draggedFieldId_.clear();
+    previewLsb_.reset();
+    draggedWidth_ = 0;
+    anchorFromLsb_ = 0;
+
+    if (QWidget::mouseGrabber() == this) {
+        releaseMouse();
+    }
+    if (changed) {
+        update();
+    }
 }
 
 void BitfieldView::updateDrag(qreal x)

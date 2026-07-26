@@ -42,6 +42,7 @@ public:
     [[nodiscard]] QString redoText() const;
     [[nodiscard]] const std::vector<regmap::MergeConflict>& conflicts() const noexcept;
     [[nodiscard]] bool hasConflicts() const noexcept;
+    [[nodiscard]] bool requiresInitialSyncChoice() const noexcept;
 
     bool editWorkspace(
         const QString& description,
@@ -89,6 +90,7 @@ private:
     std::vector<regmap::MergeConflict> conflicts_;
     std::optional<regmap::Workspace> baseline_;
     bool lastAcceptedModelWasValid_ {false};
+    bool initialSyncChoicePending_ {false};
 
     void reloadImpl(bool automatic);
     void generateImpl(bool automatic);

@@ -2102,9 +2102,15 @@ void MainWindow::refreshDiff()
         2, QStringLiteral("Diff (%1)").arg(changes.size() + controller_.conflicts().size()));
     const std::size_t conflictCount = controller_.conflicts().size();
     conflictBar_->setVisible(conflictCount > 0);
-    conflictSummaryLabel_->setText(
-        QStringLiteral("%1 RTL conflict(s) require a choice. No file is overwritten yet.")
-            .arg(conflictCount));
+    if (controller_.requiresInitialSyncChoice()) {
+        conflictSummaryLabel_->setText(
+            QStringLiteral("No synchronization baseline exists and Workbench differs from RTL. "
+                           "Choose one complete source. No file has been overwritten."));
+    } else {
+        conflictSummaryLabel_->setText(
+            QStringLiteral("%1 RTL conflict(s) require a choice. No file is overwritten yet.")
+                .arg(conflictCount));
+    }
     if (conflictCount > 0) {
         tabs_->setCurrentIndex(2);
     }

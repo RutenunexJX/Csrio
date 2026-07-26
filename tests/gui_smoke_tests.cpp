@@ -4,6 +4,9 @@
 #include "workbench_theme.hpp"
 
 #include "regmap/core/project.hpp"
+#include "regmap/core/rtl_sync.hpp"
+#include "regmap/core/serialization.hpp"
+#include "regmap/core/three_way_merge.hpp"
 #include "regmap/core/workspace_store.hpp"
 
 #include <QAction>
@@ -17,6 +20,7 @@
 #include <QComboBox>
 #include <QContextMenuEvent>
 #include <QDir>
+#include <QEvent>
 #include <QFile>
 #include <QFileDevice>
 #include <QFileInfo>
@@ -44,8 +48,10 @@
 #include <QTreeView>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 
 class GuiSmokeTests final : public QObject {
@@ -54,6 +60,11 @@ class GuiSmokeTests final : public QObject {
 private slots:
     void appliesWorkbookTheme();
     void createsWorkbenchFirstProject();
+    void establishesMissingBaselineForIdenticalSources();
+    void blocksDivergentSourcesWithoutBaseline();
+    void resolvesMissingBaselineWithExplicitChoice();
+    void recoversAfterInvalidInitialRtlIsFixed();
+    void detectsStructuralDifferenceWithoutBaseline();
     void opensProjectAndPopulatesEditableViews();
     void navigatesHierarchyAndOpensFieldsExplicitly();
     void hierarchyContextActionsUseRightClickedTarget();
@@ -61,6 +72,8 @@ private slots:
     void reloadsProjectWithoutLosingFieldWorkspaceContext();
     void navigatesFieldProblemsAndFallsBackForHiddenFields();
     void supportsTrailingRowsAndFieldMovement();
+    void dragsFieldsAndResolvesOverlaps();
+    void cancelsInterruptedFieldDrag();
     void editsTagsAndAccessFromSingleClick();
     void insertsRegisterBetweenRows();
     void showsUnifiedSyncStateAndGeneratedResults();
@@ -70,6 +83,8 @@ private slots:
     void editsUndoesAndSavesProject();
     void rejectsInvalidManagedRtl();
     void synchronizesManagedRtlEdits();
+    void synchronizesManagedRtlRegisterOrderWithExistingBaseline();
+    void synchronizesManagedRtlRegisterReparentWithExistingBaseline();
     void resolvesRtlConflictFromDiffPanel();
     void reportsAndResolvesRtlConflicts();
 };
@@ -197,6 +212,54 @@ void createFieldDiagnosticProject(const QString& path, bool hiddenFieldOwner)
     file.close();
 }
 
+void createBitfieldDragProject(const QString& path)
+{
+    createProject(path);
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::ReadOnly | QIODevice::Text));
+    QString text = QString::fromUtf8(file.readAll());
+    file.close();
+
+    const QString originalRange = QStringLiteral("                  msb: 0\n"
+                                                 "                  lsb: 0\n");
+    const QString widenedRange = QStringLiteral("                  msb: 3\n"
+                                                "                  lsb: 0\n");
+    QCOMPARE(text.count(originalRange), 1);
+    text.replace(originalRange, widenedRange);
+
+    const QString marker = QStringLiteral("rtl:\n");
+    QVERIFY(text.contains(marker));
+    const QString obstacle = QStringLiteral(R"(                - id: field-obstacle
+                  name: OBSTACLE
+                  msb: 9
+                  lsb: 4
+                  type: bits
+                  sw_access: ro
+                  hw_access: wo
+                  reset: 0x0
+                  read_side_effect: none
+                  write_side_effect: none
+                  enum_values: []
+)");
+    text.replace(marker, obstacle + marker);
+
+    const QByteArray bytes = text.toUtf8();
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate));
+    QCOMPARE(file.write(bytes), bytes.size());
+    file.close();
+}
+
+QPoint bitfieldPointForBit(const BitfieldView* view, std::uint32_t bit,
+                           std::uint32_t registerWidth = 32)
+{
+    const double left = 14.0;
+    const double available = std::max(1.0, static_cast<double>(view->width()) - 28.0);
+    const double center =
+        left + (static_cast<double>(registerWidth) - static_cast<double>(bit) - 0.5) /
+            static_cast<double>(registerWidth) * available;
+    return QPoint(static_cast<int>(center + 0.5), 93);
+}
+
 void makeGeneratedFilesWritable(const QString& root)
 {
     QDir directory(QDir(root).filePath(QStringLiteral("generated")));
@@ -283,11 +346,332 @@ void GuiSmokeTests::createsWorkbenchFirstProject()
     QCOMPARE(controller.workspace()->name, std::string("new-device"));
     QVERIFY(!controller.workspace()->id.empty());
     QVERIFY(QFileInfo::exists(manifestPath));
+    const QString baselinePath = manifestPath + QStringLiteral(".sync.json");
     QVERIFY(QFileInfo::exists(directory.filePath(QStringLiteral("rtl/new_device_registers.sv"))));
     QVERIFY(QFileInfo::exists(directory.filePath(QStringLiteral("generated/register-map.xlsx"))));
     QVERIFY(QFileInfo::exists(directory.filePath(QStringLiteral("generated/new_device_regs.h"))));
     QVERIFY(QFileInfo::exists(directory.filePath(QStringLiteral("generated/register-map.md"))));
+    QVERIFY(QFileInfo::exists(baselinePath));
+    const auto baseline =
+        regmap::loadSyncBaseline(std::filesystem::path(baselinePath.toStdWString()));
+    QVERIFY(baseline.workspace.has_value());
+    QCOMPARE(regmap::serializeWorkspaceState(*baseline.workspace, false),
+             regmap::serializeWorkspaceState(*controller.workspace(), false));
+    QVERIFY(!controller.hasProjectErrors());
+    QVERIFY(!controller.hasConflicts());
     QVERIFY(!controller.isDirty());
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::establishesMissingBaselineForIdenticalSources()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifestPath = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    const QString rtlPath = directory.filePath(QStringLiteral("rtl/gui_registers.sv"));
+    const QString baselinePath = manifestPath + QStringLiteral(".sync.json");
+    createProject(manifestPath);
+
+    const auto source =
+        regmap::openProject(std::filesystem::path(manifestPath.toStdWString()));
+    QVERIFY(source.workspace.has_value());
+    QVERIFY(source.manifest.has_value());
+    QVERIFY(regmap::writeManagedRtl(std::filesystem::path(rtlPath.toStdWString()),
+                                    source.manifest->rtl.moduleName,
+                                    *source.workspace)
+                .empty());
+    QVERIFY(!QFileInfo::exists(baselinePath));
+
+    ProjectController controller;
+    controller.openProject(manifestPath);
+
+    QVERIFY(!controller.requiresInitialSyncChoice());
+    QVERIFY(!controller.hasConflicts());
+    QVERIFY(!controller.hasProjectErrors());
+    QVERIFY(!controller.isDirty());
+    QVERIFY(QFileInfo::exists(baselinePath));
+    const auto baseline =
+        regmap::loadSyncBaseline(std::filesystem::path(baselinePath.toStdWString()));
+    QVERIFY(baseline.workspace.has_value());
+    QCOMPARE(regmap::serializeWorkspaceState(*baseline.workspace, false),
+             regmap::serializeWorkspaceState(*controller.workspace(), false));
+    const auto parsedRtl =
+        regmap::parseManagedRtl(std::filesystem::path(rtlPath.toStdWString()));
+    QVERIFY(parsedRtl.workspace.has_value());
+    QCOMPARE(regmap::serializeWorkspaceState(*parsedRtl.workspace, false),
+             regmap::serializeWorkspaceState(*controller.workspace(), false));
+    QVERIFY(QFileInfo::exists(
+        directory.filePath(QStringLiteral("generated/register-map.xlsx"))));
+    QVERIFY(QFileInfo::exists(directory.filePath(QStringLiteral("generated/gui_regs.h"))));
+    QVERIFY(QFileInfo::exists(
+        directory.filePath(QStringLiteral("generated/register-map.md"))));
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::blocksDivergentSourcesWithoutBaseline()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifestPath = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    const QString rtlPath = directory.filePath(QStringLiteral("rtl/gui_registers.sv"));
+    const QString baselinePath = manifestPath + QStringLiteral(".sync.json");
+    createProject(manifestPath);
+
+    auto source = regmap::openProject(std::filesystem::path(manifestPath.toStdWString()));
+    QVERIFY(source.workspace.has_value());
+    QVERIFY(source.manifest.has_value());
+    regmap::findRegister(*source.workspace, "reg-status")->offset = 8;
+    QVERIFY(regmap::writeManagedRtl(std::filesystem::path(rtlPath.toStdWString()),
+                                    source.manifest->rtl.moduleName,
+                                    *source.workspace)
+                .empty());
+    QFile manifestFile(manifestPath);
+    QVERIFY(manifestFile.open(QIODevice::ReadOnly));
+    const QByteArray originalManifest = manifestFile.readAll();
+    manifestFile.close();
+    QFile rtlFile(rtlPath);
+    QVERIFY(rtlFile.open(QIODevice::ReadOnly));
+    const QByteArray originalRtl = rtlFile.readAll();
+    rtlFile.close();
+
+    MainWindow window;
+    window.resize(1200, 760);
+    window.show();
+    window.openProjectPath(manifestPath);
+    QTest::qWait(50);
+
+    auto* controller = window.findChild<ProjectController*>();
+    auto* conflictBar = window.findChild<QWidget*>(QStringLiteral("conflictBar"));
+    auto* conflictSummary = window.findChild<QLabel*>(QStringLiteral("conflictSummaryLabel"));
+    auto* keepWorkbench =
+        window.findChild<QPushButton*>(QStringLiteral("keepWorkbenchButton"));
+    auto* useRtl = window.findChild<QPushButton*>(QStringLiteral("useRtlButton"));
+    auto* diff = window.findChild<QTableView*>(QStringLiteral("diffView"));
+    auto* state = window.findChild<QLabel*>(QStringLiteral("syncStateBadge"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(conflictBar != nullptr);
+    QVERIFY(conflictSummary != nullptr);
+    QVERIFY(keepWorkbench != nullptr);
+    QVERIFY(useRtl != nullptr);
+    QVERIFY(diff != nullptr);
+    QVERIFY(state != nullptr);
+
+    QVERIFY(controller->requiresInitialSyncChoice());
+    QVERIFY(controller->hasConflicts());
+    QVERIFY(controller->hasProjectErrors());
+    QCOMPARE(controller->conflicts().size(), std::size_t{1});
+    QCOMPARE(controller->conflicts().front().property, std::string("<initial-sync>"));
+    QCOMPARE(regmap::findRegister(*controller->workspace(), "reg-status")->offset,
+             std::uint64_t{0});
+    QVERIFY(std::ranges::any_of(
+        controller->diagnostics(), [](const regmap::Diagnostic& diagnostic) {
+            return diagnostic.code == "RM5301";
+        }));
+    QVERIFY(conflictBar->isVisible());
+    QVERIFY(keepWorkbench->isVisible());
+    QVERIFY(useRtl->isVisible());
+    QVERIFY(conflictSummary->text().contains(QStringLiteral("No synchronization baseline")));
+    QVERIFY(conflictSummary->text().contains(QStringLiteral("No file has been overwritten")));
+    QVERIFY(diff->model()->rowCount() >= 2);
+    QVERIFY(state->text().startsWith(QStringLiteral("Conflict")));
+    QVERIFY(!QFileInfo::exists(baselinePath));
+    QVERIFY(!QFileInfo::exists(
+        directory.filePath(QStringLiteral("generated/register-map.xlsx"))));
+
+    controller->save();
+    controller->synchronizeNow();
+    QCoreApplication::processEvents();
+    QVERIFY(controller->requiresInitialSyncChoice());
+    QVERIFY(!QFileInfo::exists(baselinePath));
+    QVERIFY(manifestFile.open(QIODevice::ReadOnly));
+    QCOMPARE(manifestFile.readAll(), originalManifest);
+    manifestFile.close();
+    QVERIFY(rtlFile.open(QIODevice::ReadOnly));
+    QCOMPARE(rtlFile.readAll(), originalRtl);
+    rtlFile.close();
+}
+
+void GuiSmokeTests::resolvesMissingBaselineWithExplicitChoice()
+{
+    const auto exerciseChoice = [](bool useRtlChoice) {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString manifestPath =
+            directory.filePath(QStringLiteral("project.regmap.yaml"));
+        const QString rtlPath = directory.filePath(QStringLiteral("rtl/gui_registers.sv"));
+        const QString baselinePath = manifestPath + QStringLiteral(".sync.json");
+        createProject(manifestPath);
+
+        auto source =
+            regmap::openProject(std::filesystem::path(manifestPath.toStdWString()));
+        QVERIFY(source.workspace.has_value());
+        QVERIFY(source.manifest.has_value());
+        regmap::findRegister(*source.workspace, "reg-status")->offset = 8;
+        QVERIFY(regmap::writeManagedRtl(std::filesystem::path(rtlPath.toStdWString()),
+                                        source.manifest->rtl.moduleName,
+                                        *source.workspace)
+                    .empty());
+
+        ProjectController controller;
+        controller.openProject(manifestPath);
+        QVERIFY(controller.requiresInitialSyncChoice());
+        if (useRtlChoice) {
+            controller.useRtlForConflicts();
+        } else {
+            controller.useWorkbenchForConflicts();
+        }
+
+        const std::uint64_t expected = useRtlChoice ? 8 : 0;
+        QVERIFY(!controller.requiresInitialSyncChoice());
+        QVERIFY(!controller.hasConflicts());
+        QVERIFY(!controller.hasProjectErrors());
+        QVERIFY(!controller.isDirty());
+        QCOMPARE(regmap::findRegister(*controller.workspace(), "reg-status")->offset, expected);
+        QVERIFY(QFileInfo::exists(baselinePath));
+
+        const auto reopened =
+            regmap::openProject(std::filesystem::path(manifestPath.toStdWString()));
+        QVERIFY(reopened.workspace.has_value());
+        QCOMPARE(regmap::findRegister(*reopened.workspace, "reg-status")->offset, expected);
+        const auto parsedRtl =
+            regmap::parseManagedRtl(std::filesystem::path(rtlPath.toStdWString()));
+        QVERIFY(parsedRtl.workspace.has_value());
+        QCOMPARE(regmap::findRegister(*parsedRtl.workspace, "reg-status")->offset, expected);
+        const auto baseline =
+            regmap::loadSyncBaseline(std::filesystem::path(baselinePath.toStdWString()));
+        QVERIFY(baseline.workspace.has_value());
+        QCOMPARE(regmap::findRegister(*baseline.workspace, "reg-status")->offset, expected);
+        QVERIFY(QFileInfo::exists(
+            directory.filePath(QStringLiteral("generated/register-map.xlsx"))));
+        QVERIFY(QFileInfo::exists(directory.filePath(QStringLiteral("generated/gui_regs.h"))));
+        QVERIFY(QFileInfo::exists(
+            directory.filePath(QStringLiteral("generated/register-map.md"))));
+
+        if (useRtlChoice) {
+            QVERIFY(controller.canUndo());
+            controller.undo();
+            QCOMPARE(regmap::findRegister(*controller.workspace(), "reg-status")->offset,
+                     std::uint64_t{0});
+            QVERIFY(controller.isDirty());
+        }
+        makeGeneratedFilesWritable(directory.path());
+    };
+
+    exerciseChoice(false);
+    exerciseChoice(true);
+}
+
+void GuiSmokeTests::recoversAfterInvalidInitialRtlIsFixed()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifestPath = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    const QString rtlPath = directory.filePath(QStringLiteral("rtl/gui_registers.sv"));
+    const QString baselinePath = manifestPath + QStringLiteral(".sync.json");
+    createProject(manifestPath);
+
+    auto source = regmap::openProject(std::filesystem::path(manifestPath.toStdWString()));
+    QVERIFY(source.workspace.has_value());
+    QVERIFY(source.manifest.has_value());
+    regmap::findRegister(*source.workspace, "reg-status")->offset = 8;
+    QVERIFY(regmap::writeManagedRtl(std::filesystem::path(rtlPath.toStdWString()),
+                                    source.manifest->rtl.moduleName,
+                                    *source.workspace)
+                .empty());
+    editManagedRtlValue(rtlPath, QStringLiteral("reg-status"), QStringLiteral("offset"),
+                        QStringLiteral("64'hx"));
+
+    ProjectController controller;
+    controller.openProject(manifestPath);
+    QVERIFY(controller.hasProjectErrors());
+    QVERIFY(!controller.requiresInitialSyncChoice());
+    QVERIFY(!controller.hasConflicts());
+    QCOMPARE(regmap::findRegister(*controller.workspace(), "reg-status")->offset,
+             std::uint64_t{0});
+    QVERIFY(!QFileInfo::exists(baselinePath));
+    QVERIFY(std::ranges::any_of(
+        controller.diagnostics(), [](const regmap::Diagnostic& diagnostic) {
+            return diagnostic.code == "RM5003";
+        }));
+
+    editManagedRtlValue(rtlPath, QStringLiteral("reg-status"), QStringLiteral("offset"),
+                        QStringLiteral("64'h8"));
+
+    controller.synchronizeNow();
+    QVERIFY(controller.requiresInitialSyncChoice());
+    QVERIFY(controller.hasConflicts());
+    QVERIFY(controller.hasProjectErrors());
+    QCOMPARE(regmap::findRegister(*controller.workspace(), "reg-status")->offset,
+             std::uint64_t{0});
+    QVERIFY(!QFileInfo::exists(baselinePath));
+    QVERIFY(std::ranges::any_of(
+        controller.diagnostics(), [](const regmap::Diagnostic& diagnostic) {
+            return diagnostic.code == "RM5301";
+        }));
+}
+
+void GuiSmokeTests::detectsStructuralDifferenceWithoutBaseline()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifestPath = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    const QString rtlPath = directory.filePath(QStringLiteral("rtl/gui_registers.sv"));
+    const QString baselinePath = manifestPath + QStringLiteral(".sync.json");
+    createTwoRegisterProject(manifestPath);
+
+    auto source = regmap::openProject(std::filesystem::path(manifestPath.toStdWString()));
+    QVERIFY(source.workspace.has_value());
+    QVERIFY(source.manifest.has_value());
+    auto& registers = source.workspace->addressSpaces.front().blocks.front().registers;
+    QCOMPARE(registers.size(), std::size_t{2});
+    std::reverse(registers.begin(), registers.end());
+    QVERIFY(regmap::writeManagedRtl(std::filesystem::path(rtlPath.toStdWString()),
+                                    source.manifest->rtl.moduleName,
+                                    *source.workspace)
+                .empty());
+
+    const auto yaml =
+        regmap::openProject(std::filesystem::path(manifestPath.toStdWString()));
+    const auto rtl = regmap::parseManagedRtl(std::filesystem::path(rtlPath.toStdWString()));
+    QVERIFY(yaml.workspace.has_value());
+    QVERIFY(rtl.workspace.has_value());
+    const auto structuralChanges = regmap::diffWorkspaces(*yaml.workspace, *rtl.workspace);
+    QCOMPARE(structuralChanges.size(), std::size_t{2});
+    QVERIFY(std::ranges::all_of(structuralChanges, [](const regmap::ModelChange& change) {
+        return change.objectKind == regmap::ObjectKind::reg &&
+            change.summary == "Moved or reordered";
+    }));
+    QVERIFY(regmap::serializeWorkspaceState(*yaml.workspace, false) !=
+            regmap::serializeWorkspaceState(*rtl.workspace, false));
+
+    ProjectController controller;
+    controller.openProject(manifestPath);
+    QVERIFY(controller.requiresInitialSyncChoice());
+    QVERIFY(controller.hasConflicts());
+    QVERIFY(!QFileInfo::exists(baselinePath));
+    QCOMPARE(controller.workspace()->addressSpaces.front().blocks.front().registers.front().id,
+             std::string("reg-status"));
+
+    controller.useRtlForConflicts();
+    QVERIFY(!controller.requiresInitialSyncChoice());
+    QVERIFY(!controller.hasConflicts());
+    QVERIFY(!controller.isDirty());
+    QVERIFY(controller.canUndo());
+    QVERIFY(QFileInfo::exists(baselinePath));
+    QCOMPARE(controller.workspace()->addressSpaces.front().blocks.front().registers.front().id,
+             std::string("reg-control"));
+    controller.undo();
+    QVERIFY(controller.isDirty());
+    QCOMPARE(controller.changes().size(), std::size_t{2});
+    QVERIFY(std::ranges::all_of(
+        controller.changes(), [](const regmap::ModelChange& change) {
+            return change.objectKind == regmap::ObjectKind::reg &&
+                change.summary == "Moved or reordered";
+        }));
+    QCOMPARE(controller.workspace()->addressSpaces.front().blocks.front().registers.front().id,
+             std::string("reg-status"));
 
     makeGeneratedFilesWritable(directory.path());
 }
@@ -1845,6 +2229,238 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     makeGeneratedFilesWritable(directory.path());
 }
 
+void GuiSmokeTests::dragsFieldsAndResolvesOverlaps()
+{
+    struct DragCase {
+        std::uint32_t targetBit;
+        std::uint32_t previewLsb;
+        std::uint32_t previewMsb;
+        std::optional<QMessageBox::ButtonRole> resolutionRole;
+        std::uint32_t finalMovingLsb;
+        std::uint32_t finalMovingMsb;
+        std::uint32_t finalObstacleLsb;
+        std::uint32_t finalObstacleMsb;
+    };
+    const std::array cases{
+        DragCase{13, 12, 15, std::nullopt, 12, 15, 4, 9},
+        DragCase{9, 8, 11, QMessageBox::AcceptRole, 10, 11, 4, 9},
+        DragCase{5, 4, 7, QMessageBox::DestructiveRole, 4, 7, 8, 9},
+    };
+
+    for (const auto& testCase : cases) {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString manifest =
+            directory.filePath(QStringLiteral("bitfield-drag.regmap.yaml"));
+        createBitfieldDragProject(manifest);
+
+        MainWindow window;
+        window.resize(1200, 760);
+        window.show();
+        window.openProjectPath(manifest);
+        QTest::qWait(50);
+
+        auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+        auto* fields = window.findChild<QTableView*>(QStringLiteral("fieldView"));
+        auto* bitfield = window.findChild<BitfieldView*>(QStringLiteral("bitfieldView"));
+        QVERIFY(registers != nullptr);
+        QVERIFY(fields != nullptr);
+        QVERIFY(bitfield != nullptr);
+
+        const QModelIndex openFields = registers->model()->index(0, 5);
+        registers->scrollTo(openFields);
+        QCoreApplication::processEvents();
+        QTest::mouseClick(registers->viewport(), Qt::LeftButton, Qt::NoModifier,
+                          registers->visualRect(openFields).center());
+        QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(bitfield->isVisible(), 2000);
+        QVERIFY(bitfield->width() > 28);
+
+        const QImage initialImage = bitfield->grab().toImage();
+        QVERIFY(!initialImage.isNull());
+        QCoreApplication::processEvents();
+
+        QString activatedField;
+        QString previewField;
+        QString requestedField;
+        std::uint32_t previewLsb = 0;
+        std::uint32_t previewMsb = 0;
+        std::uint32_t requestedLsb = 0;
+        std::uint32_t requestedMsb = 0;
+        QObject::connect(bitfield, &BitfieldView::fieldActivated, &window,
+                         [&](const QString& id) { activatedField = id; });
+        QObject::connect(
+            bitfield, &BitfieldView::fieldDragPreview, &window,
+            [&](const QString& id, std::uint32_t lsb, std::uint32_t msb) {
+                previewField = id;
+                previewLsb = lsb;
+                previewMsb = msb;
+            });
+        QObject::connect(
+            bitfield, &BitfieldView::fieldMoveRequested, &window,
+            [&](const QString& id, std::uint32_t lsb, std::uint32_t msb) {
+                requestedField = id;
+                requestedLsb = lsb;
+                requestedMsb = msb;
+            });
+
+        const QPoint pressPoint = bitfieldPointForBit(bitfield, 1);
+        const QPoint targetPoint = bitfieldPointForBit(bitfield, testCase.targetBit);
+        QTest::mousePress(bitfield, Qt::LeftButton, Qt::NoModifier, pressPoint);
+        QCOMPARE(activatedField, QStringLiteral("field-ready"));
+        QTest::mouseMove(bitfield, targetPoint, 20);
+        QCoreApplication::processEvents();
+        QCOMPARE(previewField, QStringLiteral("field-ready"));
+        QCOMPARE(previewLsb, testCase.previewLsb);
+        QCOMPARE(previewMsb, testCase.previewMsb);
+        QVERIFY(window.statusBar()->currentMessage().contains(
+            QStringLiteral("Moving field [%1:%2]")
+                .arg(testCase.previewMsb)
+                .arg(testCase.previewLsb)));
+        const QImage previewImage = bitfield->grab().toImage();
+        QVERIFY(previewImage != initialImage);
+
+        bool dialogHandled = !testCase.resolutionRole.has_value();
+        QString dialogFailure;
+        if (testCase.resolutionRole) {
+            QTimer::singleShot(0, &window, [&] {
+                auto* dialog =
+                    qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+                if (dialog == nullptr) {
+                    dialogFailure =
+                        QStringLiteral("Field overlap dialog did not become modal");
+                    return;
+                }
+                if (dialog->windowTitle() != QStringLiteral("Resolve field overlap")) {
+                    dialogFailure = QStringLiteral("Unexpected field overlap dialog");
+                    dialog->reject();
+                    return;
+                }
+                QAbstractButton* choice = nullptr;
+                for (auto* button : dialog->buttons()) {
+                    if (dialog->buttonRole(button) == *testCase.resolutionRole) {
+                        choice = button;
+                        break;
+                    }
+                }
+                if (choice == nullptr) {
+                    dialogFailure =
+                        QStringLiteral("Requested field overlap resolution is unavailable");
+                    dialog->reject();
+                    return;
+                }
+                dialogHandled = true;
+                QTest::mouseClick(choice, Qt::LeftButton);
+            });
+        }
+
+        QTest::mouseRelease(bitfield, Qt::LeftButton, Qt::NoModifier, targetPoint);
+        QCoreApplication::processEvents();
+        QVERIFY2(dialogFailure.isEmpty(), qPrintable(dialogFailure));
+        QVERIFY(dialogHandled);
+        QCOMPARE(requestedField, QStringLiteral("field-ready"));
+        QCOMPARE(requestedLsb, testCase.previewLsb);
+        QCOMPARE(requestedMsb, testCase.previewMsb);
+
+        const auto fieldRange = [&](const QString& id) {
+            for (int row = 0; row < fields->model()->rowCount(); ++row) {
+                const QModelIndex name = fields->model()->index(row, 0);
+                if (name.data(Qt::UserRole + 1).toString() == id) {
+                    return std::pair{
+                        fields->model()->index(row, 3).data().toUInt(),
+                        fields->model()->index(row, 2).data().toUInt(),
+                    };
+                }
+            }
+            return std::pair{std::uint32_t{UINT32_MAX}, std::uint32_t{UINT32_MAX}};
+        };
+        QTRY_COMPARE_WITH_TIMEOUT(fieldRange(QStringLiteral("field-ready")).first,
+                                  testCase.finalMovingLsb, 2000);
+        QCOMPARE(fieldRange(QStringLiteral("field-ready")).second,
+                 testCase.finalMovingMsb);
+        QCOMPARE(fieldRange(QStringLiteral("field-obstacle")).first,
+                 testCase.finalObstacleLsb);
+        QCOMPARE(fieldRange(QStringLiteral("field-obstacle")).second,
+                 testCase.finalObstacleMsb);
+
+        makeGeneratedFilesWritable(directory.path());
+    }
+}
+
+void GuiSmokeTests::cancelsInterruptedFieldDrag()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest =
+        directory.filePath(QStringLiteral("interrupted-drag.regmap.yaml"));
+    createBitfieldDragProject(manifest);
+
+    MainWindow window;
+    window.resize(1200, 760);
+    window.show();
+    window.openProjectPath(manifest);
+    QTest::qWait(50);
+
+    auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* fields = window.findChild<QTableView*>(QStringLiteral("fieldView"));
+    auto* bitfield = window.findChild<BitfieldView*>(QStringLiteral("bitfieldView"));
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+    QVERIFY(bitfield != nullptr);
+
+    const QModelIndex openFields = registers->model()->index(0, 5);
+    QTest::mouseClick(registers->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      registers->visualRect(openFields).center());
+    QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(bitfield->isVisible(), 2000);
+    QVERIFY(!bitfield->grab().isNull());
+
+    int previewCount = 0;
+    int moveRequestCount = 0;
+    QObject::connect(bitfield, &BitfieldView::fieldDragPreview, &window,
+                     [&](const QString&, std::uint32_t, std::uint32_t) {
+                         ++previewCount;
+                     });
+    QObject::connect(bitfield, &BitfieldView::fieldMoveRequested, &window,
+                     [&](const QString&, std::uint32_t, std::uint32_t) {
+                         ++moveRequestCount;
+                     });
+
+    const QPoint pressPoint = bitfieldPointForBit(bitfield, 1);
+    const QPoint firstTarget = bitfieldPointForBit(bitfield, 13);
+    const QPoint secondTarget = bitfieldPointForBit(bitfield, 17);
+    QTest::mousePress(bitfield, Qt::LeftButton, Qt::NoModifier, pressPoint);
+    QTest::mouseMove(bitfield, firstTarget, 20);
+    QCoreApplication::processEvents();
+    QVERIFY(previewCount > 0);
+
+    QEvent interrupted(QEvent::UngrabMouse);
+    QCoreApplication::sendEvent(bitfield, &interrupted);
+    const int previewsAtInterruption = previewCount;
+    QTest::mouseMove(bitfield, secondTarget, 20);
+    QTest::mouseRelease(bitfield, Qt::LeftButton, Qt::NoModifier, secondTarget);
+    QCoreApplication::processEvents();
+    QCOMPARE(previewCount, previewsAtInterruption);
+    QCOMPARE(moveRequestCount, 0);
+
+    const auto fieldRange = [&](const QString& id) {
+        for (int row = 0; row < fields->model()->rowCount(); ++row) {
+            const QModelIndex name = fields->model()->index(row, 0);
+            if (name.data(Qt::UserRole + 1).toString() == id) {
+                return std::pair{
+                    fields->model()->index(row, 3).data().toUInt(),
+                    fields->model()->index(row, 2).data().toUInt(),
+                };
+            }
+        }
+        return std::pair{std::uint32_t{UINT32_MAX}, std::uint32_t{UINT32_MAX}};
+    };
+    QCOMPARE(fieldRange(QStringLiteral("field-ready")).first, std::uint32_t{0});
+    QCOMPARE(fieldRange(QStringLiteral("field-ready")).second, std::uint32_t{3});
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
 void GuiSmokeTests::editsTagsAndAccessFromSingleClick()
 {
     QTemporaryDir directory;
@@ -2281,6 +2897,127 @@ void GuiSmokeTests::synchronizesManagedRtlEdits()
     const auto reopened = regmap::openProject(std::filesystem::path(manifestPath.toStdWString()));
     QVERIFY(reopened.workspace.has_value());
     QCOMPARE(regmap::findRegister(*reopened.workspace, "reg-status")->offset, std::uint64_t{8});
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::synchronizesManagedRtlRegisterOrderWithExistingBaseline()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifestPath = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    const QString rtlPath = directory.filePath(QStringLiteral("rtl/gui_registers.sv"));
+    const QString baselinePath = manifestPath + QStringLiteral(".sync.json");
+    createTwoRegisterProject(manifestPath);
+
+    ProjectController controller;
+    controller.openProject(manifestPath);
+    QVERIFY(QFileInfo::exists(rtlPath));
+    QVERIFY(QFileInfo::exists(baselinePath));
+    QVERIFY(!controller.isDirty());
+    QCOMPARE(controller.workspace()->addressSpaces.front().blocks.front().registers.front().id,
+             std::string("reg-status"));
+
+    auto rtlWorkspace = *controller.workspace();
+    auto& rtlRegisters = rtlWorkspace.addressSpaces.front().blocks.front().registers;
+    std::reverse(rtlRegisters.begin(), rtlRegisters.end());
+    QVERIFY(regmap::writeManagedRtl(std::filesystem::path(rtlPath.toStdWString()),
+                                    controller.manifest()->rtl.moduleName, rtlWorkspace)
+                .empty());
+    controller.synchronizeNow();
+
+    QTRY_COMPARE_WITH_TIMEOUT(
+        controller.workspace()->addressSpaces.front().blocks.front().registers.front().id,
+        std::string("reg-control"), 8000);
+    QVERIFY(!controller.hasConflicts());
+    QVERIFY(!controller.hasProjectErrors());
+    QVERIFY(!controller.isDirty());
+
+    const auto reopened =
+        regmap::openProject(std::filesystem::path(manifestPath.toStdWString()));
+    const auto parsedRtl =
+        regmap::parseManagedRtl(std::filesystem::path(rtlPath.toStdWString()));
+    const auto baseline =
+        regmap::loadSyncBaseline(std::filesystem::path(baselinePath.toStdWString()));
+    QVERIFY(reopened.workspace.has_value());
+    QVERIFY(parsedRtl.workspace.has_value());
+    QVERIFY(baseline.workspace.has_value());
+    QCOMPARE(reopened.workspace->addressSpaces.front().blocks.front().registers.front().id,
+             std::string("reg-control"));
+    QCOMPARE(parsedRtl.workspace->addressSpaces.front().blocks.front().registers.front().id,
+             std::string("reg-control"));
+    QCOMPARE(baseline.workspace->addressSpaces.front().blocks.front().registers.front().id,
+             std::string("reg-control"));
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::synchronizesManagedRtlRegisterReparentWithExistingBaseline()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifestPath = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    const QString rtlPath = directory.filePath(QStringLiteral("rtl/gui_registers.sv"));
+    const QString baselinePath = manifestPath + QStringLiteral(".sync.json");
+    createTwoRegisterProject(manifestPath);
+
+    auto source = regmap::openProject(std::filesystem::path(manifestPath.toStdWString()));
+    QVERIFY(source.workspace.has_value());
+    QVERIFY(source.manifest.has_value());
+    regmap::RegisterBlock secondaryBlock;
+    secondaryBlock.id = "block-secondary";
+    secondaryBlock.name = "Secondary";
+    secondaryBlock.baseAddress = 0x1000;
+    secondaryBlock.size = 0x1000;
+    source.workspace->addressSpaces.front().blocks.push_back(secondaryBlock);
+    QVERIFY(regmap::saveProjectFile(*source.manifest, *source.workspace).empty());
+
+    ProjectController controller;
+    controller.openProject(manifestPath);
+    QVERIFY(QFileInfo::exists(rtlPath));
+    QVERIFY(QFileInfo::exists(baselinePath));
+    QVERIFY(!controller.isDirty());
+    QCOMPARE(controller.workspace()->addressSpaces.front().blocks.size(), std::size_t{2});
+    QCOMPARE(controller.workspace()->addressSpaces.front().blocks.front().registers.size(),
+             std::size_t{2});
+    QVERIFY(controller.workspace()->addressSpaces.front().blocks.back().registers.empty());
+
+    auto rtlWorkspace = *controller.workspace();
+    auto& sourceRegisters = rtlWorkspace.addressSpaces.front().blocks.front().registers;
+    auto& targetRegisters = rtlWorkspace.addressSpaces.front().blocks.back().registers;
+    targetRegisters.push_back(sourceRegisters.back());
+    sourceRegisters.pop_back();
+    QVERIFY(regmap::writeManagedRtl(std::filesystem::path(rtlPath.toStdWString()),
+                                    controller.manifest()->rtl.moduleName, rtlWorkspace)
+                .empty());
+    controller.synchronizeNow();
+
+    QTRY_COMPARE_WITH_TIMEOUT(
+        controller.workspace()->addressSpaces.front().blocks.back().registers.size(),
+        std::size_t{1}, 8000);
+    QCOMPARE(controller.workspace()->addressSpaces.front().blocks.front().registers.size(),
+             std::size_t{1});
+    QCOMPARE(controller.workspace()->addressSpaces.front().blocks.back().registers.front().id,
+             std::string("reg-control"));
+    QVERIFY(!controller.hasConflicts());
+    QVERIFY(!controller.hasProjectErrors());
+    QVERIFY(!controller.isDirty());
+
+    const auto reopened =
+        regmap::openProject(std::filesystem::path(manifestPath.toStdWString()));
+    const auto parsedRtl =
+        regmap::parseManagedRtl(std::filesystem::path(rtlPath.toStdWString()));
+    const auto baseline =
+        regmap::loadSyncBaseline(std::filesystem::path(baselinePath.toStdWString()));
+    QVERIFY(reopened.workspace.has_value());
+    QVERIFY(parsedRtl.workspace.has_value());
+    QVERIFY(baseline.workspace.has_value());
+    QCOMPARE(reopened.workspace->addressSpaces.front().blocks.back().registers.front().id,
+             std::string("reg-control"));
+    QCOMPARE(parsedRtl.workspace->addressSpaces.front().blocks.back().registers.front().id,
+             std::string("reg-control"));
+    QCOMPARE(baseline.workspace->addressSpaces.front().blocks.back().registers.front().id,
+             std::string("reg-control"));
+
     makeGeneratedFilesWritable(directory.path());
 }
 

@@ -1,6 +1,6 @@
 #include "regmap/core/workspace_store.hpp"
 
-#include "regmap/core/sync_diff.hpp"
+#include "regmap/core/three_way_merge.hpp"
 #include "regmap/core/validation.hpp"
 
 #include <algorithm>
@@ -167,6 +167,12 @@ void collectIds(const Workspace& workspace, std::set<ObjectId, std::less<>>& res
            sequence.fetch_add(1, std::memory_order_relaxed);
 }
 
+[[nodiscard]] bool sameWorkspaceState(const Workspace& left, const Workspace& right)
+{
+    return serializeWorkspaceState(left, false) ==
+        serializeWorkspaceState(right, false);
+}
+
 } // namespace
 
 WorkspaceStore::WorkspaceStore(Workspace workspace) { reset(std::move(workspace)); }
@@ -193,7 +199,7 @@ bool WorkspaceStore::dirty() const
     if (!workspace_ || !savedWorkspace_) {
         return workspace_.has_value() != savedWorkspace_.has_value();
     }
-    return !diffWorkspaces(*savedWorkspace_, *workspace_).empty();
+    return !sameWorkspaceState(*savedWorkspace_, *workspace_);
 }
 
 bool WorkspaceStore::canUndo() const noexcept { return !undo_.empty(); }
@@ -219,7 +225,7 @@ bool WorkspaceStore::transact(std::string description, const Mutation& mutation)
     }
     Workspace candidate = *workspace_;
     mutation(candidate);
-    if (diffWorkspaces(*workspace_, candidate).empty()) {
+    if (sameWorkspaceState(*workspace_, candidate)) {
         return false;
     }
 

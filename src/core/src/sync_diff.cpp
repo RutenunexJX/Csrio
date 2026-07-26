@@ -1,5 +1,6 @@
 #include "regmap/core/sync_diff.hpp"
 
+#include <cstddef>
 #include <map>
 #include <sstream>
 #include <string>
@@ -14,6 +15,8 @@ struct Snapshot {
     ObjectId id;
     std::string name;
     std::string fingerprint;
+    ObjectId parent;
+    std::size_t order{0};
     SourceLocation source;
 };
 
@@ -106,16 +109,19 @@ void insertSnapshot(std::map<ObjectId, Snapshot, std::less<>>& values, Snapshot 
 }
 
 void insertFieldSnapshots(std::map<ObjectId, Snapshot, std::less<>>& values,
-                          const std::vector<Field>& fields)
+                          const std::vector<Field>& fields, const ObjectId& parent)
 {
-    for (const auto& field : fields) {
+    for (std::size_t fieldIndex = 0; fieldIndex < fields.size(); ++fieldIndex) {
+        const auto& field = fields[fieldIndex];
         insertSnapshot(values, Snapshot{ObjectKind::field, field.id, field.name, fingerprint(field),
-                                        field.source});
-        for (const auto& enumValue : field.enumValues) {
+                                        parent, fieldIndex, field.source});
+        for (std::size_t enumIndex = 0; enumIndex < field.enumValues.size(); ++enumIndex) {
+            const auto& enumValue = field.enumValues[enumIndex];
             insertSnapshot(values, Snapshot{ObjectKind::enumValue, enumValue.id, enumValue.name,
-                                            fingerprint(enumValue), enumValue.source});
+                                            fingerprint(enumValue), field.id, enumIndex,
+                                            enumValue.source});
         }
-        insertFieldSnapshots(values, field.members);
+        insertFieldSnapshots(values, field.members, field.id);
     }
 }
 
@@ -124,27 +130,33 @@ void insertFieldSnapshots(std::map<ObjectId, Snapshot, std::less<>>& values,
     std::map<ObjectId, Snapshot, std::less<>> result;
     std::ostringstream workspaceFingerprint;
     appendString(workspaceFingerprint, workspace.name);
-    insertSnapshot(
-        result,
-        Snapshot{
-            ObjectKind::workspace, workspace.id, workspace.name, workspaceFingerprint.str(), {}});
+    insertSnapshot(result, Snapshot{ObjectKind::workspace, workspace.id, workspace.name,
+                                    workspaceFingerprint.str(), {}, 0, {}});
 
-    for (const auto& addressSpace : workspace.addressSpaces) {
+    for (std::size_t spaceIndex = 0; spaceIndex < workspace.addressSpaces.size(); ++spaceIndex) {
+        const auto& addressSpace = workspace.addressSpaces[spaceIndex];
         insertSnapshot(result,
                        Snapshot{ObjectKind::addressSpace, addressSpace.id, addressSpace.name,
-                                fingerprint(addressSpace), addressSpace.source});
-        for (const auto& block : addressSpace.blocks) {
+                                fingerprint(addressSpace), workspace.id, spaceIndex,
+                                addressSpace.source});
+        for (std::size_t blockIndex = 0; blockIndex < addressSpace.blocks.size(); ++blockIndex) {
+            const auto& block = addressSpace.blocks[blockIndex];
             insertSnapshot(result, Snapshot{ObjectKind::registerBlock, block.id, block.name,
-                                            fingerprint(block), block.source});
-            for (const auto& reg : block.registers) {
+                                            fingerprint(block), addressSpace.id, blockIndex,
+                                            block.source});
+            for (std::size_t registerIndex = 0; registerIndex < block.registers.size();
+                 ++registerIndex) {
+                const auto& reg = block.registers[registerIndex];
                 insertSnapshot(result, Snapshot{ObjectKind::reg, reg.id, reg.name, fingerprint(reg),
-                                                reg.source});
-                for (const auto& enumValue : reg.enumValues) {
+                                                block.id, registerIndex, reg.source});
+                for (std::size_t enumIndex = 0; enumIndex < reg.enumValues.size(); ++enumIndex) {
+                    const auto& enumValue = reg.enumValues[enumIndex];
                     insertSnapshot(result,
                                    Snapshot{ObjectKind::enumValue, enumValue.id, enumValue.name,
-                                            fingerprint(enumValue), enumValue.source});
+                                            fingerprint(enumValue), reg.id, enumIndex,
+                                            enumValue.source});
                 }
-                insertFieldSnapshots(result, reg.fields);
+                insertFieldSnapshots(result, reg.fields, reg.id);
             }
         }
     }
@@ -185,11 +197,24 @@ std::vector<ModelChange> diffWorkspaces(const Workspace& before, const Workspace
 
         const Snapshot& oldValue = oldIterator->second;
         const Snapshot& newValue = newIterator->second;
-        if (oldValue.kind != newValue.kind || oldValue.fingerprint != newValue.fingerprint) {
+        const bool typeChanged = oldValue.kind != newValue.kind;
+        const bool propertiesChanged = oldValue.fingerprint != newValue.fingerprint;
+        const bool structureChanged = oldValue.parent != newValue.parent ||
+            oldValue.order != newValue.order;
+        if (typeChanged || propertiesChanged || structureChanged) {
+            std::string summary;
+            if (typeChanged) {
+                summary = "Object type changed";
+            } else if (propertiesChanged && structureChanged) {
+                summary = "Properties changed; moved or reordered";
+            } else if (propertiesChanged) {
+                summary = "Properties changed";
+            } else {
+                summary = "Moved or reordered";
+            }
             result.push_back(ModelChange{
                 ChangeKind::modified, newValue.kind, newValue.id, newValue.name,
-                oldValue.kind == newValue.kind ? "Properties changed" : "Object type changed",
-                oldValue.source, newValue.source});
+                std::move(summary), oldValue.source, newValue.source});
         }
         ++oldIterator;
         ++newIterator;

@@ -11,6 +11,8 @@
 #include <optional>
 #include <utility>
 
+class QEvent;
+
 class BitfieldView final : public QWidget {
     Q_OBJECT
 
@@ -32,6 +34,7 @@ signals:
         std::uint32_t msb);
 
 protected:
+    bool event(QEvent* event) override;
     void paintEvent(QPaintEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
@@ -49,5 +52,6 @@ private:
 
     [[nodiscard]] const regmap::Field* fieldById(const QString& id) const;
     [[nodiscard]] std::uint32_t bitAtX(qreal x) const;
+    void cancelDrag();
     void updateDrag(qreal x);
 };

@@ -185,6 +185,11 @@ bool ProjectController::hasConflicts() const noexcept
     return !conflicts_.empty();
 }
 
+bool ProjectController::requiresInitialSyncChoice() const noexcept
+{
+    return initialSyncChoicePending_;
+}
+
 bool ProjectController::isDirty() const
 {
     return store_.dirty();
@@ -229,6 +234,7 @@ void ProjectController::openProject(const QString& manifestPath)
     manifest_.reset();
     store_ = regmap::WorkspaceStore {};
     baseline_.reset();
+    initialSyncChoicePending_ = false;
     artifacts_.clear();
     changes_.clear();
     conflicts_.clear();
@@ -266,6 +272,7 @@ void ProjectController::reloadImpl(bool automatic)
     std::erase_if(loadDiagnostics_, isValidationDiagnostic);
     changes_.clear();
     conflicts_.clear();
+    initialSyncChoicePending_ = false;
     syncDiagnostics_.clear();
 
     if (loaded.manifest.has_value() && loaded.workspace.has_value()) {
@@ -317,22 +324,62 @@ void ProjectController::initializeSynchronization()
     if (!manifest_ || current == nullptr) {
         return;
     }
+    initialSyncChoicePending_ = false;
     const std::filesystem::path statePath = baselinePath();
     if (QFileInfo::exists(fromPath(statePath))) {
         auto loaded = regmap::loadSyncBaseline(statePath);
         syncDiagnostics_ = std::move(loaded.diagnostics);
         if (!loaded.workspace) {
+            baseline_.reset();
             rebuildDiagnostics();
             emit syncStatusChanged(
                 QStringLiteral("Synchronization baseline is invalid; automatic RTL merge is blocked"));
             return;
         }
         baseline_ = std::move(loaded.workspace);
-    } else {
-        baseline_ = *current;
+        synchronizeRtl(true, true);
+        return;
     }
 
-    synchronizeRtl(true, true);
+    const std::filesystem::path rtlPath = manifest_->rtl.path.resolved;
+    if (!QFileInfo::exists(fromPath(rtlPath))) {
+        baseline_ = *current;
+        synchronizeRtl(true, true);
+        return;
+    }
+
+    auto parsed = regmap::parseManagedRtl(rtlPath);
+    syncDiagnostics_ = std::move(parsed.diagnostics);
+    if (!parsed.workspace || containsErrors(syncDiagnostics_)) {
+        baseline_.reset();
+        rebuildDiagnostics();
+        emit syncStatusChanged(
+            QStringLiteral("Managed RTL is invalid; initial synchronization is blocked"));
+        return;
+    }
+
+    if (regmap::serializeWorkspaceState(*current, false) ==
+        regmap::serializeWorkspaceState(*parsed.workspace, false)) {
+        baseline_ = *current;
+        synchronizeRtl(true, true);
+        return;
+    }
+
+    baseline_.reset();
+    initialSyncChoicePending_ = true;
+    changes_ = regmap::diffWorkspaces(*current, *parsed.workspace);
+    regmap::MergeConflict conflict;
+    conflict.objectId = current->id;
+    conflict.objectKind = regmap::ObjectKind::workspace;
+    conflict.objectName = current->name;
+    conflict.property = "<initial-sync>";
+    conflict.workbenchValue = "current Workbench model";
+    conflict.rtlValue = "existing managed RTL";
+    conflicts_.push_back(std::move(conflict));
+    rebuildDiagnostics();
+    emit syncStatusChanged(
+        QStringLiteral("Initial synchronization paused: no baseline exists and Workbench differs "
+                       "from managed RTL; choose which source to keep. No file was overwritten."));
 }
 
 void ProjectController::save()
@@ -378,8 +425,20 @@ void ProjectController::synchronizeRtl(bool automatic, bool persistWhenClean)
     if (!manifest_ || !store_.workspace()) {
         return;
     }
+    if (initialSyncChoicePending_) {
+        emit syncStatusChanged(
+            QStringLiteral("Initial synchronization is paused; choose Workbench or RTL. No file "
+                           "was written."));
+        return;
+    }
     if (!baseline_) {
-        baseline_ = *store_.workspace();
+        initializeSynchronization();
+        refreshWatchPaths();
+        emit projectChanged();
+        emit diagnosticsChanged();
+        emit conflictsChanged();
+        emit editStateChanged();
+        return;
     }
 
     syncDiagnostics_.clear();
@@ -414,13 +473,12 @@ void ProjectController::synchronizeRtl(bool automatic, bool persistWhenClean)
         return;
     }
 
-    const auto mergeChanges = regmap::diffWorkspaces(*store_.workspace(), *merge.merged);
-    if (!mergeChanges.empty()) {
-        const regmap::Workspace mergedWorkspace = *merge.merged;
-        static_cast<void>(
-            store_.transact("Merge managed RTL", [mergedWorkspace](regmap::Workspace& workspace) {
-                workspace = mergedWorkspace;
-            }));
+    const regmap::Workspace mergedWorkspace = *merge.merged;
+    const bool modelChanged =
+        store_.transact("Merge managed RTL", [mergedWorkspace](regmap::Workspace& workspace) {
+            workspace = mergedWorkspace;
+        });
+    if (modelChanged) {
         changes_ = regmap::diffWorkspaces(*baseline_, *store_.workspace());
         emit projectChanged();
         emit editStateChanged();
@@ -444,7 +502,57 @@ void ProjectController::synchronizeRtl(bool automatic, bool persistWhenClean)
 
 void ProjectController::resolveConflicts(regmap::MergePreference preference)
 {
-    if (!manifest_ || !store_.workspace() || !baseline_) {
+    if (!manifest_ || !store_.workspace()) {
+        return;
+    }
+
+    if (initialSyncChoicePending_) {
+        const std::filesystem::path rtlPath = manifest_->rtl.path.resolved;
+        std::optional<regmap::Workspace> currentRtl;
+        if (QFileInfo::exists(fromPath(rtlPath))) {
+            auto parsed = regmap::parseManagedRtl(rtlPath);
+            syncDiagnostics_ = std::move(parsed.diagnostics);
+            if (!parsed.workspace || containsErrors(syncDiagnostics_)) {
+                rebuildDiagnostics();
+                emit diagnosticsChanged();
+                emit syncStatusChanged(
+                    QStringLiteral("Cannot resolve the initial choice while managed RTL is invalid"));
+                return;
+            }
+            currentRtl = std::move(parsed.workspace);
+        } else if (preference == regmap::MergePreference::rtl) {
+            emit syncStatusChanged(
+                QStringLiteral("Managed RTL no longer exists; choose Workbench or reload"));
+            return;
+        }
+
+        const regmap::Workspace resolved =
+            preference == regmap::MergePreference::rtl ? *currentRtl : *store_.workspace();
+        const regmap::Workspace retryBaseline =
+            currentRtl.has_value() ? *currentRtl : resolved;
+        if (preference == regmap::MergePreference::rtl) {
+            static_cast<void>(store_.transact(
+                "Use managed RTL for initial synchronization",
+                [resolved](regmap::Workspace& workspace) { workspace = resolved; }));
+        }
+        baseline_ = retryBaseline;
+        initialSyncChoicePending_ = false;
+        conflicts_.clear();
+        changes_ = regmap::diffWorkspaces(*baseline_, *store_.workspace());
+        emit conflictsChanged();
+        emit projectChanged();
+        emit editStateChanged();
+        if (persistSynchronizedModel()) {
+            emit syncStatusChanged(
+                QStringLiteral("Initial choice resolved; Workbench, RTL, and read-only outputs "
+                               "synchronized"));
+        }
+        return;
+    }
+
+    if (!baseline_) {
+        emit syncStatusChanged(
+            QStringLiteral("Synchronization baseline is unavailable; conflicts cannot be resolved"));
         return;
     }
     auto parsed = regmap::parseManagedRtl(manifest_->rtl.path.resolved);
@@ -581,9 +689,16 @@ void ProjectController::rebuildDiagnostics()
         diagnostics_.end(), generationDiagnostics_.begin(), generationDiagnostics_.end());
     for (const auto& conflict : conflicts_) {
         regmap::Diagnostic diagnostic;
-        diagnostic.code = "RM5300";
-        diagnostic.message = "Workbench and managed RTL changed property '" + conflict.property
-            + "' differently.";
+        if (conflict.property == "<initial-sync>") {
+            diagnostic.code = "RM5301";
+            diagnostic.message =
+                "No synchronization baseline exists and Workbench differs from managed RTL. "
+                "Choose which source to keep; no file has been overwritten.";
+        } else {
+            diagnostic.code = "RM5300";
+            diagnostic.message = "Workbench and managed RTL changed property '" +
+                conflict.property + "' differently.";
+        }
         diagnostic.objectId = conflict.objectId;
         if (manifest_) {
             diagnostic.source.workbook = manifest_->rtl.path.resolved;

@@ -473,6 +473,28 @@ void CoreTests::tracksTransactionsAndStableIds()
     QCOMPARE(regmap::findRegister(*store.workspace(), registerId)->offset, std::uint64_t{0x20});
     store.markSaved();
     QVERIFY(!store.dirty());
+
+    const auto& savedRegisters =
+        store.workspace()->addressSpaces.front().blocks.front().registers;
+    QVERIFY(savedRegisters.size() >= std::size_t{2});
+    const std::string savedFirstId = savedRegisters.front().id;
+    const std::string savedLastId = savedRegisters.back().id;
+    QVERIFY(store.transact("Reverse register order", [](regmap::Workspace& workspace) {
+        auto& registers = workspace.addressSpaces.front().blocks.front().registers;
+        std::reverse(registers.begin(), registers.end());
+    }));
+    QVERIFY(store.dirty());
+    QVERIFY(store.canUndo());
+    QCOMPARE(store.workspace()->addressSpaces.front().blocks.front().registers.front().id,
+             savedLastId);
+    QVERIFY(store.undo());
+    QVERIFY(!store.dirty());
+    QCOMPARE(store.workspace()->addressSpaces.front().blocks.front().registers.front().id,
+             savedFirstId);
+    QVERIFY(store.redo());
+    QVERIFY(store.dirty());
+    QCOMPARE(store.workspace()->addressSpaces.front().blocks.front().registers.front().id,
+             savedLastId);
 }
 
 void CoreTests::roundTripsManagedRtl()
@@ -1014,7 +1036,19 @@ void CoreTests::diffsByStableId()
     reg.name = "CONTROL";
     reg.source.row = 2;
     block.registers.push_back(reg);
+
+    regmap::Register secondRegister;
+    secondRegister.id = "register-secondary";
+    secondRegister.name = "STATUS";
+    secondRegister.offset = 4;
+    secondRegister.source.row = 3;
+    block.registers.push_back(secondRegister);
+
+    regmap::RegisterBlock secondaryBlock;
+    secondaryBlock.id = "block-secondary";
+    secondaryBlock.name = "Secondary";
     address.blocks.push_back(block);
+    address.blocks.push_back(secondaryBlock);
     before.addressSpaces.push_back(address);
 
     regmap::Workspace after = before;
@@ -1027,6 +1061,29 @@ void CoreTests::diffsByStableId()
     QVERIFY(changes.front().change == regmap::ChangeKind::modified);
     QVERIFY(changes.front().objectKind == regmap::ObjectKind::reg);
     QCOMPARE(changes.front().id, std::string("register"));
+    QCOMPARE(changes.front().summary, std::string("Properties changed"));
+
+    after = before;
+    auto& reordered = after.addressSpaces.front().blocks.front().registers;
+    std::reverse(reordered.begin(), reordered.end());
+    const auto orderChanges = regmap::diffWorkspaces(before, after);
+    QCOMPARE(orderChanges.size(), std::size_t{2});
+    QVERIFY(std::ranges::all_of(orderChanges, [](const regmap::ModelChange& change) {
+        return change.change == regmap::ChangeKind::modified &&
+            change.objectKind == regmap::ObjectKind::reg &&
+            change.summary == "Moved or reordered";
+    }));
+
+    after = before;
+    auto& sourceRegisters = after.addressSpaces.front().blocks.front().registers;
+    auto& targetRegisters = after.addressSpaces.front().blocks.back().registers;
+    targetRegisters.push_back(sourceRegisters.back());
+    sourceRegisters.pop_back();
+    const auto parentChanges = regmap::diffWorkspaces(before, after);
+    QCOMPARE(parentChanges.size(), std::size_t{1});
+    QVERIFY(parentChanges.front().change == regmap::ChangeKind::modified);
+    QCOMPARE(parentChanges.front().id, std::string("register-secondary"));
+    QCOMPARE(parentChanges.front().summary, std::string("Moved or reordered"));
 }
 
 QTEST_MAIN(CoreTests)
