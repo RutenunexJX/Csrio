@@ -1284,14 +1284,25 @@ void MainWindow::connectSignals()
         if (id.empty()) {
             return;
         }
+        const auto* workspace = controller_.workspace();
+        const auto* enumValue =
+            workspace == nullptr ? nullptr : regmap::findEnumValue(*workspace, id);
+        if (enumValue == nullptr) {
+            return;
+        }
+        const QString label = fromUtf8(enumValue->name);
         QMenu menu(this);
+        menu.setObjectName(QStringLiteral("enumContextMenu"));
         QAction* remove = menu.addAction(QStringLiteral("Delete Enum Value"));
+        remove->setObjectName(QStringLiteral("deleteEnumValueAction"));
         if (menu.exec(enumView_->viewport()->mapToGlobal(position)) == remove &&
             controller_.editWorkspace(QStringLiteral("Delete enum value"),
                                       [id](regmap::Workspace& candidate) {
                                           static_cast<void>(regmap::removeObject(candidate, id));
                                       })) {
             refreshProject();
+            statusBar()->showMessage(
+                QStringLiteral("Deleted enum value %1 · Ctrl+Z to restore").arg(label), 5000);
         }
     });
     connect(hierarchyView_, &QWidget::customContextMenuRequested, this,

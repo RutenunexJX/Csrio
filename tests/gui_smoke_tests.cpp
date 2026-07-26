@@ -993,6 +993,117 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     }
     QVERIFY(restoredAfterReserved);
 
+    const QString enumOwnerRegisterId =
+        registers->model()->index(1, 0).data(Qt::UserRole + 1).toString();
+    QVERIFY(!enumOwnerRegisterId.isEmpty());
+    QCOMPARE(registers->currentIndex().data(Qt::UserRole + 1).toString(),
+             enumOwnerRegisterId);
+
+    int retainedEnumRow = -1;
+    int enumDeleteRow = -1;
+    for (int row = 0; row < enums->model()->rowCount(); ++row) {
+        const QString id =
+            enums->model()->index(row, 0).data(Qt::UserRole + 1).toString();
+        if (id == enumId) {
+            retainedEnumRow = row;
+        } else if (id == guardedEnumId) {
+            enumDeleteRow = row;
+        }
+    }
+    QVERIFY(retainedEnumRow >= 0);
+    QVERIFY(enumDeleteRow >= 0);
+    const QString deletedEnumName =
+        enums->model()->index(enumDeleteRow, 0).data().toString();
+    const QString deletedEnumValue =
+        enums->model()->index(enumDeleteRow, 1).data().toString();
+    QVERIFY(!deletedEnumName.isEmpty());
+    QVERIFY(!deletedEnumValue.isEmpty());
+    enums->setCurrentIndex(enums->model()->index(retainedEnumRow, 0));
+    QCOMPARE(enums->currentIndex().data(Qt::UserRole + 1).toString(), enumId);
+    const QModelIndex enumDeleteIndex = enums->model()->index(enumDeleteRow, 0);
+    enums->scrollTo(enumDeleteIndex);
+    QCoreApplication::processEvents();
+    bool deleteEnumTriggered = false;
+    QString deleteEnumFailure;
+    QTimer::singleShot(0, &window, [&] {
+        auto* action =
+            window.findChild<QAction*>(QStringLiteral("deleteEnumValueAction"));
+        auto* menu =
+            action == nullptr ? qobject_cast<QMenu*>(QApplication::activePopupWidget())
+                              : qobject_cast<QMenu*>(action->parent());
+        if (menu == nullptr) {
+            deleteEnumFailure = QStringLiteral("Enum context menu did not open");
+            return;
+        }
+        if (menu->objectName() != QStringLiteral("enumContextMenu")) {
+            deleteEnumFailure = QStringLiteral("Unexpected enum context menu");
+            menu->close();
+            return;
+        }
+        if (action == nullptr || !action->isEnabled()) {
+            deleteEnumFailure = QStringLiteral("Delete Enum Value action is unavailable");
+            menu->close();
+            return;
+        }
+        deleteEnumTriggered = true;
+        QTest::mouseClick(menu, Qt::LeftButton, Qt::NoModifier,
+                          menu->actionGeometry(action).center());
+    });
+    const QPoint enumDeletePosition = enums->visualRect(enumDeleteIndex).center();
+    window.statusBar()->clearMessage();
+    QContextMenuEvent enumDeleteEvent(
+        QContextMenuEvent::Mouse, enumDeletePosition,
+        enums->viewport()->mapToGlobal(enumDeletePosition));
+    QCoreApplication::sendEvent(enums->viewport(), &enumDeleteEvent);
+    QVERIFY2(deleteEnumFailure.isEmpty(), qPrintable(deleteEnumFailure));
+    QVERIFY(deleteEnumTriggered);
+    QTRY_COMPARE_WITH_TIMEOUT(enums->model()->rowCount(), 2, 2000);
+    QCOMPARE(registers->model()->index(1, 4).data().toString(), QStringLiteral("enum"));
+    QVERIFY(enums->isVisible());
+    QCOMPARE(registers->currentIndex().data(Qt::UserRole + 1).toString(),
+             enumOwnerRegisterId);
+    bool deletedEnumStillPresent = false;
+    bool retainedEnumStillPresent = false;
+    bool retainedEnumValuePreserved = false;
+    for (int row = 0; row < enums->model()->rowCount(); ++row) {
+        const QString id =
+            enums->model()->index(row, 0).data(Qt::UserRole + 1).toString();
+        deletedEnumStillPresent |= id == guardedEnumId;
+        retainedEnumStillPresent |= id == enumId;
+        retainedEnumValuePreserved |=
+            id == enumId &&
+            enums->model()->index(row, 1).data().toString() == QStringLiteral("0x3");
+    }
+    QVERIFY(!deletedEnumStillPresent);
+    QVERIFY(retainedEnumStillPresent);
+    QVERIFY(retainedEnumValuePreserved);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Deleted enum value")));
+    QVERIFY(window.statusBar()->currentMessage().contains(deletedEnumName));
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("Ctrl+Z")));
+    registerUndo = findUndoAction();
+    QVERIFY(registerUndo != nullptr);
+    QVERIFY(registerUndo->isEnabled());
+    registerUndo->trigger();
+    QTRY_COMPARE_WITH_TIMEOUT(enums->model()->rowCount(), 3, 2000);
+    bool restoredDeletedEnum = false;
+    bool restoredDeletedEnumName = false;
+    bool restoredDeletedEnumValue = false;
+    for (int row = 0; row < enums->model()->rowCount(); ++row) {
+        const bool matches =
+            enums->model()->index(row, 0).data(Qt::UserRole + 1).toString() == guardedEnumId;
+        restoredDeletedEnum |= matches;
+        restoredDeletedEnumName |=
+            matches && enums->model()->index(row, 0).data().toString() == deletedEnumName;
+        restoredDeletedEnumValue |=
+            matches && enums->model()->index(row, 1).data().toString() == deletedEnumValue;
+    }
+    QVERIFY(restoredDeletedEnum);
+    QVERIFY(restoredDeletedEnumName);
+    QVERIFY(restoredDeletedEnumValue);
+    QCOMPARE(registers->currentIndex().data(Qt::UserRole + 1).toString(),
+             enumOwnerRegisterId);
+
     QVERIFY(registers->model()->setData(registers->model()->index(1, 4),
                                         QStringLiteral("field")));
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 4).data().toString(),
