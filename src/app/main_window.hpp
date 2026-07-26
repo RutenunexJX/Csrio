@@ -144,6 +144,8 @@ private:
     void beginHierarchyRename(const std::string& id);
     void beginRegisterRename(const std::string& id);
     void beginFieldRename(const std::string& id);
+    void beginEnumRename(const std::string& id, const std::string& ownerId,
+                         bool fieldOwner);
     void openSource(const regmap::SourceLocation& source);
     void applyPropertyEdit(const std::string& objectId, const std::string& property,
                            const QString& value);

@@ -3028,6 +3028,7 @@ void MainWindow::addEnumValue()
     enumValue.id = regmap::makeStableObjectId(*workspace, "enum");
     enumValue.name = "NEW_VALUE";
     enumValue.value = regmap::UnsignedValue(value);
+    const std::string newId = enumValue.id;
     const std::string ownerId = field != nullptr ? field->id : reg->id;
     const bool fieldOwner = field != nullptr;
     if (controller_.editWorkspace(
@@ -3058,6 +3059,7 @@ void MainWindow::addEnumValue()
                                         ? nullptr
                                         : findField(*selectedRegister, selectedFieldId_);
         populateEnumValues(selectedRegister, selectedField);
+        beginEnumRename(newId, ownerId, fieldOwner);
     }
 }
 void MainWindow::updateTagFilter()
@@ -4332,6 +4334,61 @@ void MainWindow::beginFieldRename(const std::string& id)
         fieldView_->setFocus(Qt::OtherFocusReason);
         fieldView_->edit(name);
     });
+}
+
+void MainWindow::beginEnumRename(const std::string& id, const std::string& ownerId,
+                                 bool fieldOwner)
+{
+    const std::filesystem::path manifestPath = controller_.manifestPath();
+    const std::string registerId = selectedRegisterId_;
+    const std::string fieldId = selectedFieldId_;
+    const std::string fieldsRegisterId = openFieldsRegisterId_;
+    QTimer::singleShot(
+        0, this,
+        [this, id, ownerId, fieldOwner, manifestPath, registerId, fieldId, fieldsRegisterId] {
+            if (registerId.empty() || controller_.workspace() == nullptr ||
+                controller_.manifestPath() != manifestPath ||
+                selectedRegisterId_ != registerId || selectedFieldId_ != fieldId ||
+                openFieldsRegisterId_ != fieldsRegisterId) {
+                return;
+            }
+            const auto* reg = findRegister(registerId);
+            if (reg == nullptr) {
+                return;
+            }
+            const std::vector<regmap::EnumValue>* values = nullptr;
+            if (fieldOwner) {
+                if (fieldId != ownerId || fieldsRegisterId != registerId) {
+                    return;
+                }
+                const auto* field = findField(*reg, ownerId);
+                if (field == nullptr) {
+                    return;
+                }
+                values = &field->enumValues;
+            } else {
+                if (reg->id != ownerId || !fieldId.empty()) {
+                    return;
+                }
+                values = &reg->enumValues;
+            }
+            if (!std::ranges::any_of(*values, [&id](const regmap::EnumValue& value) {
+                    return value.id == id;
+                })) {
+                return;
+            }
+            for (int row = 0; row < enumModel_->rowCount(); ++row) {
+                const QModelIndex name = enumModel_->index(row, enumNameColumn);
+                if (name.data(objectIdRole).toString().toUtf8().toStdString() != id) {
+                    continue;
+                }
+                enumView_->setCurrentIndex(name);
+                enumView_->scrollTo(name);
+                enumView_->setFocus(Qt::OtherFocusReason);
+                enumView_->edit(name);
+                return;
+            }
+        });
 }
 
 void MainWindow::openSource(const regmap::SourceLocation& source)

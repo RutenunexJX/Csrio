@@ -839,10 +839,62 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     QVERIFY(registers->model()->setData(registers->model()->index(1, 4), QStringLiteral("enum")));
     QTRY_VERIFY_WITH_TIMEOUT(enums->isVisible(), 2000);
     QTRY_COMPARE_WITH_TIMEOUT(enums->model()->rowCount(), 1, 2000);
+    const auto visibleEnumEditor = [enums]() -> QLineEdit* {
+        const auto editors = enums->findChildren<QLineEdit*>();
+        const auto visible = std::ranges::find_if(
+            editors, [](const QLineEdit* editor) { return editor->isVisible(); });
+        return visible == editors.end() ? nullptr : *visible;
+    };
     Q_EMIT enums->clicked(enums->model()->index(0, 0));
     QTRY_COMPARE_WITH_TIMEOUT(enums->model()->rowCount(), 2, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(visibleEnumEditor() != nullptr, 2000);
+    auto* enumNameEditor = visibleEnumEditor();
+    QCOMPARE(enumNameEditor->text(), QStringLiteral("NEW_VALUE"));
+    const QString enumId =
+        enums->currentIndex().data(Qt::UserRole + 1).toString();
+    QVERIFY(!enumId.isEmpty());
+    QTest::keyClick(enumNameEditor, Qt::Key_Escape);
+    QCoreApplication::processEvents();
     QCOMPARE(enums->model()->index(0, 0).data().toString(), QStringLiteral("NEW_VALUE"));
     QCOMPARE(enums->model()->index(0, 1).data().toString(), QStringLiteral("0x0"));
+    QCOMPARE(enums->model()->index(0, 0).data(Qt::UserRole + 1).toString(), enumId);
+
+    const QModelIndex enumValueIndex = enums->model()->index(0, 1);
+    enums->scrollTo(enumValueIndex);
+    QTest::mouseClick(enums->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      enums->visualRect(enumValueIndex).center());
+    QTRY_VERIFY_WITH_TIMEOUT(visibleEnumEditor() != nullptr, 2000);
+    auto* enumValueEditor = visibleEnumEditor();
+    enumValueEditor->selectAll();
+    QTest::keyClicks(enumValueEditor, QStringLiteral("0x3"));
+    QTest::keyClick(enumValueEditor, Qt::Key_Return);
+    QTRY_COMPARE_WITH_TIMEOUT(enums->model()->index(0, 1).data().toString(),
+                              QStringLiteral("0x3"), 2000);
+
+    const int nextEnumRow = enums->model()->rowCount() - 1;
+    Q_EMIT enums->clicked(enums->model()->index(nextEnumRow, 0));
+    QString guardedEnumId;
+    for (int row = 0; row < enums->model()->rowCount(); ++row) {
+        const QString candidate =
+            enums->model()->index(row, 0).data(Qt::UserRole + 1).toString();
+        if (!candidate.isEmpty() && candidate != enumId) {
+            guardedEnumId = candidate;
+        }
+    }
+    QVERIFY(!guardedEnumId.isEmpty());
+    registers->setCurrentIndex(registers->model()->index(0, 0));
+    QCoreApplication::processEvents();
+    QVERIFY(visibleEnumEditor() == nullptr);
+    registers->setCurrentIndex(registers->model()->index(1, 0));
+    QTRY_VERIFY_WITH_TIMEOUT(enums->isVisible(), 2000);
+    bool foundGuardedEnum = false;
+    for (int row = 0; row < enums->model()->rowCount(); ++row) {
+        foundGuardedEnum |=
+            enums->model()->index(row, 0).data(Qt::UserRole + 1).toString() ==
+            guardedEnumId;
+    }
+    QVERIFY(foundGuardedEnum);
+    QVERIFY(visibleEnumEditor() == nullptr);
     QCOMPARE(registers->model()->index(1, 4).data().toString(), QStringLiteral("enum"));
 
     QVERIFY(registers->model()->setData(registers->model()->index(1, 4),
@@ -993,6 +1045,69 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
             guardedFieldId;
     }
     QVERIFY(foundGuardedField);
+
+    const auto fieldRowForId = [fields](const QString& id) {
+        for (int row = 0; row < fields->model()->rowCount(); ++row) {
+            if (fields->model()->index(row, 0).data(Qt::UserRole + 1).toString() == id) {
+                return row;
+            }
+        }
+        return -1;
+    };
+    int memberRow = fieldRowForId(memberFieldId);
+    QVERIFY(memberRow >= 0);
+    fields->setCurrentIndex(fields->model()->index(memberRow, 0));
+    QVERIFY(fields->model()->setData(fields->model()->index(memberRow, 5),
+                                     QStringLiteral("enum")));
+    QTRY_VERIFY_WITH_TIMEOUT(enums->isVisible(), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(enums->model()->rowCount(), 1, 2000);
+
+    Q_EMIT enums->clicked(enums->model()->index(0, 0));
+    QString guardedFieldEnumId;
+    for (int row = 0; row < enums->model()->rowCount(); ++row) {
+        const QString candidate =
+            enums->model()->index(row, 0).data(Qt::UserRole + 1).toString();
+        if (!candidate.isEmpty()) {
+            guardedFieldEnumId = candidate;
+        }
+    }
+    QVERIFY(!guardedFieldEnumId.isEmpty());
+    const int parentRow = fieldRowForId(parentFieldId);
+    QVERIFY(parentRow >= 0);
+    fields->setCurrentIndex(fields->model()->index(parentRow, 0));
+    QCoreApplication::processEvents();
+    QVERIFY(visibleEnumEditor() == nullptr);
+
+    memberRow = fieldRowForId(memberFieldId);
+    QVERIFY(memberRow >= 0);
+    fields->setCurrentIndex(fields->model()->index(memberRow, 0));
+    QTRY_VERIFY_WITH_TIMEOUT(enums->isVisible(), 2000);
+    bool foundGuardedFieldEnum = false;
+    for (int row = 0; row < enums->model()->rowCount(); ++row) {
+        foundGuardedFieldEnum |=
+            enums->model()->index(row, 0).data(Qt::UserRole + 1).toString() ==
+            guardedFieldEnumId;
+    }
+    QVERIFY(foundGuardedFieldEnum);
+    QVERIFY(visibleEnumEditor() == nullptr);
+
+    const int fieldEnumAddRow = enums->model()->rowCount() - 1;
+    Q_EMIT enums->clicked(enums->model()->index(fieldEnumAddRow, 0));
+    QTRY_VERIFY_WITH_TIMEOUT(visibleEnumEditor() != nullptr, 2000);
+    auto* fieldEnumNameEditor = visibleEnumEditor();
+    QCOMPARE(fieldEnumNameEditor->text(), QStringLiteral("NEW_VALUE"));
+    const QString fieldEnumId =
+        enums->currentIndex().data(Qt::UserRole + 1).toString();
+    QVERIFY(!fieldEnumId.isEmpty());
+    QVERIFY(fieldEnumId != guardedFieldEnumId);
+    QTest::keyClick(fieldEnumNameEditor, Qt::Key_Escape);
+    QCoreApplication::processEvents();
+    bool foundFieldEnum = false;
+    for (int row = 0; row < enums->model()->rowCount(); ++row) {
+        foundFieldEnum |=
+            enums->model()->index(row, 0).data(Qt::UserRole + 1).toString() == fieldEnumId;
+    }
+    QVERIFY(foundFieldEnum);
 
     makeGeneratedFilesWritable(directory.path());
 }
