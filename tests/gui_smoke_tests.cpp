@@ -855,13 +855,25 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
 
     Q_EMIT fields->clicked(fields->model()->index(0, 0));
     QCOMPARE(fields->model()->rowCount(), 2);
+    const auto visibleFieldEditor = [fields]() -> QLineEdit* {
+        const auto editors = fields->findChildren<QLineEdit*>();
+        const auto visible = std::ranges::find_if(
+            editors, [](const QLineEdit* editor) { return editor->isVisible(); });
+        return visible == editors.end() ? nullptr : *visible;
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(visibleFieldEditor() != nullptr, 2000);
+    auto* fieldNameEditor = visibleFieldEditor();
+    QCOMPARE(fieldNameEditor->text(), QStringLiteral("NEW_FIELD"));
+    QTest::keyClick(fieldNameEditor, Qt::Key_Escape);
+    QCoreApplication::processEvents();
     QCOMPARE(fields->model()->index(0, 0).data().toString(), QStringLiteral("NEW_FIELD"));
+
     const QModelIndex widthIndex = fields->model()->index(0, 4);
     fields->scrollTo(widthIndex);
     QTest::mouseClick(fields->viewport(), Qt::LeftButton, Qt::NoModifier,
                       fields->visualRect(widthIndex).center());
-    QTRY_VERIFY_WITH_TIMEOUT(fields->findChild<QLineEdit*>() != nullptr, 2000);
-    auto* widthEditor = fields->findChild<QLineEdit*>();
+    QTRY_VERIFY_WITH_TIMEOUT(visibleFieldEditor() != nullptr, 2000);
+    auto* widthEditor = visibleFieldEditor();
     widthEditor->selectAll();
     QTest::keyClicks(widthEditor, QStringLiteral("4"));
     QTest::keyClick(widthEditor, Qt::Key_Return);

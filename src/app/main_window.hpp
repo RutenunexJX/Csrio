@@ -143,6 +143,7 @@ private:
     void selectField(const std::string& id);
     void beginHierarchyRename(const std::string& id);
     void beginRegisterRename(const std::string& id);
+    void beginFieldRename(const std::string& id);
     void openSource(const regmap::SourceLocation& source);
     void applyPropertyEdit(const std::string& objectId, const std::string& property,
                            const QString& value);

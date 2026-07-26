@@ -2929,6 +2929,7 @@ void MainWindow::addField()
         refreshProject();
         selectRegister(registerId);
         selectField(newId);
+        beginFieldRename(newId);
     }
 }
 
@@ -2989,6 +2990,7 @@ void MainWindow::addSubfield()
         refreshProject();
         selectRegister(reg->id);
         selectField(newId);
+        beginFieldRename(newId);
     }
 }
 
@@ -4299,6 +4301,28 @@ void MainWindow::beginRegisterRename(const std::string& id)
         registerView_->scrollTo(name);
         registerView_->setFocus(Qt::OtherFocusReason);
         registerView_->edit(name);
+    });
+}
+
+void MainWindow::beginFieldRename(const std::string& id)
+{
+    const std::filesystem::path manifestPath = controller_.manifestPath();
+    QTimer::singleShot(0, this, [this, id, manifestPath] {
+        if (controller_.manifestPath() != manifestPath) {
+            return;
+        }
+        const QModelIndex current = fieldView_->currentIndex();
+        if (!current.isValid()) {
+            return;
+        }
+        const QModelIndex name = fieldModel_->index(current.row(), fieldNameColumn);
+        if (name.data(objectIdRole).toString().toUtf8().toStdString() != id) {
+            return;
+        }
+        fieldView_->setCurrentIndex(name);
+        fieldView_->scrollTo(name);
+        fieldView_->setFocus(Qt::OtherFocusReason);
+        fieldView_->edit(name);
     });
 }
 
