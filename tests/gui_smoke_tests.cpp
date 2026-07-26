@@ -816,6 +816,13 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     QVERIFY(bitfield != nullptr);
     QVERIFY(pageBase != nullptr);
     QVERIFY(blockBase != nullptr);
+    const auto findUndoAction = [&window]() -> QAction* {
+        const auto actions = window.findChildren<QAction*>();
+        const auto undo = std::ranges::find_if(actions, [](const QAction* action) {
+            return action->shortcut().matches(QKeySequence::Undo) == QKeySequence::ExactMatch;
+        });
+        return undo == actions.end() ? nullptr : *undo;
+    };
 
     pageBase->setText(QStringLiteral("0x1000"));
     Q_EMIT pageBase->editingFinished();
@@ -837,7 +844,23 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     QVERIFY(registers->model()->setData(registers->model()->index(1, 4), QStringLiteral("uint16")));
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 3).data().toString(),
                               QStringLiteral("16"), 2000);
+    window.statusBar()->clearMessage();
     QVERIFY(registers->model()->setData(registers->model()->index(1, 4), QStringLiteral("enum")));
+    QTRY_VERIFY_WITH_TIMEOUT(enums->isVisible(), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(registers->model()->index(1, 6).data().toString().isEmpty(), 2000);
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("incompatible data")));
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("Ctrl+Z")));
+    auto* registerUndo = findUndoAction();
+    QVERIFY(registerUndo != nullptr);
+    QVERIFY(registerUndo->isEnabled());
+    registerUndo->trigger();
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 4).data().toString(),
+                              QStringLiteral("uint16"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 6).data().toString(),
+                              QStringLiteral("0 .. 255"), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(!enums->isVisible(), 2000);
+    QVERIFY(registers->model()->setData(registers->model()->index(1, 4),
+                                        QStringLiteral("enum")));
     QTRY_VERIFY_WITH_TIMEOUT(enums->isVisible(), 2000);
     QTRY_COMPARE_WITH_TIMEOUT(enums->model()->rowCount(), 1, 2000);
     const auto visibleEnumEditor = [enums]() -> QLineEdit* {
@@ -898,8 +921,82 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     QVERIFY(visibleEnumEditor() == nullptr);
     QCOMPARE(registers->model()->index(1, 4).data().toString(), QStringLiteral("enum"));
 
+    window.statusBar()->clearMessage();
     QVERIFY(registers->model()->setData(registers->model()->index(1, 4),
                                         QStringLiteral("field")));
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 4).data().toString(),
+                              QStringLiteral("field"), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(!enums->isVisible(), 2000);
+    QCOMPARE(enums->model()->rowCount(), 0);
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("incompatible data")));
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("Ctrl+Z")));
+    registerUndo = findUndoAction();
+    QVERIFY(registerUndo != nullptr);
+    QVERIFY(registerUndo->isEnabled());
+    registerUndo->trigger();
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 4).data().toString(),
+                              QStringLiteral("enum"), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(enums->isVisible(), 2000);
+    bool restoredRegisterEnums = false;
+    bool restoredRegisterEnumValue = false;
+    bool restoredGuardedRegisterEnum = false;
+    for (int row = 0; row < enums->model()->rowCount(); ++row) {
+        const QString id =
+            enums->model()->index(row, 0).data(Qt::UserRole + 1).toString();
+        restoredRegisterEnums |= id == enumId;
+        restoredRegisterEnumValue |=
+            id == enumId &&
+            enums->model()->index(row, 1).data().toString() == QStringLiteral("0x3");
+        restoredGuardedRegisterEnum |= id == guardedEnumId;
+    }
+    QVERIFY(restoredRegisterEnums);
+    QVERIFY(restoredRegisterEnumValue);
+    QVERIFY(restoredGuardedRegisterEnum);
+    QVERIFY(registers->model()->setData(registers->model()->index(1, 7),
+                                        QStringLiteral("0x3")));
+    QVERIFY(registers->model()->setData(registers->model()->index(1, 8),
+                                        QStringLiteral("0x3")));
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 8).data().toString(),
+                              QStringLiteral("0x3"), 2000);
+
+    window.statusBar()->clearMessage();
+    QVERIFY(registers->model()->setData(registers->model()->index(1, 4),
+                                        QStringLiteral("reserved")));
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 4).data().toString(),
+                              QStringLiteral("reserved"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 9).data().toString(),
+                              QStringLiteral("NONE"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 7).data().toString(),
+                              QStringLiteral("0x0"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 8).data().toString(),
+                              QStringLiteral("0x0"), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(!enums->isVisible(), 2000);
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("incompatible data")));
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("Ctrl+Z")));
+    registerUndo = findUndoAction();
+    QVERIFY(registerUndo != nullptr);
+    QVERIFY(registerUndo->isEnabled());
+    registerUndo->trigger();
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 4).data().toString(),
+                              QStringLiteral("enum"), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(enums->isVisible(), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 9).data().toString(),
+                              QStringLiteral("RW"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 7).data().toString(),
+                              QStringLiteral("0x3"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 8).data().toString(),
+                              QStringLiteral("0x3"), 2000);
+    bool restoredAfterReserved = false;
+    for (int row = 0; row < enums->model()->rowCount(); ++row) {
+        restoredAfterReserved |=
+            enums->model()->index(row, 0).data(Qt::UserRole + 1).toString() == enumId;
+    }
+    QVERIFY(restoredAfterReserved);
+
+    QVERIFY(registers->model()->setData(registers->model()->index(1, 4),
+                                        QStringLiteral("field")));
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 4).data().toString(),
+                              QStringLiteral("field"), 2000);
     QTRY_VERIFY_WITH_TIMEOUT(!fields->isVisible(), 2000);
     QCOMPARE(fields->model()->rowCount(), 0);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 5).data().toString(),

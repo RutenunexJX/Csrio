@@ -2503,7 +2503,20 @@ void MainWindow::applyPropertyEdit(const std::string& objectId, const std::strin
                 reject(QStringLiteral("field type while the register contains fields"));
                 return;
             }
-            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+            const bool enumerationLike =
+                *parsed == regmap::FieldType::enumeration ||
+                *parsed == regmap::FieldType::boolean;
+            const bool numeric = *parsed == regmap::FieldType::signedInteger ||
+                                 *parsed == regmap::FieldType::unsignedInteger;
+            const bool clearsEnumValues = !enumerationLike && !current->enumValues.empty();
+            const bool clearsRange =
+                !numeric && (current->minimumValue || current->maximumValue);
+            const bool normalizesReserved =
+                *parsed == regmap::FieldType::reserved &&
+                (current->access != regmap::AccessMode::none ||
+                 (current->initialValue && !current->initialValue->isZero()) ||
+                 (current->resetValue && !current->resetValue->isZero()));
+            if (controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
                 if (auto* reg = regmap::findRegister(candidate, objectId)) {
                     reg->type = *parsed;
                     reg->reserved = *parsed == regmap::FieldType::reserved;
@@ -2519,17 +2532,20 @@ void MainWindow::applyPropertyEdit(const std::string& objectId, const std::strin
                         reg->initialValue = regmap::UnsignedValue(0);
                         reg->resetValue = regmap::UnsignedValue(0);
                     }
-                    if (*parsed != regmap::FieldType::enumeration &&
-                        *parsed != regmap::FieldType::boolean) {
+                    if (!enumerationLike) {
                         reg->enumValues.clear();
                     }
-                    if (*parsed != regmap::FieldType::signedInteger &&
-                        *parsed != regmap::FieldType::unsignedInteger) {
+                    if (!numeric) {
                         reg->minimumValue.reset();
                         reg->maximumValue.reset();
                     }
                 }
-            });
+            }) && (clearsEnumValues || clearsRange || normalizesReserved)) {
+                statusBar()->showMessage(
+                    QStringLiteral(
+                        "Type changed · incompatible data cleared or normalized · Ctrl+Z to restore"),
+                    6000);
+            }
             return;
         }
         if (property == "offset" || property == "stride") {
