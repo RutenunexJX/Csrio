@@ -62,6 +62,9 @@ private:
     QTableView* fieldView_{nullptr};
     BitfieldView* bitfieldView_{nullptr};
     QWidget* fieldPanel_{nullptr};
+    QWidget* fieldHeaderBar_{nullptr};
+    QLabel* fieldContextLabel_{nullptr};
+    QPushButton* closeFieldsButton_{nullptr};
     QLabel* enumContextLabel_{nullptr};
     QTableView* enumView_{nullptr};
     QTabWidget* tabs_{nullptr};
@@ -103,6 +106,7 @@ private:
     std::string selectedBlockId_;
     std::string selectedRegisterId_;
     std::string selectedFieldId_;
+    std::string openFieldsRegisterId_;
     std::string selectedTagFilter_;
     std::optional<regmap::SourceLocation> currentSource_;
     bool refreshing_{false};
@@ -148,6 +152,7 @@ private:
     void editRegisterTags(const QModelIndex& index);
     void editRegisterAccess(const QModelIndex& index);
     void openFieldsForRegister(const std::string& registerId);
+    void closeFields();
     void showHierarchyContextMenu(const QPoint& position);
     void showRegisterContextMenu(const QPoint& position);
     void showFieldContextMenu(const QPoint& position);

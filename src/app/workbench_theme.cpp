@@ -229,6 +229,25 @@ QLabel#contextTitle {
     color: #17365D;
     font-weight: 600;
 }
+QWidget#fieldHeaderBar {
+    background: #DCE6F1;
+    border: 1px solid #9FB0C4;
+    border-radius: 3px;
+}
+QLabel#fieldContextLabel {
+    color: #17365D;
+    font-weight: 600;
+}
+QPushButton#closeFieldsButton {
+    background: #FFFFFF;
+    color: #385D8A;
+    border: 1px solid #9FB0C4;
+    padding: 3px 9px;
+}
+QPushButton#closeFieldsButton:hover {
+    color: #0B1F33;
+    border-color: #385D8A;
+}
 QLineEdit#pageBaseEdit,
 QLineEdit#blockBaseEdit {
     background: #FFFFFF;

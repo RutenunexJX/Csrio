@@ -765,6 +765,20 @@ void MainWindow::buildUi()
     auto* fieldLayout = new QVBoxLayout(fieldPanel);
     fieldLayout->setContentsMargins(0, 0, 0, 0);
     fieldLayout->setSpacing(6);
+    fieldHeaderBar_ = new QWidget(fieldPanel);
+    fieldHeaderBar_->setObjectName(QStringLiteral("fieldHeaderBar"));
+    auto* fieldHeaderLayout = new QHBoxLayout(fieldHeaderBar_);
+    fieldHeaderLayout->setContentsMargins(10, 5, 8, 5);
+    fieldHeaderLayout->setSpacing(8);
+    fieldContextLabel_ = new QLabel(QStringLiteral("Fields"), fieldHeaderBar_);
+    fieldContextLabel_->setObjectName(QStringLiteral("fieldContextLabel"));
+    closeFieldsButton_ = new QPushButton(QStringLiteral("Close Fields"), fieldHeaderBar_);
+    closeFieldsButton_->setObjectName(QStringLiteral("closeFieldsButton"));
+    closeFieldsButton_->setToolTip(QStringLiteral("Close the Field workspace"));
+    closeFieldsButton_->setAutoDefault(false);
+    fieldHeaderLayout->addWidget(fieldContextLabel_);
+    fieldHeaderLayout->addStretch(1);
+    fieldHeaderLayout->addWidget(closeFieldsButton_);
     enumContextLabel_ = new QLabel(QStringLiteral("Enum Values"), fieldPanel);
     enumContextLabel_->setObjectName(QStringLiteral("contextTitle"));
     enumView_ = new QTableView(fieldPanel);
@@ -776,6 +790,7 @@ void MainWindow::buildUi()
     enumView_->setContextMenuPolicy(Qt::CustomContextMenu);
     enumView_->setFixedHeight(112);
 
+    fieldLayout->addWidget(fieldHeaderBar_);
     fieldLayout->addWidget(bitfieldView_);
     fieldLayout->addWidget(fieldView_, 1);
     fieldLayout->addWidget(enumContextLabel_);
@@ -1109,6 +1124,7 @@ void MainWindow::connectSignals()
                 selectedBlockId_ = current.data(blockIdRole).toString().toUtf8().toStdString();
                 selectedRegisterId_.clear();
                 selectedFieldId_.clear();
+                openFieldsRegisterId_.clear();
                 updateContextBar();
                 populateRegisters();
                 const auto* workspace = controller_.workspace();
@@ -1134,8 +1150,15 @@ void MainWindow::connectSignals()
                     return;
                 }
                 const QModelIndex first = registerModel_->index(current.row(), 0);
-                selectedRegisterId_ = first.data(objectIdRole).toString().toUtf8().toStdString();
-                selectedFieldId_.clear();
+                const std::string nextRegisterId =
+                    first.data(objectIdRole).toString().toUtf8().toStdString();
+                if (nextRegisterId != selectedRegisterId_) {
+                    selectedFieldId_.clear();
+                    if (openFieldsRegisterId_ != nextRegisterId) {
+                        openFieldsRegisterId_.clear();
+                    }
+                }
+                selectedRegisterId_ = nextRegisterId;
                 const regmap::Register* reg = findRegister(selectedRegisterId_);
                 populateFields(reg);
                 setCurrentSource(reg == nullptr ? regmap::SourceLocation{} : reg->source);
@@ -1170,6 +1193,7 @@ void MainWindow::connectSignals()
             [this](const QString& id, std::uint32_t lsb, std::uint32_t msb) {
                 moveField(id.toUtf8().toStdString(), lsb, msb);
             });
+    connect(closeFieldsButton_, &QPushButton::clicked, this, &MainWindow::closeFields);
 
     connect(registerView_, &QTableView::clicked, this, [this](const QModelIndex& index) {
         if (index.data(addRowRole).toBool()) {
@@ -1508,6 +1532,7 @@ void MainWindow::populateHierarchy()
         if (newAddressId != selectedAddressId_ || newBlockId != selectedBlockId_) {
             selectedRegisterId_.clear();
             selectedFieldId_.clear();
+            openFieldsRegisterId_.clear();
         }
         selectedAddressId_ = newAddressId;
         selectedBlockId_ = newBlockId;
@@ -1529,6 +1554,7 @@ void MainWindow::populateRegisters()
 
     const regmap::Workspace* workspace = controller_.workspace();
     if (workspace == nullptr) {
+        openFieldsRegisterId_.clear();
         populateFields(nullptr);
         setCurrentSource({});
         return;
@@ -1626,6 +1652,9 @@ void MainWindow::populateRegisters()
                                    .toStdString();
         if (id != selectedRegisterId_) {
             selectedFieldId_.clear();
+            if (openFieldsRegisterId_ != id) {
+                openFieldsRegisterId_.clear();
+            }
         }
         selectedRegisterId_ = id;
         const regmap::Register* selectedRegister = findRegister(selectedRegisterId_);
@@ -1636,6 +1665,7 @@ void MainWindow::populateRegisters()
         }
     } else {
         selectedRegisterId_.clear();
+        openFieldsRegisterId_.clear();
         populateFields(nullptr);
         setCurrentSource({});
     }
@@ -1654,8 +1684,14 @@ void MainWindow::populateFields(const regmap::Register* reg)
          QStringLiteral("HW"), QStringLiteral("Reset"), QStringLiteral("Read Effect"),
          QStringLiteral("Write Effect"), QStringLiteral("Description")});
     bitfieldView_->setRegister(reg);
-    const bool showFieldEditor =
+    const bool hasFieldEditor =
         reg != nullptr && !reg->reserved && reg->type == regmap::FieldType::structure;
+    if (!hasFieldEditor && reg != nullptr && openFieldsRegisterId_ == reg->id) {
+        openFieldsRegisterId_.clear();
+    }
+    const bool showFieldEditor =
+        hasFieldEditor && openFieldsRegisterId_ == reg->id;
+    fieldHeaderBar_->setVisible(showFieldEditor);
     bitfieldView_->setVisible(showFieldEditor);
     fieldView_->setVisible(showFieldEditor);
     if (!showFieldEditor) {
@@ -1664,6 +1700,10 @@ void MainWindow::populateFields(const regmap::Register* reg)
         applyFieldColumnVisibility();
         return;
     }
+    fieldContextLabel_->setText(
+        QStringLiteral("Fields — %1 · %2 field(s)")
+            .arg(fromUtf8(reg->name))
+            .arg(reg->fields.size()));
 
     int preferredRow = -1;
     const auto appendFields = [&](const auto& self, const std::vector<regmap::Field>& fields,
@@ -1767,9 +1807,10 @@ void MainWindow::populateEnumValues(const regmap::Register* reg, const regmap::F
                                   type == regmap::FieldType::enumeration || !enumValues->empty());
     enumContextLabel_->setVisible(visible);
     enumView_->setVisible(visible);
-    const bool hasFieldEditor =
-        reg != nullptr && !reg->reserved && reg->type == regmap::FieldType::structure;
-    fieldPanel_->setVisible(hasFieldEditor || visible);
+    const bool hasOpenFieldEditor =
+        reg != nullptr && !reg->reserved && reg->type == regmap::FieldType::structure &&
+        openFieldsRegisterId_ == reg->id;
+    fieldPanel_->setVisible(hasOpenFieldEditor || visible);
     if (!visible) {
         return;
     }
@@ -2549,6 +2590,7 @@ void MainWindow::addAddressSpace()
         selectedBlockId_.clear();
         selectedRegisterId_.clear();
         selectedFieldId_.clear();
+        openFieldsRegisterId_.clear();
         refreshProject();
     }
 }
@@ -2587,6 +2629,7 @@ void MainWindow::addBlock()
         selectedBlockId_ = newId;
         selectedRegisterId_.clear();
         selectedFieldId_.clear();
+        openFieldsRegisterId_.clear();
         refreshProject();
     }
 }
@@ -2645,6 +2688,7 @@ void MainWindow::addRegister()
         selectedBlockId_ = parentId;
         selectedRegisterId_ = newId;
         selectedFieldId_.clear();
+        openFieldsRegisterId_.clear();
         refreshProject();
         selectRegister(newId);
     }
@@ -2737,6 +2781,7 @@ void MainWindow::insertRegisterAt(int row)
         selectedBlockId_ = blockId;
         selectedRegisterId_ = newId;
         selectedFieldId_.clear();
+        openFieldsRegisterId_.clear();
         refreshProject();
         selectRegister(newId);
     }
@@ -3250,6 +3295,7 @@ void MainWindow::openFieldsForRegister(const std::string& registerId)
         return;
     }
 
+    openFieldsRegisterId_ = registerId;
     selectedRegisterId_ = registerId;
     selectedFieldId_.clear();
     selectRegister(registerId);
@@ -3263,6 +3309,24 @@ void MainWindow::openFieldsForRegister(const std::string& registerId)
     fieldView_->setFocus(Qt::OtherFocusReason);
     statusBar()->showMessage(
         QStringLiteral("Opened Fields for %1").arg(fromUtf8(reg->name)), 3000);
+}
+
+void MainWindow::closeFields()
+{
+    if (openFieldsRegisterId_.empty()) {
+        return;
+    }
+    openFieldsRegisterId_.clear();
+    selectedFieldId_.clear();
+    const auto* reg = findRegister(selectedRegisterId_);
+    populateFields(reg);
+    setCurrentSource(reg == nullptr ? regmap::SourceLocation{} : reg->source);
+    registerView_->setFocus(Qt::OtherFocusReason);
+    statusBar()->showMessage(
+        reg == nullptr
+            ? QStringLiteral("Closed Fields")
+            : QStringLiteral("Closed Fields for %1").arg(fromUtf8(reg->name)),
+        3000);
 }
 
 void MainWindow::showRegisterContextMenu(const QPoint& position)
@@ -3382,6 +3446,7 @@ void MainWindow::convertSelectedRegisterToReserved()
                                       }
                                   })) {
         selectedFieldId_.clear();
+        openFieldsRegisterId_.clear();
         selectedRegisterId_ = registerId;
         refreshProject();
         selectRegister(registerId);
@@ -3476,6 +3541,7 @@ void MainWindow::deleteSelectedRegisterAndShift()
             })) {
         selectedRegisterId_ = nextId;
         selectedFieldId_.clear();
+        openFieldsRegisterId_.clear();
         refreshProject();
         if (!nextId.empty()) {
             selectRegister(nextId);
@@ -3684,15 +3750,18 @@ void MainWindow::deleteSelection()
         } else if (id == selectedRegisterId_) {
             selectedRegisterId_.clear();
             selectedFieldId_.clear();
+            openFieldsRegisterId_.clear();
         } else if (id == selectedBlockId_) {
             selectedBlockId_.clear();
             selectedRegisterId_.clear();
             selectedFieldId_.clear();
+            openFieldsRegisterId_.clear();
         } else {
             selectedAddressId_.clear();
             selectedBlockId_.clear();
             selectedRegisterId_.clear();
             selectedFieldId_.clear();
+            openFieldsRegisterId_.clear();
         }
         refreshProject();
         statusBar()->showMessage(
@@ -3712,6 +3781,7 @@ bool MainWindow::navigateToObject(const std::string& id)
         selectedBlockId_.clear();
         selectedRegisterId_.clear();
         selectedFieldId_.clear();
+        openFieldsRegisterId_.clear();
         selectedTagFilter_.clear();
         refreshProject();
         statusBar()->showMessage(QStringLiteral("Located workspace"), 3000);
@@ -3724,6 +3794,7 @@ bool MainWindow::navigateToObject(const std::string& id)
             selectedBlockId_.clear();
             selectedRegisterId_.clear();
             selectedFieldId_.clear();
+            openFieldsRegisterId_.clear();
             selectedTagFilter_.clear();
             refreshProject();
             statusBar()->showMessage(
@@ -3736,6 +3807,7 @@ bool MainWindow::navigateToObject(const std::string& id)
                 selectedBlockId_ = block.id;
                 selectedRegisterId_.clear();
                 selectedFieldId_.clear();
+                openFieldsRegisterId_.clear();
                 selectedTagFilter_.clear();
                 refreshProject();
                 statusBar()->showMessage(
@@ -3776,6 +3848,11 @@ bool MainWindow::navigateToObject(const std::string& id)
                 selectedBlockId_ = block.id;
                 selectedRegisterId_ = reg.id;
                 selectedFieldId_ = fieldId;
+                if (fieldId.empty()) {
+                    openFieldsRegisterId_.clear();
+                } else {
+                    openFieldsRegisterId_ = reg.id;
+                }
                 selectedTagFilter_.clear();
                 refreshProject();
                 selectRegister(reg.id);

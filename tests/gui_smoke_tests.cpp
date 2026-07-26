@@ -257,6 +257,7 @@ void GuiSmokeTests::opensProjectAndPopulatesEditableViews()
     auto* blockDescription = window.findChild<QLineEdit*>(QStringLiteral("blockDescriptionEdit"));
     auto* enums = window.findChild<QTableView*>(QStringLiteral("enumView"));
     auto* tagFilter = window.findChild<QComboBox*>(QStringLiteral("tagFilter"));
+    auto* fieldPanel = window.findChild<QWidget*>(QStringLiteral("fieldPanel"));
     auto* problems = window.findChild<QTableView*>(QStringLiteral("problemsView"));
     auto* generated = window.findChild<QTableView*>(QStringLiteral("generatedView"));
     auto* tabs = window.findChild<QTabWidget*>();
@@ -271,12 +272,18 @@ void GuiSmokeTests::opensProjectAndPopulatesEditableViews()
     QVERIFY(blockDescription != nullptr);
     QVERIFY(enums != nullptr);
     QVERIFY(tagFilter != nullptr);
+    QVERIFY(fieldPanel != nullptr);
     QVERIFY(problems != nullptr);
     QVERIFY(generated != nullptr);
     QVERIFY(window.findChild<QWidget*>(QStringLiteral("inspector")) == nullptr);
     QVERIFY(tabs != nullptr);
     QCOMPARE(hierarchy->model()->rowCount(), 1);
     QCOMPARE(registers->model()->rowCount(), 2);
+    QCOMPARE(fields->model()->rowCount(), 0);
+    QCOMPARE(enums->model()->rowCount(), 0);
+    QVERIFY(fieldPanel->isHidden());
+    Q_EMIT registers->clicked(registers->model()->index(0, 5));
+    QCoreApplication::processEvents();
     QCOMPARE(fields->model()->rowCount(), 2);
     QCOMPARE(enums->model()->rowCount(), 2);
     QCOMPARE(registers->model()->columnCount(), 12);
@@ -363,11 +370,15 @@ void GuiSmokeTests::navigatesHierarchyAndOpensFieldsExplicitly()
     auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
     auto* fields = window.findChild<QTableView*>(QStringLiteral("fieldView"));
     auto* fieldPanel = window.findChild<QWidget*>(QStringLiteral("fieldPanel"));
+    auto* fieldContext = window.findChild<QLabel*>(QStringLiteral("fieldContextLabel"));
+    auto* closeFields = window.findChild<QPushButton*>(QStringLiteral("closeFieldsButton"));
     auto* toolbar = window.findChild<QToolBar*>(QStringLiteral("projectToolBar"));
     QVERIFY(hierarchy != nullptr);
     QVERIFY(registers != nullptr);
     QVERIFY(fields != nullptr);
     QVERIFY(fieldPanel != nullptr);
+    QVERIFY(fieldContext != nullptr);
+    QVERIFY(closeFields != nullptr);
     QVERIFY(toolbar != nullptr);
 
     QStringList toolbarCommands;
@@ -466,9 +477,15 @@ void GuiSmokeTests::navigatesHierarchyAndOpensFieldsExplicitly()
     Q_EMIT registers->clicked(openFields);
     QTRY_VERIFY_WITH_TIMEOUT(fieldPanel->isVisible(), 2000);
     QVERIFY(fields->isVisible());
+    QVERIFY(fieldContext->text().contains(QStringLiteral("STATUS")));
+    QVERIFY(fieldContext->text().contains(QStringLiteral("1 field(s)")));
+    QVERIFY(closeFields->isVisible());
     QCOMPARE(registers->currentIndex().data(Qt::UserRole + 1).toString(),
              QStringLiteral("reg-status"));
     QCOMPARE(fields->model()->index(0, 0).data().toString(), QStringLiteral("READY"));
+    closeFields->click();
+    QTRY_VERIFY_WITH_TIMEOUT(!fieldPanel->isVisible(), 2000);
+    QCOMPARE(fields->model()->rowCount(), 0);
 
     makeGeneratedFilesWritable(directory.path());
 }
@@ -529,6 +546,11 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
 
     QVERIFY(registers->model()->setData(registers->model()->index(1, 4),
                                         QStringLiteral("field")));
+    QTRY_VERIFY_WITH_TIMEOUT(!fields->isVisible(), 2000);
+    QCOMPARE(fields->model()->rowCount(), 0);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 5).data().toString(),
+                              QStringLiteral("Open (0)"), 2000);
+    Q_EMIT registers->clicked(registers->model()->index(1, 5));
     QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
     QTRY_COMPARE_WITH_TIMEOUT(fields->model()->rowCount(), 1, 2000);
 
@@ -767,12 +789,16 @@ void GuiSmokeTests::searchesAndNavigatesProblems()
     auto* searchResult = window.findChild<QLabel*>(QStringLiteral("searchResultLabel"));
     auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
     auto* fields = window.findChild<QTableView*>(QStringLiteral("fieldView"));
+    auto* fieldPanel = window.findChild<QWidget*>(QStringLiteral("fieldPanel"));
+    auto* fieldContext = window.findChild<QLabel*>(QStringLiteral("fieldContextLabel"));
     auto* problems = window.findChild<QTableView*>(QStringLiteral("problemsView"));
     auto* state = window.findChild<QLabel*>(QStringLiteral("syncStateBadge"));
     QVERIFY(search != nullptr);
     QVERIFY(searchResult != nullptr);
     QVERIFY(registers != nullptr);
     QVERIFY(fields != nullptr);
+    QVERIFY(fieldPanel != nullptr);
+    QVERIFY(fieldContext != nullptr);
     QVERIFY(problems != nullptr);
     QVERIFY(state != nullptr);
 
@@ -790,6 +816,8 @@ void GuiSmokeTests::searchesAndNavigatesProblems()
         QStringLiteral("reg-status"), 2000);
     QTRY_COMPARE_WITH_TIMEOUT(fields->currentIndex().data(Qt::UserRole + 1).toString(),
                               QStringLiteral("field-ready"), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(fieldPanel->isVisible(), 2000);
+    QVERIFY(fieldContext->text().contains(QStringLiteral("STATUS")));
 
     QVERIFY(registers->model()->setData(registers->model()->index(1, 1),
                                         QStringLiteral("0x0")));
@@ -881,8 +909,8 @@ void GuiSmokeTests::deletesFocusedRegisterAndRestoresIt()
     auto* fields = window.findChild<QTableView*>(QStringLiteral("fieldView"));
     QVERIFY(registers != nullptr);
     QVERIFY(fields != nullptr);
-    QCOMPARE(fields->currentIndex().data(Qt::UserRole + 1).toString(),
-             QStringLiteral("field-ready"));
+    QCOMPARE(fields->model()->rowCount(), 0);
+    QVERIFY(!fields->isVisible());
 
     registers->setCurrentIndex(registers->model()->index(0, 0));
     registers->setFocus();

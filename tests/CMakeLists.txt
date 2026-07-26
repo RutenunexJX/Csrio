@@ -38,7 +38,11 @@ if(TARGET RegMap::WorkbenchUi)
     )
     target_compile_features(regmap_gui_tests PRIVATE cxx_std_20)
     regmap_enable_warnings(regmap_gui_tests)
-    add_test(NAME regmap_gui_tests COMMAND regmap_gui_tests)
+    add_test(
+        NAME regmap_gui_tests
+        COMMAND regmap_gui_tests
+            -o "${CMAKE_CURRENT_BINARY_DIR}/regmap_gui_tests.log,txt"
+    )
     set_tests_properties(
         regmap_gui_tests
         PROPERTIES
