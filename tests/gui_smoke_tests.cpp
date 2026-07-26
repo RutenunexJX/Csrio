@@ -14,6 +14,7 @@
 #include <QPushButton>
 #include <QColor>
 #include <QComboBox>
+#include <QContextMenuEvent>
 #include <QDir>
 #include <QFile>
 #include <QFileDevice>
@@ -33,6 +34,7 @@
 #include <QTabWidget>
 #include <QTableView>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QTest>
 #include <QToolBar>
 #include <QToolButton>
@@ -895,6 +897,102 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     QCOMPARE(fields->model()->index(0, 4).data().toString(), QStringLiteral("8"));
     QCOMPARE(fields->model()->index(0, 5).data().toString(), QStringLiteral("uint8"));
     QVERIFY(fields->model()->setData(fields->model()->index(0, 7), QStringLiteral("255")));
+
+    QVERIFY(fields->model()->setData(fields->model()->index(0, 5),
+                                     QStringLiteral("field")));
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(0, 5).data().toString(),
+                              QStringLiteral("field"), 2000);
+    const QModelIndex parentNameIndex = fields->model()->index(0, 0);
+    const QString parentFieldId = parentNameIndex.data(Qt::UserRole + 1).toString();
+    QVERIFY(!parentFieldId.isEmpty());
+    fields->setCurrentIndex(parentNameIndex);
+    QCoreApplication::processEvents();
+    const auto addMemberThroughContextMenu =
+        [&](const QModelIndex& fieldIndex, QString& failure) {
+            bool triggered = false;
+            QTimer::singleShot(0, &window, [&] {
+                auto* action =
+                    window.findChild<QAction*>(QStringLiteral("addMemberFieldAction"));
+                auto* menu =
+                    action == nullptr ? qobject_cast<QMenu*>(QApplication::activePopupWidget())
+                                      : qobject_cast<QMenu*>(action->parent());
+                if (menu == nullptr) {
+                    failure = QStringLiteral("Field context menu did not open");
+                    return;
+                }
+                if (action == nullptr || !action->isEnabled()) {
+                    failure = QStringLiteral("Add member Field action is unavailable");
+                    menu->close();
+                    return;
+                }
+                triggered = true;
+                QTest::mouseClick(menu, Qt::LeftButton, Qt::NoModifier,
+                                  menu->actionGeometry(action).center());
+            });
+            const QPoint localPosition = fields->visualRect(fieldIndex).center();
+            QContextMenuEvent event(QContextMenuEvent::Mouse, localPosition,
+                                    fields->viewport()->mapToGlobal(localPosition));
+            QCoreApplication::sendEvent(fields->viewport(), &event);
+            return triggered;
+        };
+
+    QString memberMenuFailure;
+    const bool memberActionTriggered =
+        addMemberThroughContextMenu(parentNameIndex, memberMenuFailure);
+    QVERIFY2(memberMenuFailure.isEmpty(), qPrintable(memberMenuFailure));
+    QVERIFY(memberActionTriggered);
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->rowCount(), 3, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(visibleFieldEditor() != nullptr, 2000);
+    auto* memberNameEditor = visibleFieldEditor();
+    QCOMPARE(memberNameEditor->text(), QStringLiteral("NEW_MEMBER"));
+    const QString memberFieldId =
+        fields->currentIndex().data(Qt::UserRole + 1).toString();
+    QVERIFY(!memberFieldId.isEmpty());
+    QVERIFY(memberFieldId != parentFieldId);
+    QTest::keyClick(memberNameEditor, Qt::Key_Escape);
+    QCoreApplication::processEvents();
+    QCOMPARE(fields->model()->index(1, 0).data().toString(),
+             QStringLiteral("NEW_MEMBER"));
+    QCOMPARE(fields->currentIndex().data(Qt::UserRole + 1).toString(), memberFieldId);
+
+    const QModelIndex memberWidthIndex = fields->model()->index(1, 4);
+    fields->scrollTo(memberWidthIndex);
+    QTest::mouseClick(fields->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      fields->visualRect(memberWidthIndex).center());
+    QTRY_VERIFY_WITH_TIMEOUT(visibleFieldEditor() != nullptr, 2000);
+    auto* memberWidthEditor = visibleFieldEditor();
+    memberWidthEditor->selectAll();
+    QTest::keyClicks(memberWidthEditor, QStringLiteral("2"));
+    QTest::keyClick(memberWidthEditor, Qt::Key_Return);
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(1, 4).data().toString(),
+                              QStringLiteral("2"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(1, 2).data().toString(),
+                              QStringLiteral("1"), 2000);
+    QCOMPARE(fields->model()->index(1, 3).data().toString(), QStringLiteral("0"));
+
+    const QModelIndex refreshedParentNameIndex = fields->model()->index(0, 0);
+    fields->setCurrentIndex(refreshedParentNameIndex);
+    QString guardedMemberMenuFailure;
+    const bool guardedMemberActionTriggered =
+        addMemberThroughContextMenu(refreshedParentNameIndex, guardedMemberMenuFailure);
+    QVERIFY2(guardedMemberMenuFailure.isEmpty(), qPrintable(guardedMemberMenuFailure));
+    QVERIFY(guardedMemberActionTriggered);
+    const QString guardedFieldId =
+        fields->currentIndex().data(Qt::UserRole + 1).toString();
+    QVERIFY(!guardedFieldId.isEmpty());
+    QVERIFY(guardedFieldId != memberFieldId);
+    registers->setCurrentIndex(registers->model()->index(0, 0));
+    QCoreApplication::processEvents();
+    QVERIFY(visibleFieldEditor() == nullptr);
+    Q_EMIT registers->clicked(registers->model()->index(1, 5));
+    QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
+    bool foundGuardedField = false;
+    for (int row = 0; row < fields->model()->rowCount(); ++row) {
+        foundGuardedField |=
+            fields->model()->index(row, 0).data(Qt::UserRole + 1).toString() ==
+            guardedFieldId;
+    }
+    QVERIFY(foundGuardedField);
 
     makeGeneratedFilesWritable(directory.path());
 }

@@ -2988,7 +2988,7 @@ void MainWindow::addSubfield()
             })) {
         selectedFieldId_ = newId;
         refreshProject();
-        selectRegister(reg->id);
+        selectRegister(registerId);
         selectField(newId);
         beginFieldRename(newId);
     }
@@ -3486,6 +3486,7 @@ void MainWindow::showFieldContextMenu(const QPoint& position)
     }
     QAction* addEnum = menu.addAction(QStringLiteral("添加枚举值"));
     QAction* addMember = menu.addAction(QStringLiteral("添加内部 Field"));
+    addMember->setObjectName(QStringLiteral("addMemberFieldAction"));
     addMember->setEnabled(field->type == regmap::FieldType::structure);
     menu.addSeparator();
     QAction* remove = menu.addAction(QStringLiteral("删除 Field"));
@@ -4306,9 +4307,16 @@ void MainWindow::beginRegisterRename(const std::string& id)
 
 void MainWindow::beginFieldRename(const std::string& id)
 {
+    const std::string registerId = selectedRegisterId_;
     const std::filesystem::path manifestPath = controller_.manifestPath();
-    QTimer::singleShot(0, this, [this, id, manifestPath] {
-        if (controller_.manifestPath() != manifestPath) {
+    QTimer::singleShot(0, this, [this, id, registerId, manifestPath] {
+        if (registerId.empty() || controller_.workspace() == nullptr ||
+            controller_.manifestPath() != manifestPath ||
+            selectedRegisterId_ != registerId || openFieldsRegisterId_ != registerId) {
+            return;
+        }
+        const auto* reg = findRegister(registerId);
+        if (reg == nullptr || findField(*reg, id) == nullptr) {
             return;
         }
         const QModelIndex current = fieldView_->currentIndex();
