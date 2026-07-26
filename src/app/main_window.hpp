@@ -141,6 +141,8 @@ private:
     void setCurrentSource(const regmap::SourceLocation& source);
     void selectRegister(const std::string& id);
     void selectField(const std::string& id);
+    void beginHierarchyRename(const std::string& id);
+    void beginRegisterRename(const std::string& id);
     void openSource(const regmap::SourceLocation& source);
     void applyPropertyEdit(const std::string& objectId, const std::string& property,
                            const QString& value);

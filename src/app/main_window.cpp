@@ -2673,6 +2673,7 @@ void MainWindow::addAddressSpace()
         selectedFieldId_.clear();
         openFieldsRegisterId_.clear();
         refreshProject();
+        beginHierarchyRename(newId);
     }
 }
 
@@ -2712,6 +2713,7 @@ void MainWindow::addBlock()
         selectedFieldId_.clear();
         openFieldsRegisterId_.clear();
         refreshProject();
+        beginHierarchyRename(newId);
     }
 }
 
@@ -2772,6 +2774,7 @@ void MainWindow::addRegister()
         openFieldsRegisterId_.clear();
         refreshProject();
         selectRegister(newId);
+        beginRegisterRename(newId);
     }
 }
 
@@ -2865,6 +2868,7 @@ void MainWindow::insertRegisterAt(int row)
         openFieldsRegisterId_.clear();
         refreshProject();
         selectRegister(newId);
+        beginRegisterRename(newId);
     }
 }
 
@@ -4259,6 +4263,43 @@ void MainWindow::selectField(const std::string& id)
             return;
         }
     }
+}
+
+void MainWindow::beginHierarchyRename(const std::string& id)
+{
+    const std::filesystem::path manifestPath = controller_.manifestPath();
+    QTimer::singleShot(0, this, [this, id, manifestPath] {
+        const QModelIndex current = hierarchyView_->currentIndex();
+        if (controller_.manifestPath() != manifestPath || !current.isValid() ||
+            current.data(objectIdRole).toString().toUtf8().toStdString() != id) {
+            return;
+        }
+        hierarchyView_->setFocus(Qt::OtherFocusReason);
+        hierarchyView_->edit(current);
+    });
+}
+
+void MainWindow::beginRegisterRename(const std::string& id)
+{
+    const std::filesystem::path manifestPath = controller_.manifestPath();
+    QTimer::singleShot(0, this, [this, id, manifestPath] {
+        if (controller_.manifestPath() != manifestPath) {
+            return;
+        }
+        const QModelIndex current = registerView_->currentIndex();
+        if (!current.isValid()) {
+            return;
+        }
+        const QModelIndex name =
+            registerModel_->index(current.row(), registerNameColumn);
+        if (name.data(objectIdRole).toString().toUtf8().toStdString() != id) {
+            return;
+        }
+        registerView_->setCurrentIndex(name);
+        registerView_->scrollTo(name);
+        registerView_->setFocus(Qt::OtherFocusReason);
+        registerView_->edit(name);
+    });
 }
 
 void MainWindow::openSource(const regmap::SourceLocation& source)

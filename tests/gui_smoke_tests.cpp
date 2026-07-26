@@ -457,6 +457,14 @@ void GuiSmokeTests::navigatesHierarchyAndOpensFieldsExplicitly()
     auto* treeEditor = hierarchy->findChild<QLineEdit*>();
     QVERIFY(treeEditor->height() >= treeEditor->fontMetrics().height() + 8);
     QTest::keyClick(treeEditor, Qt::Key_Escape);
+    QCoreApplication::processEvents();
+
+    const auto visibleLineEdit = [](QWidget* parent) -> QLineEdit* {
+        const auto editors = parent->findChildren<QLineEdit*>();
+        const auto visible = std::ranges::find_if(
+            editors, [](const QLineEdit* editor) { return editor->isVisible(); });
+        return visible == editors.end() ? nullptr : *visible;
+    };
 
     root = hierarchy->model()->index(0, 0);
     hierarchy->setCurrentIndex(root);
@@ -477,6 +485,11 @@ void GuiSmokeTests::navigatesHierarchyAndOpensFieldsExplicitly()
     QTRY_COMPARE_WITH_TIMEOUT(hierarchy->model()->index(0, 0).model()
                                   ->rowCount(hierarchy->model()->index(0, 0)),
                               2, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(visibleLineEdit(hierarchy) != nullptr, 2000);
+    auto* pageNameEditor = visibleLineEdit(hierarchy);
+    QCOMPARE(pageNameEditor->text(), QStringLiteral("NEW_PAGE"));
+    QTest::keyClick(pageNameEditor, Qt::Key_Escape);
+    QCoreApplication::processEvents();
 
     QModelIndex newPageIndex = hierarchy->currentIndex();
     QCOMPARE(newPageIndex.data().toString(), QStringLiteral("NEW_PAGE"));
@@ -495,6 +508,11 @@ void GuiSmokeTests::navigatesHierarchyAndOpensFieldsExplicitly()
     hierarchyAdd->click();
     QTRY_COMPARE_WITH_TIMEOUT(hierarchy->currentIndex().data().toString(),
                               QStringLiteral("NEW_BLOCK"), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(visibleLineEdit(hierarchy) != nullptr, 2000);
+    auto* blockNameEditor = visibleLineEdit(hierarchy);
+    QCOMPARE(blockNameEditor->text(), QStringLiteral("NEW_BLOCK"));
+    QTest::keyClick(blockNameEditor, Qt::Key_Escape);
+    QCoreApplication::processEvents();
 
     QModelIndex newBlockIndex = hierarchy->currentIndex();
     QTRY_COMPARE_WITH_TIMEOUT(hierarchyAdd->text(), QStringLiteral("+ Register"), 2000);
@@ -512,8 +530,30 @@ void GuiSmokeTests::navigatesHierarchyAndOpensFieldsExplicitly()
     blockMenu->close();
     hierarchyAdd->click();
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->rowCount(), 2, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(visibleLineEdit(registers) != nullptr, 2000);
+    auto* registerNameEditor = visibleLineEdit(registers);
+    QCOMPARE(registerNameEditor->text(), QStringLiteral("NEW_REGISTER"));
+    QTest::keyClick(registerNameEditor, Qt::Key_Escape);
+    QCoreApplication::processEvents();
     QCOMPARE(registers->model()->index(0, 0).data().toString(),
              QStringLiteral("NEW_REGISTER"));
+    hierarchyAdd->click();
+    const QString firstRapidRegister =
+        registers->currentIndex().data(Qt::UserRole + 1).toString();
+    QVERIFY(!firstRapidRegister.isEmpty());
+    hierarchyAdd->click();
+    const QString secondRapidRegister =
+        registers->currentIndex().data(Qt::UserRole + 1).toString();
+    QVERIFY(!secondRapidRegister.isEmpty());
+    QVERIFY(secondRapidRegister != firstRapidRegister);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->rowCount(), 4, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(visibleLineEdit(registers) != nullptr, 2000);
+    QCOMPARE(registers->currentIndex().data(Qt::UserRole + 1).toString(),
+             secondRapidRegister);
+    auto* latestRegisterEditor = visibleLineEdit(registers);
+    QCOMPARE(latestRegisterEditor->text(), QStringLiteral("NEW_REGISTER"));
+    QTest::keyClick(latestRegisterEditor, Qt::Key_Escape);
+    QCoreApplication::processEvents();
 
     root = hierarchy->model()->index(0, 0);
     page = hierarchy->model()->index(0, 0, root);
