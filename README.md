@@ -23,6 +23,9 @@ Workspace -> Page (Address Space) -> Register Block -> Register -> Field -> Enum
 - Workbench-first creation and editing of every model level, with stable object IDs.
 - Editable hierarchy, register and field tables, bit-field view, page/block context bar, and
   inline enum-value table.
+- Hierarchy context menus create Pages, Register Blocks, and Registers at their natural parent;
+  rename, delete, expand, and collapse remain local to the navigation pane.
+- Structure-register rows expose a dedicated **Open (N)** Fields button.
 - Trailing `+` rows for register/field creation; page and block base addresses appear once in
   the context bar above the register table and remain directly editable.
 - Reserved address slots and delete-with-offset-shift operations from the register context menu.
@@ -60,7 +63,8 @@ Workspace -> Page (Address Space) -> Register Block -> Register -> Field -> Enum
 
 Create a Workbench-first project with **File > New Project**, or open an existing
 `.regmap.yaml` project from **File > Open Project**. A new project starts with an empty,
-valid workspace; add the first page and register block from the **Edit** menu.
+valid workspace. Right-click the Workspace to create a Page, right-click the Page to create a
+Register Block, and right-click the Register Block to create a Register.
 An existing project can also be passed at startup:
 
 ```powershell
@@ -76,6 +80,9 @@ unique. The register context menu can convert a register to a red, bold reserved
 it while shifting subsequent offsets upward. Page and block properties are shown once in the
 highlighted context bar above the register table.
 
+A register whose Type is `field` has an **Open (N)** button in the **Fields** column. The button
+opens its bit-field diagram and Field table directly, including the trailing `+` for the first
+Field; selecting an entire register row is not required.
 Field LSB is derived and read-only. Edit **Width** or **MSB**, or drag a top-level field in the
 bit-field view. Every block shows its bit range above it; the moving block is painted on top and
 its MSB/LSB update continuously. On overlap, Workbench asks whether to trim the moving field or

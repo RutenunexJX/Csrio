@@ -22,6 +22,7 @@
 #include <QHeaderView>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMenu>
 #include <QPalette>
 #include <QSplitter>
 #include <QStandardItemModel>
@@ -30,6 +31,7 @@
 #include <QTableView>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QToolBar>
 #include <QToolButton>
 #include <QTreeView>
 
@@ -45,6 +47,7 @@ private slots:
     void appliesWorkbookTheme();
     void createsWorkbenchFirstProject();
     void opensProjectAndPopulatesEditableViews();
+    void navigatesHierarchyAndOpensFieldsExplicitly();
     void supportsTrailingRowsAndFieldMovement();
     void editsTagsAndAccessFromSingleClick();
     void insertsRegisterBetweenRows();
@@ -276,7 +279,7 @@ void GuiSmokeTests::opensProjectAndPopulatesEditableViews()
     QCOMPARE(registers->model()->rowCount(), 2);
     QCOMPARE(fields->model()->rowCount(), 2);
     QCOMPARE(enums->model()->rowCount(), 2);
-    QCOMPARE(registers->model()->columnCount(), 11);
+    QCOMPARE(registers->model()->columnCount(), 12);
     QCOMPARE(fields->model()->columnCount(), 14);
     QCOMPARE(problems->model()->rowCount(), 0);
     QCOMPARE(generated->model()->rowCount(), 3);
@@ -294,11 +297,12 @@ void GuiSmokeTests::opensProjectAndPopulatesEditableViews()
     QCOMPARE(pageWidth->text(), QStringLiteral("32"));
     QCOMPARE(blockSize->text(), QStringLiteral("0x1000"));
     QCOMPARE(registers->model()->index(0, 4).data().toString(), QStringLiteral("field"));
-    QCOMPARE(registers->model()->index(0, 6).data().toString(), QStringLiteral("0x0"));
+    QCOMPARE(registers->model()->index(0, 5).data().toString(), QStringLiteral("Open (1)"));
+    QCOMPARE(registers->model()->index(0, 7).data().toString(), QStringLiteral("0x0"));
     QCOMPARE(fields->model()->headerData(11, Qt::Horizontal).toString(),
              QStringLiteral("Read Effect"));
     for (int column = 0; column < registers->model()->columnCount(); ++column) {
-        const int expected = column == 10
+        const int expected = column == 11
                                  ? static_cast<int>(Qt::AlignLeft | Qt::AlignVCenter)
                                  : static_cast<int>(Qt::AlignCenter);
         QCOMPARE(registers->model()
@@ -341,6 +345,134 @@ void GuiSmokeTests::opensProjectAndPopulatesEditableViews()
     makeGeneratedFilesWritable(directory.path());
 }
 
+void GuiSmokeTests::navigatesHierarchyAndOpensFieldsExplicitly()
+{
+    WorkbenchTheme::apply(*qApp);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createTwoRegisterProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1280, 800);
+    window.show();
+    QTest::qWait(50);
+
+    auto* hierarchy = window.findChild<QTreeView*>(QStringLiteral("hierarchyView"));
+    auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* fields = window.findChild<QTableView*>(QStringLiteral("fieldView"));
+    auto* fieldPanel = window.findChild<QWidget*>(QStringLiteral("fieldPanel"));
+    auto* toolbar = window.findChild<QToolBar*>(QStringLiteral("projectToolBar"));
+    QVERIFY(hierarchy != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+    QVERIFY(fieldPanel != nullptr);
+    QVERIFY(toolbar != nullptr);
+
+    QStringList toolbarCommands;
+    for (QAction* action : toolbar->actions()) {
+        if (!action->isSeparator() && !action->text().isEmpty()) {
+            toolbarCommands.push_back(action->text());
+        }
+    }
+    QCOMPARE(toolbarCommands.size(), 3);
+    QVERIFY(std::ranges::any_of(toolbarCommands,
+                               [](const QString& text) { return text.startsWith("New Project"); }));
+    QVERIFY(std::ranges::any_of(toolbarCommands,
+                               [](const QString& text) { return text.startsWith("Open Project"); }));
+    QVERIFY(toolbarCommands.contains(QStringLiteral("Save && Sync")));
+    QVERIFY(std::ranges::none_of(toolbarCommands,
+                                [](const QString& text) {
+                                    return text.contains("Undo") || text.contains("Redo") ||
+                                           text.contains("Add Page") ||
+                                           text.contains("Register Block") ||
+                                           text.contains("Delete Selected") ||
+                                           text.contains("Open Source") ||
+                                           text.contains("Reload");
+                                }));
+
+    QModelIndex root = hierarchy->model()->index(0, 0);
+    QModelIndex page = hierarchy->model()->index(0, 0, root);
+    hierarchy->expandAll();
+    hierarchy->scrollTo(page);
+    hierarchy->setCurrentIndex(page);
+    hierarchy->setFocus();
+    QCoreApplication::processEvents();
+    QVERIFY(hierarchy->visualRect(page).height() >= 30);
+    hierarchy->edit(page);
+    QTRY_VERIFY_WITH_TIMEOUT(hierarchy->findChild<QLineEdit*>() != nullptr, 2000);
+    auto* treeEditor = hierarchy->findChild<QLineEdit*>();
+    QVERIFY(treeEditor->height() >= treeEditor->fontMetrics().height() + 8);
+    QTest::keyClick(treeEditor, Qt::Key_Escape);
+
+    root = hierarchy->model()->index(0, 0);
+    Q_EMIT hierarchy->customContextMenuRequested(hierarchy->visualRect(root).center());
+    QCoreApplication::processEvents();
+    auto* rootMenu = hierarchy->findChild<QMenu*>(QStringLiteral("hierarchyContextMenu"));
+    QVERIFY(rootMenu != nullptr);
+    auto* newPage = rootMenu->findChild<QAction*>(QStringLiteral("newPageContextAction"));
+    QVERIFY(newPage != nullptr);
+    QVERIFY(rootMenu->findChild<QAction*>(QStringLiteral("renameContextAction")) != nullptr);
+    QVERIFY(rootMenu->findChild<QAction*>(QStringLiteral("expandAllContextAction")) != nullptr);
+    QVERIFY(rootMenu->findChild<QAction*>(QStringLiteral("collapseAllContextAction")) != nullptr);
+    newPage->trigger();
+    QTRY_COMPARE_WITH_TIMEOUT(hierarchy->model()->index(0, 0).model()
+                                  ->rowCount(hierarchy->model()->index(0, 0)),
+                              2, 2000);
+
+    QModelIndex newPageIndex = hierarchy->currentIndex();
+    QCOMPARE(newPageIndex.data().toString(), QStringLiteral("NEW_PAGE"));
+    Q_EMIT hierarchy->customContextMenuRequested(
+        hierarchy->visualRect(newPageIndex).center());
+    QCoreApplication::processEvents();
+    auto* pageMenu = hierarchy->findChild<QMenu*>(QStringLiteral("hierarchyContextMenu"));
+    QVERIFY(pageMenu != nullptr);
+    auto* newBlock = pageMenu->findChild<QAction*>(QStringLiteral("newBlockContextAction"));
+    QVERIFY(newBlock != nullptr);
+    QVERIFY(pageMenu->findChild<QAction*>(QStringLiteral("renameContextAction")) != nullptr);
+    QVERIFY(pageMenu->findChild<QAction*>(QStringLiteral("deleteContextAction")) != nullptr);
+    newBlock->trigger();
+    QTRY_COMPARE_WITH_TIMEOUT(hierarchy->currentIndex().data().toString(),
+                              QStringLiteral("NEW_BLOCK"), 2000);
+
+    QModelIndex newBlockIndex = hierarchy->currentIndex();
+    Q_EMIT hierarchy->customContextMenuRequested(
+        hierarchy->visualRect(newBlockIndex).center());
+    QCoreApplication::processEvents();
+    auto* blockMenu = hierarchy->findChild<QMenu*>(QStringLiteral("hierarchyContextMenu"));
+    QVERIFY(blockMenu != nullptr);
+    auto* newRegister =
+        blockMenu->findChild<QAction*>(QStringLiteral("newRegisterContextAction"));
+    QVERIFY(newRegister != nullptr);
+    QVERIFY(blockMenu->findChild<QAction*>(QStringLiteral("renameContextAction")) != nullptr);
+    QVERIFY(blockMenu->findChild<QAction*>(QStringLiteral("deleteContextAction")) != nullptr);
+    newRegister->trigger();
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->rowCount(), 2, 2000);
+    QCOMPARE(registers->model()->index(0, 0).data().toString(),
+             QStringLiteral("NEW_REGISTER"));
+
+    root = hierarchy->model()->index(0, 0);
+    page = hierarchy->model()->index(0, 0, root);
+    const QModelIndex originalBlock = hierarchy->model()->index(0, 0, page);
+    hierarchy->setCurrentIndex(originalBlock);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->rowCount(), 3, 2000);
+
+    registers->setCurrentIndex(registers->model()->index(1, 0));
+    QCoreApplication::processEvents();
+    QTRY_VERIFY_WITH_TIMEOUT(!fieldPanel->isVisible(), 2000);
+    const QModelIndex openFields = registers->model()->index(0, 5);
+    QCOMPARE(openFields.data().toString(), QStringLiteral("Open (1)"));
+    Q_EMIT registers->clicked(openFields);
+    QTRY_VERIFY_WITH_TIMEOUT(fieldPanel->isVisible(), 2000);
+    QVERIFY(fields->isVisible());
+    QCOMPARE(registers->currentIndex().data(Qt::UserRole + 1).toString(),
+             QStringLiteral("reg-status"));
+    QCOMPARE(fields->model()->index(0, 0).data().toString(), QStringLiteral("READY"));
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
 void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
 {
     QTemporaryDir directory;
@@ -376,12 +508,12 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     QCOMPARE(registers->model()->rowCount(), 3);
     QCOMPARE(registers->model()->index(1, 0).data().toString(), QStringLiteral("NEW_REGISTER"));
     QCOMPARE(registers->model()->index(1, 4).data().toString(), QStringLiteral("uint32"));
-    QCOMPARE(registers->model()->index(1, 6).data().toString(), QStringLiteral("0x0"));
+    QCOMPARE(registers->model()->index(1, 7).data().toString(), QStringLiteral("0x0"));
     QCOMPARE(fields->model()->rowCount(), 0);
     QVERIFY(!fields->isVisible());
     QVERIFY(
-        registers->model()->setData(registers->model()->index(1, 5), QStringLiteral("0 .. 255")));
-    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 5).data().toString(),
+        registers->model()->setData(registers->model()->index(1, 6), QStringLiteral("0 .. 255")));
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 6).data().toString(),
                               QStringLiteral("0 .. 255"), 2000);
     QVERIFY(registers->model()->setData(registers->model()->index(1, 4), QStringLiteral("uint16")));
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 3).data().toString(),
@@ -450,7 +582,7 @@ void GuiSmokeTests::editsTagsAndAccessFromSingleClick()
     QVERIFY(registers != nullptr);
     QCOMPARE(registers->model()->rowCount(), 3);
 
-    QModelIndex tagIndex = registers->model()->index(0, 9);
+    QModelIndex tagIndex = registers->model()->index(0, 10);
     registers->scrollTo(tagIndex);
     QTest::mouseClick(registers->viewport(), Qt::LeftButton, Qt::NoModifier,
                       registers->visualRect(tagIndex).center());
@@ -479,7 +611,7 @@ void GuiSmokeTests::editsTagsAndAccessFromSingleClick()
     QTest::mouseMove(tags->viewport(), tags->visualItemRect(control).center());
     QTest::mouseClick(tags->viewport(), Qt::LeftButton, Qt::NoModifier,
                       tags->visualItemRect(control).center());
-    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 9).data().toString(),
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 10).data().toString(),
                               QStringLiteral("control, existing"), 2000);
 
     search->setText(QStringLiteral("EXISTING"));
@@ -487,12 +619,12 @@ void GuiSmokeTests::editsTagsAndAccessFromSingleClick()
     search->setText(QStringLiteral("newtag"));
     QVERIFY(add->isEnabled());
     QTest::mouseClick(add, Qt::LeftButton);
-    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 9).data().toString(),
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 10).data().toString(),
                               QStringLiteral("control, existing, newtag"), 2000);
     tagPopup->close();
     QTRY_VERIFY_WITH_TIMEOUT(QApplication::activePopupWidget() == nullptr, 2000);
 
-    QModelIndex accessIndex = registers->model()->index(0, 8);
+    QModelIndex accessIndex = registers->model()->index(0, 9);
     QCOMPARE(accessIndex.data().toString(), QStringLiteral("RO"));
     QVERIFY(!(accessIndex.flags() & Qt::ItemIsEditable));
     registers->scrollTo(accessIndex);
@@ -519,7 +651,7 @@ void GuiSmokeTests::editsTagsAndAccessFromSingleClick()
     QVERIFY(readWrite != nullptr);
     QTest::mouseClick(access->viewport(), Qt::LeftButton, Qt::NoModifier,
                       access->visualItemRect(readWrite).center());
-    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 8).data().toString(),
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 9).data().toString(),
                               QStringLiteral("RW"), 2000);
 
     makeGeneratedFilesWritable(directory.path());
@@ -608,7 +740,7 @@ void GuiSmokeTests::showsUnifiedSyncStateAndGeneratedResults()
     QCOMPARE(save->text(), QStringLiteral("Save && Sync"));
     QVERIFY(save->isEnabled());
 
-    QVERIFY(registers->model()->setData(registers->model()->index(0, 10),
+    QVERIFY(registers->model()->setData(registers->model()->index(0, 11),
                                         QStringLiteral("Edited status description.")));
     QTRY_VERIFY_WITH_TIMEOUT(state->text().startsWith(QStringLiteral("Unsaved")), 2000);
     save->trigger();

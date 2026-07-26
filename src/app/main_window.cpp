@@ -45,6 +45,9 @@
 #include <QSizePolicy>
 #include <QStyle>
 #include <QSplitter>
+#include <QStyledItemDelegate>
+#include <QStyleOptionButton>
+#include <QStyleOptionViewItem>
 #include <QStandardItem>
 #include <QStandardItemModel>
 #include <QStatusBar>
@@ -81,6 +84,7 @@ enum RegisterColumn {
     registerAddressColumn,
     registerWidthColumn,
     registerTypeColumn,
+    registerFieldsColumn,
     registerRangeColumn,
     registerInitialColumn,
     registerResetColumn,
@@ -316,6 +320,64 @@ QListWidget::item:selected {
     color: white;
 }
 )";
+
+class HierarchyItemDelegate final : public QStyledItemDelegate {
+public:
+    explicit HierarchyItemDelegate(QObject* parent = nullptr)
+        : QStyledItemDelegate(parent)
+    {
+    }
+
+    [[nodiscard]] QSize sizeHint(const QStyleOptionViewItem& option,
+                                 const QModelIndex& index) const override
+    {
+        QSize result = QStyledItemDelegate::sizeHint(option, index);
+        result.setHeight(std::max(result.height(), 30));
+        return result;
+    }
+
+    void updateEditorGeometry(QWidget* editor, const QStyleOptionViewItem& option,
+                              const QModelIndex& index) const override
+    {
+        Q_UNUSED(index)
+        editor->setGeometry(option.rect.adjusted(1, 1, -1, -1));
+    }
+};
+
+class FieldsButtonDelegate final : public QStyledItemDelegate {
+public:
+    FieldsButtonDelegate(int actionRole, QObject* parent = nullptr)
+        : QStyledItemDelegate(parent)
+        , actionRole_(actionRole)
+    {
+    }
+
+    void paint(QPainter* painter, const QStyleOptionViewItem& option,
+               const QModelIndex& index) const override
+    {
+        if (!index.data(actionRole_).toBool()) {
+            QStyledItemDelegate::paint(painter, option, index);
+            return;
+        }
+
+        QStyleOptionButton button;
+        button.rect = option.rect.adjusted(6, 3, -6, -3);
+        button.state = QStyle::State_Enabled | QStyle::State_Raised;
+        if (option.state & QStyle::State_MouseOver) {
+            button.state |= QStyle::State_MouseOver;
+        }
+        if (option.state & QStyle::State_HasFocus) {
+            button.state |= QStyle::State_HasFocus;
+        }
+        button.palette = option.palette;
+        button.text = index.data(Qt::DisplayRole).toString();
+        QStyle* style = option.widget == nullptr ? QApplication::style() : option.widget->style();
+        style->drawControl(QStyle::CE_PushButton, &button, painter, option.widget);
+    }
+
+private:
+    int actionRole_;
+};
 
 [[nodiscard]] QFrame* createAnchoredPopup(QTableView* view, const QModelIndex& index,
                                           const QString& objectName, int preferredWidth,
@@ -594,6 +656,11 @@ void MainWindow::buildUi()
     hierarchyView_->setModel(hierarchyModel_);
     hierarchyView_->setHeaderHidden(false);
     hierarchyView_->setUniformRowHeights(true);
+    hierarchyView_->setItemDelegate(new HierarchyItemDelegate(hierarchyView_));
+    hierarchyView_->setEditTriggers(QAbstractItemView::DoubleClicked |
+                                    QAbstractItemView::EditKeyPressed);
+    hierarchyView_->setExpandsOnDoubleClick(false);
+    hierarchyView_->setContextMenuPolicy(Qt::CustomContextMenu);
     hierarchyView_->setMinimumWidth(220);
 
     auto* registerTable = new RegisterTableView(this);
@@ -601,6 +668,8 @@ void MainWindow::buildUi()
     registerView_->setObjectName(QStringLiteral("registerView"));
     registerView_->setModel(registerModel_);
     configureTable(registerView_);
+    registerView_->setItemDelegateForColumn(
+        registerFieldsColumn, new FieldsButtonDelegate(openFieldsRole, registerView_));
     registerView_->setMinimumHeight(120);
     registerView_->setEditTriggers(QAbstractItemView::EditKeyPressed |
                                    QAbstractItemView::AnyKeyPressed);
@@ -691,6 +760,7 @@ void MainWindow::buildUi()
     bitfieldView_ = new BitfieldView(this);
     bitfieldView_->setObjectName(QStringLiteral("bitfieldView"));
     fieldPanel_ = new QWidget(this);
+    fieldPanel_->setObjectName(QStringLiteral("fieldPanel"));
     auto* fieldPanel = fieldPanel_;
     auto* fieldLayout = new QVBoxLayout(fieldPanel);
     fieldLayout->setContentsMargins(0, 0, 0, 0);
@@ -895,10 +965,6 @@ void MainWindow::buildActions()
         }
     });
 
-    auto* addAddressAction = new QAction(QStringLiteral("Add Page"), this);
-    connect(addAddressAction, &QAction::triggered, this, &MainWindow::addAddressSpace);
-    auto* addBlockAction = new QAction(QStringLiteral("Add Register Block"), this);
-    connect(addBlockAction, &QAction::triggered, this, &MainWindow::addBlock);
     auto* addEnumAction = new QAction(QStringLiteral("Add Enum Value"), this);
     connect(addEnumAction, &QAction::triggered, this, &MainWindow::addEnumValue);
 
@@ -955,10 +1021,7 @@ void MainWindow::buildActions()
     editMenu->addAction(findNextAction);
     editMenu->addAction(findPreviousAction);
     editMenu->addSeparator();
-    editMenu->addAction(addAddressAction);
-    editMenu->addAction(addBlockAction);
     editMenu->addAction(addEnumAction);
-    editMenu->addSeparator();
     editMenu->addAction(deleteAction_);
 
     QMenu* viewMenu = menuBar()->addMenu(QStringLiteral("View"));
@@ -979,15 +1042,6 @@ void MainWindow::buildActions()
     toolbar->addAction(newAction);
     toolbar->addAction(openAction);
     toolbar->addAction(saveAction_);
-    toolbar->addAction(reloadAction_);
-    toolbar->addSeparator();
-    toolbar->addAction(undoAction_);
-    toolbar->addAction(redoAction_);
-    toolbar->addAction(addAddressAction);
-    toolbar->addAction(addBlockAction);
-    toolbar->addAction(deleteAction_);
-    toolbar->addSeparator();
-    toolbar->addAction(openSourceAction_);
 
     auto* spacer = new QWidget(toolbar);
     spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
@@ -1122,6 +1176,16 @@ void MainWindow::connectSignals()
             addRegister();
             return;
         }
+        if (index.data(openFieldsRole).toBool()) {
+            const std::string registerId =
+                registerModel_->index(index.row(), registerNameColumn)
+                    .data(objectIdRole)
+                    .toString()
+                    .toUtf8()
+                    .toStdString();
+            openFieldsForRegister(registerId);
+            return;
+        }
         if (index.column() == registerTagsColumn) {
             editRegisterTags(index);
             return;
@@ -1168,6 +1232,8 @@ void MainWindow::connectSignals()
             refreshProject();
         }
     });
+    connect(hierarchyView_, &QWidget::customContextMenuRequested, this,
+            &MainWindow::showHierarchyContextMenu);
     connect(registerView_, &QWidget::customContextMenuRequested, this,
             &MainWindow::showRegisterContextMenu);
     connect(fieldView_, &QWidget::customContextMenuRequested, this,
@@ -1457,9 +1523,9 @@ void MainWindow::populateRegisters()
     registerModel_->clear();
     registerModel_->setHorizontalHeaderLabels(
         {QStringLiteral("Register"), QStringLiteral("Offset"), QStringLiteral("Address"),
-         QStringLiteral("Width"), QStringLiteral("Type"), QStringLiteral("Range"),
-         QStringLiteral("Initial"), QStringLiteral("Reset"), QStringLiteral("Access"),
-         QStringLiteral("Tags"), QStringLiteral("Description")});
+         QStringLiteral("Width"), QStringLiteral("Type"), QStringLiteral("Fields"),
+         QStringLiteral("Range"), QStringLiteral("Initial"), QStringLiteral("Reset"),
+         QStringLiteral("Access"), QStringLiteral("Tags"), QStringLiteral("Description")});
 
     const regmap::Workspace* workspace = controller_.workspace();
     if (workspace == nullptr) {
@@ -1493,6 +1559,17 @@ void MainWindow::populateRegisters()
                 name->setData(fromUtf8(reg.id), objectIdRole);
                 name->setData(fromUtf8(addressSpace.id), addressIdRole);
                 name->setData(fromUtf8(block.id), blockIdRole);
+                const bool canOpenFields =
+                    !reg.reserved && reg.type == regmap::FieldType::structure;
+                auto* fieldsAction =
+                    item(canOpenFields
+                             ? QStringLiteral("Open (%1)").arg(reg.fields.size())
+                             : QString{});
+                fieldsAction->setData(canOpenFields, openFieldsRole);
+                fieldsAction->setData(fromUtf8(reg.id), objectIdRole);
+                fieldsAction->setToolTip(
+                    canOpenFields ? QStringLiteral("Open and edit this register's fields")
+                                  : QString{});
                 row << name
                     << editableItem(hex(reg.offset), reg.id, "offset", objectIdRole, propertyRole)
                     << item(overflow ? QStringLiteral("overflow") : hex(address))
@@ -1500,6 +1577,7 @@ void MainWindow::populateRegisters()
                                     propertyRole)
                     << editableItem(registerTypeText(reg), reg.id, "type", objectIdRole,
                                     propertyRole)
+                    << fieldsAction
                     << editableItem(rangeText(reg.minimumValue, reg.maximumValue), reg.id, "range",
                                     objectIdRole, propertyRole)
                     << editableItem(valueText(reg.initialValue), reg.id, "initial", objectIdRole,
@@ -1533,6 +1611,8 @@ void MainWindow::populateRegisters()
     }
     registerModel_->appendRow(addRow);
     registerView_->resizeColumnsToContents();
+    registerView_->setColumnWidth(
+        registerFieldsColumn, std::max(registerView_->columnWidth(registerFieldsColumn), 112));
     const int dataRowCount = registerModel_->rowCount() - 1;
     if (preferredRow < 0 && dataRowCount > 0) {
         preferredRow = 0;
@@ -1687,7 +1767,9 @@ void MainWindow::populateEnumValues(const regmap::Register* reg, const regmap::F
                                   type == regmap::FieldType::enumeration || !enumValues->empty());
     enumContextLabel_->setVisible(visible);
     enumView_->setVisible(visible);
-    fieldPanel_->setVisible(fieldView_->isVisible() || visible);
+    const bool hasFieldEditor =
+        reg != nullptr && !reg->reserved && reg->type == regmap::FieldType::structure;
+    fieldPanel_->setVisible(hasFieldEditor || visible);
     if (!visible) {
         return;
     }
@@ -3042,6 +3124,145 @@ void MainWindow::editRegisterAccess(const QModelIndex& index)
             });
     popup->show();
     list->setFocus();
+}
+
+void MainWindow::showHierarchyContextMenu(const QPoint& position)
+{
+    const auto* workspace = controller_.workspace();
+    if (workspace == nullptr) {
+        return;
+    }
+
+    if (QWidget* active = QApplication::activePopupWidget()) {
+        active->close();
+    }
+    const QModelIndex index = hierarchyView_->indexAt(position);
+    if (index.isValid()) {
+        hierarchyView_->setCurrentIndex(index);
+        hierarchyView_->setFocus(Qt::OtherFocusReason);
+    }
+
+    const std::string objectId =
+        index.data(objectIdRole).toString().toUtf8().toStdString();
+    const std::string addressId =
+        index.data(addressIdRole).toString().toUtf8().toStdString();
+    const std::string blockId =
+        index.data(blockIdRole).toString().toUtf8().toStdString();
+    const bool workspaceItem = index.isValid() && objectId == workspace->id;
+    const bool pageItem = index.isValid() && !addressId.empty() && blockId.empty();
+    const bool blockItem = index.isValid() && !blockId.empty();
+
+    auto* menu = new QMenu(hierarchyView_);
+    menu->setObjectName(QStringLiteral("hierarchyContextMenu"));
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+    const auto action = [menu](const QString& text, const QString& objectName) {
+        QAction* result = menu->addAction(text);
+        result->setObjectName(objectName);
+        return result;
+    };
+
+    QAction* newPage = nullptr;
+    QAction* newBlock = nullptr;
+    QAction* newRegister = nullptr;
+    if (!index.isValid() || workspaceItem) {
+        newPage = action(QStringLiteral("New Page"), QStringLiteral("newPageContextAction"));
+    } else if (pageItem) {
+        newBlock = action(QStringLiteral("New Register Block"),
+                          QStringLiteral("newBlockContextAction"));
+    } else if (blockItem) {
+        newRegister =
+            action(QStringLiteral("New Register"), QStringLiteral("newRegisterContextAction"));
+    }
+
+    QAction* rename = nullptr;
+    QAction* remove = nullptr;
+    if (index.isValid()) {
+        menu->addSeparator();
+        rename = action(QStringLiteral("Rename"), QStringLiteral("renameContextAction"));
+        rename->setShortcut(QKeySequence(Qt::Key_F2));
+        if (pageItem || blockItem) {
+            remove = action(pageItem ? QStringLiteral("Delete Page")
+                                     : QStringLiteral("Delete Register Block"),
+                            QStringLiteral("deleteContextAction"));
+            remove->setShortcut(QKeySequence::Delete);
+        }
+    }
+    menu->addSeparator();
+    QAction* expand =
+        action(QStringLiteral("Expand All"), QStringLiteral("expandAllContextAction"));
+    QAction* collapse =
+        action(QStringLiteral("Collapse All"), QStringLiteral("collapseAllContextAction"));
+
+    if (newPage != nullptr) {
+        connect(newPage, &QAction::triggered, this, [this, menu] {
+            menu->close();
+            addAddressSpace();
+        });
+    }
+    if (newBlock != nullptr) {
+        connect(newBlock, &QAction::triggered, this, [this, menu] {
+            menu->close();
+            addBlock();
+        });
+    }
+    if (newRegister != nullptr) {
+        connect(newRegister, &QAction::triggered, this, [this, menu] {
+            menu->close();
+            addRegister();
+        });
+    }
+    if (rename != nullptr) {
+        connect(rename, &QAction::triggered, this, [this, menu, index] {
+            menu->close();
+            hierarchyView_->setCurrentIndex(index);
+            hierarchyView_->setFocus(Qt::OtherFocusReason);
+            hierarchyView_->edit(index);
+        });
+    }
+    if (remove != nullptr) {
+        connect(remove, &QAction::triggered, this, [this, menu, index] {
+            menu->close();
+            hierarchyView_->setCurrentIndex(index);
+            hierarchyView_->setFocus(Qt::OtherFocusReason);
+            deleteSelection();
+        });
+    }
+    connect(expand, &QAction::triggered, this, [this, menu] {
+        menu->close();
+        hierarchyView_->expandAll();
+    });
+    connect(collapse, &QAction::triggered, this, [this, menu] {
+        menu->close();
+        hierarchyView_->collapseAll();
+    });
+
+    menu->popup(hierarchyView_->viewport()->mapToGlobal(position));
+}
+
+void MainWindow::openFieldsForRegister(const std::string& registerId)
+{
+    const auto* reg = findRegister(registerId);
+    if (reg == nullptr) {
+        return;
+    }
+    if (reg->reserved || reg->type != regmap::FieldType::structure) {
+        statusBar()->showMessage(QStringLiteral("This register has no Field editor"), 4000);
+        return;
+    }
+
+    selectedRegisterId_ = registerId;
+    selectedFieldId_.clear();
+    selectRegister(registerId);
+    populateFields(reg);
+    fieldPanel_->setVisible(true);
+    if (fieldModel_->rowCount() > 0) {
+        const QModelIndex first = fieldModel_->index(0, fieldNameColumn);
+        fieldView_->setCurrentIndex(first);
+        fieldView_->scrollTo(first);
+    }
+    fieldView_->setFocus(Qt::OtherFocusReason);
+    statusBar()->showMessage(
+        QStringLiteral("Opened Fields for %1").arg(fromUtf8(reg->name)), 3000);
 }
 
 void MainWindow::showRegisterContextMenu(const QPoint& position)
