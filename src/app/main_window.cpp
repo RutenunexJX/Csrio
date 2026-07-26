@@ -25,6 +25,7 @@
 #include <QIcon>
 #include <QInputDialog>
 #include <QItemSelectionModel>
+#include <QKeyEvent>
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
@@ -346,9 +347,10 @@ public:
 
 class FieldsButtonDelegate final : public QStyledItemDelegate {
 public:
-    FieldsButtonDelegate(int actionRole, QObject* parent = nullptr)
+    FieldsButtonDelegate(int actionRole, int activeRole, QObject* parent = nullptr)
         : QStyledItemDelegate(parent)
         , actionRole_(actionRole)
+        , activeRole_(activeRole)
     {
     }
 
@@ -362,7 +364,12 @@ public:
 
         QStyleOptionButton button;
         button.rect = option.rect.adjusted(6, 3, -6, -3);
-        button.state = QStyle::State_Enabled | QStyle::State_Raised;
+        button.state = QStyle::State_Enabled;
+        if (index.data(activeRole_).toBool()) {
+            button.state |= QStyle::State_On | QStyle::State_Sunken;
+        } else {
+            button.state |= QStyle::State_Raised;
+        }
         if (option.state & QStyle::State_MouseOver) {
             button.state |= QStyle::State_MouseOver;
         }
@@ -377,6 +384,7 @@ public:
 
 private:
     int actionRole_;
+    int activeRole_;
 };
 
 [[nodiscard]] QFrame* createAnchoredPopup(QTableView* view, const QModelIndex& index,
@@ -413,6 +421,8 @@ class RegisterTableView final : public QTableView {
 public:
     using BoundaryPredicate = std::function<bool(int)>;
     using InsertHandler = std::function<void(int)>;
+    using CellActionPredicate = std::function<bool(const QModelIndex&)>;
+    using CellActionHandler = std::function<void(const QModelIndex&)>;
 
     explicit RegisterTableView(QWidget* parent = nullptr)
         : QTableView(parent)
@@ -427,8 +437,29 @@ public:
     }
 
     void setInsertHandler(InsertHandler handler) { insertHandler_ = std::move(handler); }
+    void setCellActionPredicate(CellActionPredicate predicate)
+    {
+        cellActionPredicate_ = std::move(predicate);
+    }
+    void setCellActionHandler(CellActionHandler handler)
+    {
+        cellActionHandler_ = std::move(handler);
+    }
 
 protected:
+    void keyPressEvent(QKeyEvent* event) override
+    {
+        const QModelIndex index = currentIndex();
+        if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter ||
+             event->key() == Qt::Key_Space) &&
+            cellActionPredicate_ && cellActionPredicate_(index) && cellActionHandler_) {
+            cellActionHandler_(index);
+            event->accept();
+            return;
+        }
+        QTableView::keyPressEvent(event);
+    }
+
     void mouseMoveEvent(QMouseEvent* event) override
     {
         const QPoint position = event->position().toPoint();
@@ -452,11 +483,21 @@ protected:
         }
         setInsertionBoundary(candidate);
         QTableView::mouseMoveEvent(event);
+        const bool overCellAction =
+            cellActionPredicate_ && cellActionPredicate_(indexAt(position));
+        const bool overInsertionAction =
+            insertionBoundary_ >= 0 && plusRectangle().contains(position);
+        if (overCellAction || overInsertionAction) {
+            viewport()->setCursor(Qt::PointingHandCursor);
+        } else {
+            viewport()->unsetCursor();
+        }
     }
 
     void leaveEvent(QEvent* event) override
     {
         setInsertionBoundary(-1);
+        viewport()->unsetCursor();
         QTableView::leaveEvent(event);
     }
 
@@ -466,6 +507,7 @@ protected:
             plusRectangle().contains(event->position().toPoint()) && insertHandler_) {
             const int boundary = insertionBoundary_;
             setInsertionBoundary(-1);
+            viewport()->unsetCursor();
             insertHandler_(boundary);
             event->accept();
             return;
@@ -499,6 +541,8 @@ private:
 
     BoundaryPredicate boundaryPredicate_;
     InsertHandler insertHandler_;
+    CellActionPredicate cellActionPredicate_;
+    CellActionHandler cellActionHandler_;
     int insertionBoundary_{-1};
 
     [[nodiscard]] QRect plusRectangle() const
@@ -516,11 +560,6 @@ private:
             return;
         }
         insertionBoundary_ = boundary;
-        if (insertionBoundary_ >= 0) {
-            viewport()->setCursor(Qt::PointingHandCursor);
-        } else {
-            viewport()->unsetCursor();
-        }
         viewport()->update();
     }
 };
@@ -690,13 +729,18 @@ void MainWindow::buildUi()
     registerView_->setModel(registerModel_);
     configureTable(registerView_);
     registerView_->setItemDelegateForColumn(
-        registerFieldsColumn, new FieldsButtonDelegate(openFieldsRole, registerView_));
+        registerFieldsColumn,
+        new FieldsButtonDelegate(openFieldsRole, fieldsOpenRole, registerView_));
     registerView_->setMinimumHeight(120);
     registerView_->setEditTriggers(QAbstractItemView::EditKeyPressed |
                                    QAbstractItemView::AnyKeyPressed);
     registerView_->setContextMenuPolicy(Qt::CustomContextMenu);
     registerTable->setBoundaryPredicate([this](int row) { return canInsertRegisterAt(row); });
     registerTable->setInsertHandler([this](int row) { insertRegisterAt(row); });
+    registerTable->setCellActionPredicate(
+        [this](const QModelIndex& index) { return index.data(openFieldsRole).toBool(); });
+    registerTable->setCellActionHandler(
+        [this](const QModelIndex& index) { openFieldsAt(index); });
 
     pageContextLabel_ = new QLabel(QStringLiteral("Page: —"), this);
     pageContextLabel_->setObjectName(QStringLiteral("contextTitle"));
@@ -1177,7 +1221,9 @@ void MainWindow::connectSignals()
                 if (nextRegisterId != selectedRegisterId_) {
                     selectedFieldId_.clear();
                     if (openFieldsRegisterId_ != nextRegisterId) {
+                        const std::string closedRegisterId = openFieldsRegisterId_;
                         openFieldsRegisterId_.clear();
+                        updateFieldsAction(closedRegisterId);
                     }
                 }
                 selectedRegisterId_ = nextRegisterId;
@@ -1239,13 +1285,7 @@ void MainWindow::connectSignals()
             return;
         }
         if (index.data(openFieldsRole).toBool()) {
-            const std::string registerId =
-                registerModel_->index(index.row(), registerNameColumn)
-                    .data(objectIdRole)
-                    .toString()
-                    .toUtf8()
-                    .toStdString();
-            openFieldsForRegister(registerId);
+            openFieldsAt(index);
             return;
         }
         if (index.column() == registerTagsColumn) {
@@ -1679,15 +1719,23 @@ void MainWindow::populateRegisters()
                 name->setData(fromUtf8(block.id), blockIdRole);
                 const bool canOpenFields =
                     !reg.reserved && reg.type == regmap::FieldType::structure;
+                const bool fieldsOpen =
+                    canOpenFields && openFieldsRegisterId_ == reg.id;
                 auto* fieldsAction =
                     item(canOpenFields
-                             ? QStringLiteral("Open (%1)").arg(reg.fields.size())
+                             ? QStringLiteral("%1 (%2)")
+                                   .arg(fieldsOpen ? QStringLiteral("Editing")
+                                                   : QStringLiteral("Open"))
+                                   .arg(reg.fields.size())
                              : QString{});
                 fieldsAction->setData(canOpenFields, openFieldsRole);
+                fieldsAction->setData(fieldsOpen, fieldsOpenRole);
                 fieldsAction->setData(fromUtf8(reg.id), objectIdRole);
                 fieldsAction->setToolTip(
-                    canOpenFields ? QStringLiteral("Open and edit this register's fields")
-                                  : QString{});
+                    canOpenFields
+                        ? (fieldsOpen ? QStringLiteral("These fields are open below")
+                                      : QStringLiteral("Open and edit this register's fields"))
+                        : QString{});
                 row << name
                     << editableItem(hex(reg.offset), reg.id, "offset", objectIdRole, propertyRole)
                     << item(overflow ? QStringLiteral("overflow") : hex(address))
@@ -3427,6 +3475,20 @@ void MainWindow::showHierarchyContextMenu(const QPoint& position)
     menu->popup(hierarchyView_->viewport()->mapToGlobal(position));
 }
 
+void MainWindow::openFieldsAt(const QModelIndex& index)
+{
+    if (!index.isValid() || !index.data(openFieldsRole).toBool()) {
+        return;
+    }
+    const std::string registerId =
+        registerModel_->index(index.row(), registerNameColumn)
+            .data(objectIdRole)
+            .toString()
+            .toUtf8()
+            .toStdString();
+    openFieldsForRegister(registerId);
+}
+
 void MainWindow::openFieldsForRegister(const std::string& registerId)
 {
     const auto* reg = findRegister(registerId);
@@ -3438,12 +3500,17 @@ void MainWindow::openFieldsForRegister(const std::string& registerId)
         return;
     }
 
+    const std::string previousRegisterId = openFieldsRegisterId_;
     openFieldsRegisterId_ = registerId;
     selectedRegisterId_ = registerId;
     selectedFieldId_.clear();
     selectRegister(registerId);
     populateFields(reg);
     fieldPanel_->setVisible(true);
+    if (previousRegisterId != registerId) {
+        updateFieldsAction(previousRegisterId);
+    }
+    updateFieldsAction(registerId);
     if (fieldModel_->rowCount() > 0) {
         const QModelIndex first = fieldModel_->index(0, fieldNameColumn);
         fieldView_->setCurrentIndex(first);
@@ -3454,12 +3521,52 @@ void MainWindow::openFieldsForRegister(const std::string& registerId)
         QStringLiteral("Opened Fields for %1").arg(fromUtf8(reg->name)), 3000);
 }
 
+void MainWindow::updateFieldsAction(const std::string& registerId)
+{
+    if (registerId.empty()) {
+        return;
+    }
+    const auto* reg = findRegister(registerId);
+    for (int row = 0; row < registerModel_->rowCount(); ++row) {
+        if (registerModel_->index(row, registerNameColumn)
+                .data(objectIdRole)
+                .toString()
+                .toUtf8()
+                .toStdString() != registerId) {
+            continue;
+        }
+        auto* action = registerModel_->item(row, registerFieldsColumn);
+        if (action == nullptr) {
+            return;
+        }
+        const bool canOpenFields =
+            reg != nullptr && !reg->reserved && reg->type == regmap::FieldType::structure;
+        const bool fieldsOpen = canOpenFields && openFieldsRegisterId_ == registerId;
+        action->setText(
+            canOpenFields
+                ? QStringLiteral("%1 (%2)")
+                      .arg(fieldsOpen ? QStringLiteral("Editing") : QStringLiteral("Open"))
+                      .arg(reg->fields.size())
+                : QString{});
+        action->setData(canOpenFields, openFieldsRole);
+        action->setData(fieldsOpen, fieldsOpenRole);
+        action->setToolTip(
+            canOpenFields
+                ? (fieldsOpen ? QStringLiteral("These fields are open below")
+                              : QStringLiteral("Open and edit this register's fields"))
+                : QString{});
+        return;
+    }
+}
+
 void MainWindow::closeFields()
 {
     if (openFieldsRegisterId_.empty()) {
         return;
     }
+    const std::string closedRegisterId = openFieldsRegisterId_;
     openFieldsRegisterId_.clear();
+    updateFieldsAction(closedRegisterId);
     selectedFieldId_.clear();
     const auto* reg = findRegister(selectedRegisterId_);
     populateFields(reg);

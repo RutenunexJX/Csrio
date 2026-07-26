@@ -45,6 +45,7 @@ private:
         propertyRole,
         addRowRole,
         openFieldsRole,
+        fieldsOpenRole,
     };
 
     ProjectController controller_;
@@ -160,7 +161,9 @@ private:
     void deleteSelection();
     void editRegisterTags(const QModelIndex& index);
     void editRegisterAccess(const QModelIndex& index);
+    void openFieldsAt(const QModelIndex& index);
     void openFieldsForRegister(const std::string& registerId);
+    void updateFieldsAction(const std::string& registerId);
     void closeFields();
     void showHierarchyContextMenu(const QPoint& position);
     void showRegisterContextMenu(const QPoint& position);

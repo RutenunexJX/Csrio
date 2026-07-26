@@ -339,7 +339,7 @@ void GuiSmokeTests::opensProjectAndPopulatesEditableViews()
     QCOMPARE(pageWidth->text(), QStringLiteral("32"));
     QCOMPARE(blockSize->text(), QStringLiteral("0x1000"));
     QCOMPARE(registers->model()->index(0, 4).data().toString(), QStringLiteral("field"));
-    QCOMPARE(registers->model()->index(0, 5).data().toString(), QStringLiteral("Open (1)"));
+    QCOMPARE(registers->model()->index(0, 5).data().toString(), QStringLiteral("Editing (1)"));
     QCOMPARE(registers->model()->index(0, 7).data().toString(), QStringLiteral("0x0"));
     QCOMPARE(fields->model()->headerData(11, Qt::Horizontal).toString(),
              QStringLiteral("Read Effect"));
@@ -569,17 +569,73 @@ void GuiSmokeTests::navigatesHierarchyAndOpensFieldsExplicitly()
     QTRY_VERIFY_WITH_TIMEOUT(!fieldPanel->isVisible(), 2000);
     const QModelIndex openFields = registers->model()->index(0, 5);
     QCOMPARE(openFields.data().toString(), QStringLiteral("Open (1)"));
-    Q_EMIT registers->clicked(openFields);
+    registers->scrollTo(openFields);
+    QCoreApplication::processEvents();
+    const QRect openFieldsRectangle = registers->visualRect(openFields);
+    QVERIFY(openFieldsRectangle.isValid());
+    QVERIFY(registers->viewport()->rect().intersects(openFieldsRectangle));
+    QTest::mouseMove(registers->viewport(), openFieldsRectangle.center());
+    QCOMPARE(registers->viewport()->cursor().shape(), Qt::PointingHandCursor);
+    QTest::mouseClick(registers->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      openFieldsRectangle.center());
     QTRY_VERIFY_WITH_TIMEOUT(fieldPanel->isVisible(), 2000);
     QVERIFY(fields->isVisible());
+    QTRY_VERIFY_WITH_TIMEOUT(fields->hasFocus(), 2000);
     QVERIFY(fieldContext->text().contains(QStringLiteral("STATUS")));
     QVERIFY(fieldContext->text().contains(QStringLiteral("1 field(s)")));
     QVERIFY(closeFields->isVisible());
     QCOMPARE(registers->currentIndex().data(Qt::UserRole + 1).toString(),
              QStringLiteral("reg-status"));
+    QCOMPARE(registers->model()->index(0, 5).data().toString(),
+             QStringLiteral("Editing (1)"));
     QCOMPARE(fields->model()->index(0, 0).data().toString(), QStringLiteral("READY"));
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("STATUS")));
     closeFields->click();
     QTRY_VERIFY_WITH_TIMEOUT(!fieldPanel->isVisible(), 2000);
+    QCOMPARE(fields->model()->rowCount(), 0);
+    QCOMPARE(registers->model()->index(0, 5).data().toString(),
+             QStringLiteral("Open (1)"));
+
+    registers->setCurrentIndex(registers->model()->index(0, 5));
+    registers->setFocus(Qt::OtherFocusReason);
+    QTest::keyClick(registers, Qt::Key_Space);
+    QTRY_VERIFY_WITH_TIMEOUT(fieldPanel->isVisible(), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(fields->hasFocus(), 2000);
+    QCOMPARE(registers->currentIndex().data(Qt::UserRole + 1).toString(),
+             QStringLiteral("reg-status"));
+    QCOMPARE(registers->model()->index(0, 5).data().toString(),
+             QStringLiteral("Editing (1)"));
+    closeFields->click();
+    QTRY_VERIFY_WITH_TIMEOUT(!fieldPanel->isVisible(), 2000);
+
+    registers->setCurrentIndex(registers->model()->index(0, 5));
+    registers->setFocus(Qt::OtherFocusReason);
+    QTest::keyClick(registers, Qt::Key_Return);
+    QTRY_VERIFY_WITH_TIMEOUT(fieldPanel->isVisible(), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(fields->hasFocus(), 2000);
+    QCOMPARE(registers->currentIndex().data(Qt::UserRole + 1).toString(),
+             QStringLiteral("reg-status"));
+    QCOMPARE(registers->model()->index(0, 5).data().toString(),
+             QStringLiteral("Editing (1)"));
+    const QModelIndex otherRegister = registers->model()->index(1, 2);
+    const QString otherRegisterId =
+        registers->model()->index(1, 0).data(Qt::UserRole + 1).toString();
+    QVERIFY(!otherRegisterId.isEmpty());
+    QVERIFY(otherRegisterId != QStringLiteral("reg-status"));
+    registers->scrollTo(otherRegister);
+    QCoreApplication::processEvents();
+    const QRect otherRegisterRectangle = registers->visualRect(otherRegister);
+    QVERIFY(otherRegisterRectangle.isValid());
+    QTest::mouseClick(registers->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      otherRegisterRectangle.center());
+    QTRY_VERIFY_WITH_TIMEOUT(!fieldPanel->isVisible(), 2000);
+    QCOMPARE(registers->model()->index(0, 5).data().toString(),
+             QStringLiteral("Open (1)"));
+    QCOMPARE(registers->currentIndex().row(), 1);
+    QCOMPARE(registers->model()
+                 ->index(registers->currentIndex().row(), 0)
+                 .data(Qt::UserRole + 1).toString(),
+             otherRegisterId);
     QCOMPARE(fields->model()->rowCount(), 0);
 
     makeGeneratedFilesWritable(directory.path());
@@ -1545,9 +1601,11 @@ void GuiSmokeTests::insertsRegisterBetweenRows()
     const QPoint insertionPoint(18, nextRectangle.top());
     QTest::mouseMove(registers->viewport(), insertionPoint);
     QTest::qWait(20);
+    QCOMPARE(registers->viewport()->cursor().shape(), Qt::PointingHandCursor);
     QTest::mouseClick(registers->viewport(), Qt::LeftButton, Qt::NoModifier, insertionPoint);
 
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->rowCount(), 4, 2000);
+    QCOMPARE(registers->viewport()->cursor().shape(), Qt::ArrowCursor);
     QCOMPARE(registers->model()->index(1, 0).data().toString(), QStringLiteral("NEW_REGISTER"));
     QCOMPARE(registers->model()->index(1, 1).data().toString(), QStringLiteral("0x4"));
     QCOMPARE(registers->model()->index(2, 0).data().toString(), QStringLiteral("CONTROL"));
