@@ -8,6 +8,7 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QByteArray>
 #include <QClipboard>
 #include <QLabel>
 #include <QPushButton>
@@ -50,6 +51,7 @@ private slots:
     void opensProjectAndPopulatesEditableViews();
     void navigatesHierarchyAndOpensFieldsExplicitly();
     void switchesProjectsWithoutReusingFieldWorkspaceState();
+    void reloadsProjectWithoutLosingFieldWorkspaceContext();
     void navigatesFieldProblemsAndFallsBackForHiddenFields();
     void supportsTrailingRowsAndFieldMovement();
     void editsTagsAndAccessFromSingleClick();
@@ -561,6 +563,52 @@ void GuiSmokeTests::switchesProjectsWithoutReusingFieldWorkspaceState()
     makeGeneratedFilesWritable(root.filePath(QStringLiteral("second")));
 }
 
+void GuiSmokeTests::reloadsProjectWithoutLosingFieldWorkspaceContext()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createProject(manifest);
+
+    MainWindow window;
+    window.resize(1100, 720);
+    window.show();
+    window.openProjectPath(manifest);
+    QTest::qWait(50);
+
+    auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* fields = window.findChild<QTableView*>(QStringLiteral("fieldView"));
+    auto* fieldPanel = window.findChild<QWidget*>(QStringLiteral("fieldPanel"));
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+    QVERIFY(fieldPanel != nullptr);
+
+    Q_EMIT registers->clicked(registers->model()->index(0, 5));
+    QTRY_VERIFY_WITH_TIMEOUT(fieldPanel->isVisible(), 2000);
+    QCOMPARE(fields->currentIndex().data(Qt::UserRole + 1).toString(),
+             QStringLiteral("field-ready"));
+
+    QAction* reload = nullptr;
+    for (auto* action : window.findChildren<QAction*>()) {
+        if (action->text() == QStringLiteral("Reload from Disk")) {
+            reload = action;
+            break;
+        }
+    }
+    QVERIFY(reload != nullptr);
+    QVERIFY(reload->isEnabled());
+    reload->trigger();
+    QTRY_VERIFY_WITH_TIMEOUT(fieldPanel->isVisible(), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->currentIndex().data(Qt::UserRole + 1).toString(),
+        QStringLiteral("reg-status"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fields->currentIndex().data(Qt::UserRole + 1).toString(),
+        QStringLiteral("field-ready"), 2000);
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
 void GuiSmokeTests::navigatesFieldProblemsAndFallsBackForHiddenFields()
 {
     QTemporaryDir directory;
@@ -646,6 +694,7 @@ void GuiSmokeTests::navigatesFieldProblemsAndFallsBackForHiddenFields()
         QTRY_COMPARE_WITH_TIMEOUT(
             registers->currentIndex().data(Qt::UserRole + 1).toString(),
             QStringLiteral("reg-status"), 2000);
+        QCOMPARE(registers->currentIndex().column(), 4);
         QVERIFY(!fieldPanel->isVisible());
         QCOMPARE(fields->model()->rowCount(), 0);
         QVERIFY(window.statusBar()->currentMessage().contains(
@@ -1277,6 +1326,12 @@ void GuiSmokeTests::reportsAndResolvesRtlConflicts()
     makeGeneratedFilesWritable(directory.path());
 }
 
-QTEST_MAIN(GuiSmokeTests)
+int main(int argc, char** argv)
+{
+    qputenv("QT_QPA_PLATFORM", QByteArrayLiteral("offscreen"));
+    QApplication application(argc, argv);
+    GuiSmokeTests tests;
+    return QTest::qExec(&tests, argc, argv);
+}
 
 #include "gui_smoke_tests.moc"

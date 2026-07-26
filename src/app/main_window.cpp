@@ -3877,6 +3877,13 @@ bool MainWindow::navigateToObject(const std::string& id)
                 selectRegister(reg.id);
                 if (canOpenField) {
                     selectField(fieldId);
+                } else if (!fieldId.empty() && registerView_->currentIndex().isValid()) {
+                    const QModelIndex typeIndex =
+                        registerModel_->index(registerView_->currentIndex().row(),
+                                              registerTypeColumn);
+                    registerView_->setCurrentIndex(typeIndex);
+                    registerView_->scrollTo(typeIndex);
+                    registerView_->setFocus(Qt::OtherFocusReason);
                 }
                 QString located =
                     QStringLiteral("Located register %1").arg(fromUtf8(reg.name));
@@ -3895,7 +3902,7 @@ bool MainWindow::navigateToObject(const std::string& id)
                                  field == nullptr ? QStringLiteral("this field")
                                                   : fromUtf8(field->name));
                 }
-                statusBar()->showMessage(located, 3000);
+                statusBar()->showMessage(located, fieldId.empty() || canOpenField ? 3000 : 6000);
                 return true;
             }
         }
