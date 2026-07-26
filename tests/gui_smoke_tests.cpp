@@ -27,6 +27,7 @@
 #include <QPalette>
 #include <QSplitter>
 #include <QStandardItemModel>
+#include <QSignalSpy>
 #include <QStringList>
 #include <QStatusBar>
 #include <QTabWidget>
@@ -576,9 +577,13 @@ void GuiSmokeTests::reloadsProjectWithoutLosingFieldWorkspaceContext()
     window.openProjectPath(manifest);
     QTest::qWait(50);
 
+    auto* controller = window.findChild<ProjectController*>();
+    auto* hierarchy = window.findChild<QTreeView*>(QStringLiteral("hierarchyView"));
     auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
     auto* fields = window.findChild<QTableView*>(QStringLiteral("fieldView"));
     auto* fieldPanel = window.findChild<QWidget*>(QStringLiteral("fieldPanel"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(hierarchy != nullptr);
     QVERIFY(registers != nullptr);
     QVERIFY(fields != nullptr);
     QVERIFY(fieldPanel != nullptr);
@@ -588,6 +593,20 @@ void GuiSmokeTests::reloadsProjectWithoutLosingFieldWorkspaceContext()
     QCOMPARE(fields->currentIndex().data(Qt::UserRole + 1).toString(),
              QStringLiteral("field-ready"));
 
+    QFile projectFile(manifest);
+    QVERIFY(projectFile.open(QIODevice::ReadOnly | QIODevice::Text));
+    QString projectText = QString::fromUtf8(projectFile.readAll());
+    projectFile.close();
+    const QString originalPageName = QStringLiteral("      name: Main\n");
+    QCOMPARE(projectText.count(originalPageName), 1);
+    projectText.replace(originalPageName, QStringLiteral("      name: Main Reloaded\n"));
+    const QByteArray updatedProject = projectText.toUtf8();
+    QVERIFY(projectFile.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate));
+    QCOMPARE(projectFile.write(updatedProject), updatedProject.size());
+    projectFile.close();
+
+    QSignalSpy projectChanged(controller, &ProjectController::projectChanged);
+    QVERIFY(projectChanged.isValid());
     QAction* reload = nullptr;
     for (auto* action : window.findChildren<QAction*>()) {
         if (action->text() == QStringLiteral("Reload from Disk")) {
@@ -598,7 +617,12 @@ void GuiSmokeTests::reloadsProjectWithoutLosingFieldWorkspaceContext()
     QVERIFY(reload != nullptr);
     QVERIFY(reload->isEnabled());
     reload->trigger();
+    QTRY_VERIFY_WITH_TIMEOUT(projectChanged.count() > 0, 2000);
     QTRY_VERIFY_WITH_TIMEOUT(fieldPanel->isVisible(), 2000);
+    const QModelIndex workspaceIndex = hierarchy->model()->index(0, 0);
+    const QModelIndex pageIndex = hierarchy->model()->index(0, 0, workspaceIndex);
+    QTRY_COMPARE_WITH_TIMEOUT(pageIndex.data().toString(),
+                              QStringLiteral("Main Reloaded"), 2000);
     QTRY_COMPARE_WITH_TIMEOUT(
         registers->currentIndex().data(Qt::UserRole + 1).toString(),
         QStringLiteral("reg-status"), 2000);
