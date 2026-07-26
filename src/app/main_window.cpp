@@ -1407,6 +1407,21 @@ void MainWindow::requestProjectRefresh()
 
 void MainWindow::refreshProject()
 {
+    const auto& manifestPath = controller_.manifestPath();
+    if (manifestPath != displayedManifestPath_) {
+        displayedManifestPath_ = manifestPath;
+        selectedAddressId_.clear();
+        selectedBlockId_.clear();
+        selectedRegisterId_.clear();
+        selectedFieldId_.clear();
+        openFieldsRegisterId_.clear();
+        selectedTagFilter_.clear();
+        searchQuery_.clear();
+        searchResults_.clear();
+        searchResultIndex_ = -1;
+        globalSearchEdit_->clear();
+        searchResultLabel_->clear();
+    }
     populateHierarchy();
     updateContextBar();
     updateTagFilter();
@@ -3847,16 +3862,20 @@ bool MainWindow::navigateToObject(const std::string& id)
                 selectedAddressId_ = page.id;
                 selectedBlockId_ = block.id;
                 selectedRegisterId_ = reg.id;
-                selectedFieldId_ = fieldId;
-                if (fieldId.empty()) {
-                    openFieldsRegisterId_.clear();
-                } else {
+                const bool canOpenField =
+                    !fieldId.empty() && !reg.reserved &&
+                    reg.type == regmap::FieldType::structure;
+                if (canOpenField) {
+                    selectedFieldId_ = fieldId;
                     openFieldsRegisterId_ = reg.id;
+                } else {
+                    selectedFieldId_.clear();
+                    openFieldsRegisterId_.clear();
                 }
                 selectedTagFilter_.clear();
                 refreshProject();
                 selectRegister(reg.id);
-                if (!fieldId.empty()) {
+                if (canOpenField) {
                     selectField(fieldId);
                 }
                 QString located =
@@ -3867,6 +3886,14 @@ bool MainWindow::navigateToObject(const std::string& id)
                     } else {
                         located = QStringLiteral("Located field");
                     }
+                }
+                if (!fieldId.empty() && !canOpenField) {
+                    const auto* field = findField(reg, fieldId);
+                    located =
+                        QStringLiteral("Located register %1; set Type to field to edit %2")
+                            .arg(fromUtf8(reg.name),
+                                 field == nullptr ? QStringLiteral("this field")
+                                                  : fromUtf8(field->name));
                 }
                 statusBar()->showMessage(located, 3000);
                 return true;

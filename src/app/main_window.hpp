@@ -7,6 +7,7 @@
 #include <QMainWindow>
 #include <QString>
 
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <vector>
@@ -105,6 +106,7 @@ private:
     std::string selectedAddressId_;
     std::string selectedBlockId_;
     std::string selectedRegisterId_;
+    std::filesystem::path displayedManifestPath_;
     std::string selectedFieldId_;
     std::string openFieldsRegisterId_;
     std::string selectedTagFilter_;

@@ -27,6 +27,7 @@
 #include <QSplitter>
 #include <QStandardItemModel>
 #include <QStringList>
+#include <QStatusBar>
 #include <QTabWidget>
 #include <QTableView>
 #include <QTemporaryDir>
@@ -48,6 +49,8 @@ private slots:
     void createsWorkbenchFirstProject();
     void opensProjectAndPopulatesEditableViews();
     void navigatesHierarchyAndOpensFieldsExplicitly();
+    void switchesProjectsWithoutReusingFieldWorkspaceState();
+    void navigatesFieldProblemsAndFallsBackForHiddenFields();
     void supportsTrailingRowsAndFieldMovement();
     void editsTagsAndAccessFromSingleClick();
     void insertsRegisterBetweenRows();
@@ -153,6 +156,32 @@ void createTwoRegisterProject(const QString& path)
               fields: []
 )");
     text.replace(marker, secondRegister + marker);
+    const QByteArray bytes = text.toUtf8();
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate));
+    QCOMPARE(file.write(bytes), bytes.size());
+    file.close();
+}
+
+void createFieldDiagnosticProject(const QString& path, bool hiddenFieldOwner)
+{
+    createTwoRegisterProject(path);
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::ReadOnly | QIODevice::Text));
+    QString text = QString::fromUtf8(file.readAll());
+    file.close();
+
+    const QString validRange = QStringLiteral("                  msb: 0\n"
+                                              "                  lsb: 0\n");
+    const QString invalidRange = QStringLiteral("                  msb: 1\n"
+                                                "                  lsb: 0\n");
+    QCOMPARE(text.count(validRange), 1);
+    text.replace(validRange, invalidRange);
+    if (hiddenFieldOwner) {
+        const QString structureType = QStringLiteral("              type: field\n");
+        QCOMPARE(text.count(structureType), 1);
+        text.replace(structureType, QStringLiteral("              type: unsigned\n"));
+    }
+
     const QByteArray bytes = text.toUtf8();
     QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate));
     QCOMPARE(file.write(bytes), bytes.size());
@@ -488,6 +517,143 @@ void GuiSmokeTests::navigatesHierarchyAndOpensFieldsExplicitly()
     QCOMPARE(fields->model()->rowCount(), 0);
 
     makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::switchesProjectsWithoutReusingFieldWorkspaceState()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    QDir root(directory.path());
+    QVERIFY(root.mkpath(QStringLiteral("first")));
+    QVERIFY(root.mkpath(QStringLiteral("second")));
+    const QString firstManifest =
+        root.filePath(QStringLiteral("first/project.regmap.yaml"));
+    const QString secondManifest =
+        root.filePath(QStringLiteral("second/project.regmap.yaml"));
+    createProject(firstManifest);
+    createProject(secondManifest);
+
+    MainWindow window;
+    window.resize(1100, 720);
+    window.show();
+    window.openProjectPath(firstManifest);
+    QTest::qWait(50);
+
+    auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* fields = window.findChild<QTableView*>(QStringLiteral("fieldView"));
+    auto* fieldPanel = window.findChild<QWidget*>(QStringLiteral("fieldPanel"));
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+    QVERIFY(fieldPanel != nullptr);
+
+    Q_EMIT registers->clicked(registers->model()->index(0, 5));
+    QTRY_VERIFY_WITH_TIMEOUT(fieldPanel->isVisible(), 2000);
+    QCOMPARE(fields->model()->index(0, 0).data(Qt::UserRole + 1).toString(),
+             QStringLiteral("field-ready"));
+
+    window.openProjectPath(secondManifest);
+    QTRY_VERIFY_WITH_TIMEOUT(!fieldPanel->isVisible(), 2000);
+    QCOMPARE(fields->model()->rowCount(), 0);
+    QCOMPARE(registers->model()->index(0, 0).data(Qt::UserRole + 1).toString(),
+             QStringLiteral("reg-status"));
+
+    makeGeneratedFilesWritable(root.filePath(QStringLiteral("first")));
+    makeGeneratedFilesWritable(root.filePath(QStringLiteral("second")));
+}
+
+void GuiSmokeTests::navigatesFieldProblemsAndFallsBackForHiddenFields()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    QDir root(directory.path());
+    QVERIFY(root.mkpath(QStringLiteral("visible")));
+    QVERIFY(root.mkpath(QStringLiteral("hidden")));
+    const QString visibleManifest =
+        root.filePath(QStringLiteral("visible/project.regmap.yaml"));
+    const QString hiddenManifest =
+        root.filePath(QStringLiteral("hidden/project.regmap.yaml"));
+    createFieldDiagnosticProject(visibleManifest, false);
+    createFieldDiagnosticProject(hiddenManifest, true);
+
+    const auto fieldProblemRow = [](const QTableView* problems) {
+        for (int row = 0; row < problems->model()->rowCount(); ++row) {
+            if (problems->model()->index(row, 1).data().toString() ==
+                    QStringLiteral("RM3036") &&
+                problems->model()->index(row, 3).data().toString() ==
+                QStringLiteral("field-ready")) {
+                return row;
+            }
+        }
+        return -1;
+    };
+
+    {
+        MainWindow window;
+        window.resize(1100, 720);
+        window.show();
+        window.openProjectPath(visibleManifest);
+        QTest::qWait(50);
+
+        auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+        auto* fields = window.findChild<QTableView*>(QStringLiteral("fieldView"));
+        auto* fieldPanel = window.findChild<QWidget*>(QStringLiteral("fieldPanel"));
+        auto* problems = window.findChild<QTableView*>(QStringLiteral("problemsView"));
+        QVERIFY(registers != nullptr);
+        QVERIFY(fields != nullptr);
+        QVERIFY(fieldPanel != nullptr);
+        QVERIFY(problems != nullptr);
+        QVERIFY(!fieldPanel->isVisible());
+        registers->setCurrentIndex(registers->model()->index(1, 0));
+        QCoreApplication::processEvents();
+        QCOMPARE(registers->currentIndex().data(Qt::UserRole + 1).toString(),
+                 QStringLiteral("reg-control"));
+
+        const int row = fieldProblemRow(problems);
+        QVERIFY(row >= 0);
+        Q_EMIT problems->doubleClicked(problems->model()->index(row, 2));
+        QTRY_VERIFY_WITH_TIMEOUT(fieldPanel->isVisible(), 2000);
+        QTRY_COMPARE_WITH_TIMEOUT(
+            registers->currentIndex().data(Qt::UserRole + 1).toString(),
+            QStringLiteral("reg-status"), 2000);
+        QTRY_COMPARE_WITH_TIMEOUT(
+            fields->currentIndex().data(Qt::UserRole + 1).toString(),
+            QStringLiteral("field-ready"), 2000);
+    }
+
+    {
+        MainWindow window;
+        window.resize(1100, 720);
+        window.show();
+        window.openProjectPath(hiddenManifest);
+        QTest::qWait(50);
+
+        auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+        auto* fields = window.findChild<QTableView*>(QStringLiteral("fieldView"));
+        auto* fieldPanel = window.findChild<QWidget*>(QStringLiteral("fieldPanel"));
+        auto* problems = window.findChild<QTableView*>(QStringLiteral("problemsView"));
+        QVERIFY(registers != nullptr);
+        QVERIFY(fields != nullptr);
+        QVERIFY(fieldPanel != nullptr);
+        QVERIFY(problems != nullptr);
+
+        registers->setCurrentIndex(registers->model()->index(1, 0));
+        QCoreApplication::processEvents();
+        QCOMPARE(registers->currentIndex().data(Qt::UserRole + 1).toString(),
+                 QStringLiteral("reg-control"));
+        const int row = fieldProblemRow(problems);
+        QVERIFY(row >= 0);
+        Q_EMIT problems->doubleClicked(problems->model()->index(row, 2));
+        QTRY_COMPARE_WITH_TIMEOUT(
+            registers->currentIndex().data(Qt::UserRole + 1).toString(),
+            QStringLiteral("reg-status"), 2000);
+        QVERIFY(!fieldPanel->isVisible());
+        QCOMPARE(fields->model()->rowCount(), 0);
+        QVERIFY(window.statusBar()->currentMessage().contains(
+            QStringLiteral("set Type to field")));
+    }
+
+    makeGeneratedFilesWritable(root.filePath(QStringLiteral("visible")));
+    makeGeneratedFilesWritable(root.filePath(QStringLiteral("hidden")));
 }
 
 void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
