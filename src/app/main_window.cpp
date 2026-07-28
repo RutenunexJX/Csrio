@@ -5213,7 +5213,37 @@ void MainWindow::insertRegisterAt(int row)
         return;
     }
 
+    regmap::Workspace candidate = *workspace;
+    if (auto* targetBlock =
+            regmap::findRegisterBlock(candidate, blockId)) {
+        const auto insertion =
+            std::ranges::find(
+                targetBlock->registers, nextId,
+                &regmap::Register::id);
+        if (insertion != targetBlock->registers.end()) {
+            for (auto current = insertion;
+                 current != targetBlock->registers.end(); ++current) {
+                current->offset += shift;
+            }
+            targetBlock->registers.insert(insertion, reg);
+        }
+    }
+    if (!addressEditDoesNotWorsen(*workspace, candidate, blockId)) {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Cannot insert a 32-bit Register at Offset %1: shifting following "
+                "Registers would exceed Block Size or the Page address range. "
+                "Increase Block Size or Address Width, or adjust existing Offsets.")
+                .arg(hex(reg.offset)),
+            9000);
+        return;
+    }
+
     const std::string newId = reg.id;
+    const std::uint64_t addedOffset = reg.offset;
+    const std::size_t shiftedCount =
+        static_cast<std::size_t>(
+            std::distance(next, block->registers.end()));
     if (controller_.editWorkspace(
             QStringLiteral("Insert register and shift following offsets"),
             [blockId, nextId, shift, reg = std::move(reg)](regmap::Workspace& candidate) mutable {
@@ -5238,6 +5268,12 @@ void MainWindow::insertRegisterAt(int row)
         openFieldsRegisterId_.clear();
         refreshProject();
         selectRegister(newId);
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Inserted Register at Offset %1 and shifted %2 following "
+                "Register(s); Ctrl+Z to restore")
+                .arg(hex(addedOffset))
+                .arg(shiftedCount), 6000);
         beginRegisterRename(newId);
     }
 }

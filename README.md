@@ -92,8 +92,11 @@ build\dev-debug\src\app\RegMapWorkbench.exe examples\minimal\.regmap.yaml
 Click a register or field cell once to select it; double-click an editable cell or press `F2` to
 edit it. Both tables end with a single `+` row. To insert between two existing registers, move
 the pointer to their boundary within the leftmost 40 pixels of the register table, then click the
-displayed `+`; other boundary areas remain inert. Double-click a register **Tags** cell to open
-the tag selector: typing filters the drop-down,
+displayed `+`; other boundary areas remain inert. Before committing an insertion, Workbench
+verifies every shifted Register against the Block Size and Page address range. If the result would
+be invalid, all Offsets and the Undo history remain unchanged and the status message identifies
+which capacity to adjust.
+Double-click a register **Tags** cell to open the tag selector: typing filters the drop-down,
 clicking an existing tag selects it, and the adjacent `+` creates a tag only when its name is
 unique. The register context menu can convert a register to a red, bold reserved slot or delete
 it while shifting subsequent offsets upward. Page and block properties are shown once in the

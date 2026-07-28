@@ -4435,7 +4435,20 @@ void GuiSmokeTests::insertsRegisterBetweenRows()
     window.show();
     QTest::qWait(50);
     auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* controller = window.findChild<ProjectController*>();
     QVERIFY(registers != nullptr);
+    QVERIFY(controller != nullptr);
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Fill Block before insertion"),
+        [](regmap::Workspace& workspace) {
+            if (auto* block =
+                    regmap::findRegisterBlock(workspace, "block-control")) {
+                block->size = 8;
+            }
+        }));
+    QCoreApplication::processEvents();
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
     QCOMPARE(registers->model()->rowCount(), 3);
     QCOMPARE(registers->model()->index(0, 0).data().toString(), QStringLiteral("STATUS"));
     QCOMPARE(registers->model()->index(1, 0).data().toString(), QStringLiteral("CONTROL"));
@@ -4458,8 +4471,44 @@ void GuiSmokeTests::insertsRegisterBetweenRows()
     QTest::mouseMove(registers->viewport(), insertionPoint);
     QTest::qWait(20);
     QCOMPARE(registers->viewport()->cursor().shape(), Qt::PointingHandCursor);
+    const std::size_t fullBlockUndoDepth = controller->undoDepth();
+    window.statusBar()->clearMessage();
     QTest::mouseClick(registers->viewport(), Qt::LeftButton, Qt::NoModifier, insertionPoint);
+    QCoreApplication::processEvents();
+    QCOMPARE(registers->model()->rowCount(), 3);
+    QCOMPARE(registers->model()->index(0, 1).data().toString(), QStringLiteral("0x0"));
+    QCOMPARE(registers->model()->index(1, 1).data().toString(), QStringLiteral("0x4"));
+    QCOMPARE(controller->undoDepth(), fullBlockUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Cannot insert a 32-bit Register")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Block Size")));
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
 
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Make room for insertion"),
+        [](regmap::Workspace& workspace) {
+            if (auto* block =
+                    regmap::findRegisterBlock(workspace, "block-control")) {
+                block->size = 12;
+            }
+        }));
+    QCoreApplication::processEvents();
+    const QModelIndex retryNextRegister =
+        registers->model()->index(1, 0);
+    registers->scrollTo(retryNextRegister);
+    const QRect retryNextRectangle =
+        registers->visualRect(retryNextRegister);
+    QVERIFY(retryNextRectangle.isValid());
+    QTest::mouseMove(
+        registers->viewport(),
+        registers->visualRect(registers->model()->index(0, 0)).center());
+    const QPoint retryInsertionPoint(18, retryNextRectangle.top());
+    QTest::mouseMove(registers->viewport(), retryInsertionPoint);
+    QTest::qWait(20);
+    QTest::mouseClick(
+        registers->viewport(), Qt::LeftButton, Qt::NoModifier,
+        retryInsertionPoint);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->rowCount(), 4, 2000);
     QCOMPARE(registers->viewport()->cursor().shape(), Qt::ArrowCursor);
     QCOMPARE(registers->model()->index(1, 0).data().toString(), QStringLiteral("NEW_REGISTER"));
@@ -4467,6 +4516,17 @@ void GuiSmokeTests::insertsRegisterBetweenRows()
     QCOMPARE(registers->model()->index(2, 0).data().toString(), QStringLiteral("CONTROL"));
     QCOMPARE(registers->model()->index(2, 1).data().toString(), QStringLiteral("0x8"));
     QCOMPARE(registers->model()->index(3, 0).data().toString(), QStringLiteral("+"));
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Make room for another insertion"),
+        [](regmap::Workspace& workspace) {
+            if (auto* block =
+                    regmap::findRegisterBlock(workspace, "block-control")) {
+                block->size = 16;
+            }
+        }));
+    QCoreApplication::processEvents();
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
 
     const QModelIndex shiftedControl = registers->model()->index(2, 0);
     const QRect shiftedControlRectangle = registers->visualRect(shiftedControl);
@@ -4487,6 +4547,7 @@ void GuiSmokeTests::insertsRegisterBetweenRows()
     QCOMPARE(registers->model()->index(3, 0).data().toString(), QStringLiteral("CONTROL"));
     QCOMPARE(registers->model()->index(3, 1).data().toString(), QStringLiteral("0xC"));
     QCOMPARE(registers->model()->index(4, 0).data().toString(), QStringLiteral("+"));
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
 
     makeGeneratedFilesWritable(directory.path());
 }
