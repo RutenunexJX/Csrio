@@ -51,6 +51,10 @@
 #include <QToolButton>
 #include <QTreeView>
 
+#ifdef Q_OS_WIN
+#include <qt_windows.h>
+#endif
+
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -2702,11 +2706,15 @@ void GuiSmokeTests::showsUnifiedSyncStateAndGeneratedResults()
     auto* retry = window.findChild<QPushButton*>(QStringLiteral("retryOutputsButton"));
     auto* save = window.findChild<QAction*>(QStringLiteral("saveSyncAction"));
     auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* controller = window.findChild<ProjectController*>();
+    auto* tabs = window.findChild<QTabWidget*>(QStringLiteral("resultTabs"));
     QVERIFY(state != nullptr);
     QVERIFY(generated != nullptr);
     QVERIFY(retry != nullptr);
     QVERIFY(save != nullptr);
     QVERIFY(registers != nullptr);
+    QVERIFY(controller != nullptr);
+    QVERIFY(tabs != nullptr);
 
     QTRY_VERIFY_WITH_TIMEOUT(state->text().startsWith(QStringLiteral("Synchronized")), 2000);
     QCOMPARE(generated->model()->rowCount(), 3);
@@ -2726,6 +2734,55 @@ void GuiSmokeTests::showsUnifiedSyncStateAndGeneratedResults()
     save->trigger();
     QTRY_VERIFY_WITH_TIMEOUT(state->text().startsWith(QStringLiteral("Synchronized")), 4000);
     QCOMPARE(generated->model()->rowCount(), 3);
+
+#ifdef Q_OS_WIN
+    const auto workbook = std::ranges::find_if(
+        controller->artifacts(), [](const regmap::GeneratedArtifact& artifact) {
+            return artifact.kind == regmap::GenerationTargetKind::xlsx;
+        });
+    QVERIFY(workbook != controller->artifacts().end());
+    const HANDLE lockedWorkbook =
+        CreateFileW(workbook->path.wstring().c_str(), GENERIC_READ, FILE_SHARE_READ,
+                    nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    QVERIFY(lockedWorkbook != INVALID_HANDLE_VALUE);
+
+    QVERIFY(registers->model()->setData(
+        registers->model()->index(0, 11),
+        QStringLiteral("Edit that encounters a locked workbook.")));
+    QTRY_VERIFY_WITH_TIMEOUT(controller->isDirty(), 2000);
+    save->trigger();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        state->text().contains(QStringLiteral("output failed")), 4000);
+    bool workbookFailed = false;
+    QString workbookFailure;
+    for (int row = 0; row < generated->model()->rowCount(); ++row) {
+        if (generated->model()->index(row, 0).data().toString() ==
+            QStringLiteral("xlsx")) {
+            workbookFailed =
+                generated->model()->index(row, 2).data().toString() ==
+                QStringLiteral("Failed");
+            workbookFailure =
+                generated->model()->index(row, 2).data(Qt::ToolTipRole).toString();
+        }
+    }
+    const int failureTab = tabs->currentIndex();
+    const bool retryVisible = retry->isVisible();
+    CloseHandle(lockedWorkbook);
+
+    QVERIFY(workbookFailed);
+    QVERIFY(workbookFailure.contains(QStringLiteral("open in Excel")));
+    QCOMPARE(failureTab, 1);
+    QVERIFY(retryVisible);
+
+    QTest::mouseClick(retry, Qt::LeftButton);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        state->text().startsWith(QStringLiteral("Synchronized")), 4000);
+    QTRY_VERIFY_WITH_TIMEOUT(retry->isHidden(), 2000);
+    for (int row = 0; row < generated->model()->rowCount(); ++row) {
+        QCOMPARE(generated->model()->index(row, 2).data().toString(),
+                 QStringLiteral("Synchronized"));
+    }
+#endif
 
     makeGeneratedFilesWritable(directory.path());
 }

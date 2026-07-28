@@ -2410,6 +2410,7 @@ void MainWindow::refreshDiagnostics()
          QStringLiteral("Object ID"), QStringLiteral("Source")});
     const auto& diagnostics = controller_.diagnostics();
     int errorCount = 0;
+    int nonOutputErrorCount = 0;
     for (std::size_t index = 0; index < diagnostics.size(); ++index) {
         const auto& diagnostic = diagnostics[index];
         auto* severity = item(severityText(diagnostic.severity));
@@ -2417,6 +2418,9 @@ void MainWindow::refreshDiagnostics()
         if (diagnostic.severity == regmap::DiagnosticSeverity::error) {
             severity->setForeground(QBrush(QColor(190, 35, 35)));
             ++errorCount;
+            if (!diagnostic.code.starts_with("RM4")) {
+                ++nonOutputErrorCount;
+            }
         } else if (diagnostic.severity == regmap::DiagnosticSeverity::warning) {
             severity->setForeground(QBrush(QColor(180, 115, 0)));
         }
@@ -2429,7 +2433,9 @@ void MainWindow::refreshDiagnostics()
     generateAction_->setEnabled(controller_.workspace() != nullptr &&
                                 !controller_.hasProjectErrors());
     if (errorCount > 0) {
-        tabs_->setCurrentIndex(0);
+        const bool onlyOutputErrors =
+            nonOutputErrorCount == 0 && generatedModel_->rowCount() > 0;
+        tabs_->setCurrentIndex(onlyOutputErrors ? 1 : 0);
     }
     updateBottomPanelVisibility();
     updateSyncPresentation();
