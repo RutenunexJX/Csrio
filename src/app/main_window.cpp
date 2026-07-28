@@ -4479,7 +4479,10 @@ void MainWindow::deleteSelection()
     } else if (focusInside(fieldView_) || focusInside(bitfieldView_)) {
         id = selectedFieldId_;
     } else if (focusInside(registerView_)) {
-        id = selectedRegisterId_;
+        if (!selectedRegisterId_.empty()) {
+            deleteSelectedRegisterAndShift();
+        }
+        return;
     } else if (focusInside(hierarchyView_)) {
         id = !selectedBlockId_.empty() ? selectedBlockId_ : selectedAddressId_;
     } else if (!selectedFieldId_.empty()) {

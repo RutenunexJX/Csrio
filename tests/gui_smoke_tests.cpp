@@ -4057,14 +4057,38 @@ void GuiSmokeTests::deletesFocusedRegisterAndRestoresIt()
     QTest::qWait(50);
     auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
     auto* fields = window.findChild<QTableView*>(QStringLiteral("fieldView"));
+    auto* controller = window.findChild<ProjectController*>();
     QVERIFY(registers != nullptr);
     QVERIFY(fields != nullptr);
+    QVERIFY(controller != nullptr);
     QCOMPARE(fields->model()->rowCount(), 0);
     QVERIFY(!fields->isVisible());
+    const std::size_t undoDepth = controller->undoDepth();
 
     registers->setCurrentIndex(registers->model()->index(0, 0));
     registers->setFocus();
+    bool confirmationSeen = false;
+    bool confirmationDescribesShift = false;
+    QTimer::singleShot(0, &window, [&] {
+        auto* dialog = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (dialog == nullptr) {
+            return;
+        }
+        confirmationSeen = true;
+        confirmationDescribesShift =
+            dialog->windowTitle() == QStringLiteral("Delete and Shift Registers") &&
+            dialog->text().contains(QStringLiteral("STATUS")) &&
+            dialog->text().contains(QStringLiteral("1 following register(s)")) &&
+            dialog->text().contains(QStringLiteral("0x4"));
+        if (auto* confirm = dialog->button(QMessageBox::Yes)) {
+            QTest::mouseClick(confirm, Qt::LeftButton);
+        } else {
+            dialog->reject();
+        }
+    });
     QTest::keyClick(registers, Qt::Key_Delete);
+    QVERIFY(confirmationSeen);
+    QVERIFY(confirmationDescribesShift);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->rowCount(), 2, 2000);
     bool foundStatus = false;
     for (int row = 0; row < registers->model()->rowCount(); ++row) {
@@ -4072,15 +4096,33 @@ void GuiSmokeTests::deletesFocusedRegisterAndRestoresIt()
             QStringLiteral("reg-status");
     }
     QVERIFY(!foundStatus);
+    QCOMPARE(registers->model()->index(0, 0).data(Qt::UserRole + 1).toString(),
+             QStringLiteral("reg-control"));
+    QCOMPARE(registers->model()->index(0, 1).data().toString(),
+             QStringLiteral("0x0"));
+    QCOMPARE(controller->undoDepth(), undoDepth + 1);
 
-    QTest::keyClick(&window, Qt::Key_Z, Qt::ControlModifier);
+    window.activateWindow();
+    registers->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
+    QTest::keyClick(registers, Qt::Key_Z, Qt::ControlModifier);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->rowCount(), 3, 2000);
+    QCOMPARE(controller->undoDepth(), undoDepth);
     foundStatus = false;
     for (int row = 0; row < registers->model()->rowCount(); ++row) {
         foundStatus |= registers->model()->index(row, 0).data(Qt::UserRole + 1).toString() ==
             QStringLiteral("reg-status");
     }
     QVERIFY(foundStatus);
+    int controlRow = -1;
+    for (int row = 0; row < registers->model()->rowCount(); ++row) {
+        if (registers->model()->index(row, 0).data(Qt::UserRole + 1).toString() ==
+            QStringLiteral("reg-control")) {
+            controlRow = row;
+        }
+    }
+    QVERIFY(controlRow >= 0);
+    QCOMPARE(registers->model()->index(controlRow, 1).data().toString(), QStringLiteral("0x4"));
 
     makeGeneratedFilesWritable(directory.path());
 }
