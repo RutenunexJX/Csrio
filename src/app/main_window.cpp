@@ -2267,8 +2267,12 @@ void MainWindow::buildUi()
 void MainWindow::buildActions()
 {
     auto* newAction = new QAction(QStringLiteral("New Project..."), this);
+    newAction->setObjectName(QStringLiteral("newProjectAction"));
     newAction->setShortcut(QKeySequence::New);
     connect(newAction, &QAction::triggered, this, [this] {
+        if (!commitActiveEditor()) {
+            return;
+        }
         QString path =
             QFileDialog::getSaveFileName(this, QStringLiteral("Create register-map project"), {},
                                          QStringLiteral("Register Map Project (*.regmap.yaml)"));
@@ -2288,8 +2292,12 @@ void MainWindow::buildActions()
     });
 
     auto* openAction = new QAction(QStringLiteral("Open Project…"), this);
+    openAction->setObjectName(QStringLiteral("openProjectAction"));
     openAction->setShortcut(QKeySequence::Open);
     connect(openAction, &QAction::triggered, this, [this] {
+        if (!commitActiveEditor()) {
+            return;
+        }
         const QString path = QFileDialog::getOpenFileName(
             this, QStringLiteral("Open register-map project"), {},
             QStringLiteral("Register Map Project (*.regmap.yaml *.yaml *.yml);;All "

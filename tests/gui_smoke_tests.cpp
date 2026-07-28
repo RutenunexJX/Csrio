@@ -88,6 +88,7 @@ private slots:
     void confirmsDiscardBeforeReloadingDirtyProject();
     void protectsUnsavedChangesWhenClosing();
     void confirmsUnsavedChangesBeforeReplacingProject();
+    void preflightsActiveEditorBeforeProjectChoosers();
     void navigatesFieldProblemsAndFallsBackForHiddenFields();
     void navigatesEnumValuesFromSearchAndProblems();
     void supportsTrailingRowsAndFieldMovement();
@@ -2515,6 +2516,129 @@ void GuiSmokeTests::confirmsUnsavedChangesBeforeReplacingProject()
     makeGeneratedFilesWritable(root.filePath(QStringLiteral("current")));
     makeGeneratedFilesWritable(
         root.filePath(QStringLiteral("replacement")));
+}
+
+void GuiSmokeTests::preflightsActiveEditorBeforeProjectChoosers()
+{
+    QApplication::setAttribute(Qt::AA_DontUseNativeDialogs, true);
+
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest =
+        directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createProject(manifest);
+
+    MainWindow window;
+    window.resize(1100, 720);
+    window.show();
+    window.openProjectPath(manifest);
+    QTest::qWait(50);
+
+    auto* controller = window.findChild<ProjectController*>();
+    auto* registers =
+        window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* newProject =
+        window.findChild<QAction*>(QStringLiteral("newProjectAction"));
+    auto* openProject =
+        window.findChild<QAction*>(QStringLiteral("openProjectAction"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(newProject != nullptr);
+    QVERIFY(openProject != nullptr);
+    QVERIFY(!controller->isDirty());
+
+    const auto visibleEditor = [registers]() -> QLineEdit* {
+        const auto editors = registers->findChildren<QLineEdit*>();
+        const auto visible = std::ranges::find_if(
+            editors, [](const QLineEdit* editor) {
+                return editor->isVisible();
+            });
+        return visible == editors.end() ? nullptr : *visible;
+    };
+    const auto startEdit =
+        [&](const QModelIndex& index, const QString& text) {
+            registers->setCurrentIndex(index);
+            registers->scrollTo(index);
+            registers->setFocus(Qt::OtherFocusReason);
+            registers->edit(index);
+            QCoreApplication::processEvents();
+            QTRY_VERIFY_WITH_TIMEOUT(visibleEditor() != nullptr, 2000);
+            QLineEdit* editor = visibleEditor();
+            editor->selectAll();
+            QTest::keyClicks(editor, text);
+            QCOMPARE(editor->text(), text);
+        };
+    const auto invokeWithoutChooser =
+        [&](QAction* action) {
+            bool chooserSeen = false;
+            QTimer::singleShot(0, &window, [&] {
+                if (auto* picker = qobject_cast<QFileDialog*>(
+                        QApplication::activeModalWidget())) {
+                    chooserSeen = true;
+                    picker->reject();
+                }
+            });
+            action->trigger();
+            QCoreApplication::processEvents();
+            return chooserSeen;
+        };
+
+    const QModelIndex width = registers->model()->index(0, 3);
+    startEdit(width, QStringLiteral("invalid-width"));
+    QVERIFY(!invokeWithoutChooser(newProject));
+    QCOMPARE(registers->model()->index(0, 3).data().toString(),
+             QStringLiteral("32"));
+    QVERIFY(!controller->isDirty());
+    QCOMPARE(controller->manifestPath(),
+             std::filesystem::path(manifest.toStdWString()));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Edit rejected: expected")));
+    QVERIFY(QApplication::activeModalWidget() == nullptr);
+
+    startEdit(registers->model()->index(0, 3),
+              QStringLiteral("still-invalid"));
+    QVERIFY(!invokeWithoutChooser(openProject));
+    QCOMPARE(registers->model()->index(0, 3).data().toString(),
+             QStringLiteral("32"));
+    QVERIFY(!controller->isDirty());
+    QCOMPARE(controller->manifestPath(),
+             std::filesystem::path(manifest.toStdWString()));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Edit rejected: expected")));
+    QVERIFY(QApplication::activeModalWidget() == nullptr);
+
+    const QModelIndex description =
+        registers->model()->index(0, 11);
+    const QString retainedDescription =
+        QStringLiteral("Valid edit retained after cancelling Open");
+    startEdit(description, retainedDescription);
+
+    bool chooserSeen = false;
+    QTimer::singleShot(0, &window, [&] {
+        auto* picker = qobject_cast<QFileDialog*>(
+            QApplication::activeModalWidget());
+        if (picker == nullptr) {
+            return;
+        }
+        chooserSeen = true;
+        picker->reject();
+    });
+    openProject->trigger();
+    QVERIFY(chooserSeen);
+    QVERIFY(controller->isDirty());
+    QCOMPARE(registers->model()->index(0, 11).data().toString(),
+             retainedDescription);
+    QCOMPARE(QString::fromStdString(
+                 regmap::findRegister(*controller->workspace(), "reg-status")
+                     ->description),
+             retainedDescription);
+    QCOMPARE(controller->manifestPath(),
+             std::filesystem::path(manifest.toStdWString()));
+    QVERIFY(controller->canUndo());
+
+    controller->undo();
+    QTRY_VERIFY_WITH_TIMEOUT(!controller->isDirty(), 2000);
+    makeGeneratedFilesWritable(directory.path());
 }
 
 void GuiSmokeTests::navigatesFieldProblemsAndFallsBackForHiddenFields()
