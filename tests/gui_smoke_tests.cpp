@@ -2594,19 +2594,19 @@ void GuiSmokeTests::editsTagsAndAccessFromDoubleClick()
     search->setText(QStringLiteral("EXISTING"));
     QVERIFY(!add->isEnabled());
     QTest::keyClick(search, Qt::Key_Return);
-    QCOMPARE(registers->model()->index(0, 10).data().toString(),
-             QStringLiteral("control, existing"));
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 10).data().toString(),
+                              QStringLiteral("control"), 2000);
     search->setText(QStringLiteral("newtag"));
     QVERIFY(add->isEnabled());
     QTest::mouseClick(add, Qt::LeftButton);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 10).data().toString(),
-                              QStringLiteral("control, existing, newtag"), 2000);
+                              QStringLiteral("control, newtag"), 2000);
 
     search->setText(QStringLiteral("keyboardtag"));
     QVERIFY(add->isEnabled());
     QTest::keyClick(search, Qt::Key_Return);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 10).data().toString(),
-                              QStringLiteral("control, existing, keyboardtag, newtag"), 2000);
+                              QStringLiteral("control, keyboardtag, newtag"), 2000);
     tagPopup->close();
     QTRY_VERIFY_WITH_TIMEOUT(QApplication::activePopupWidget() == nullptr, 2000);
 

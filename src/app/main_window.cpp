@@ -3772,14 +3772,15 @@ void MainWindow::editRegisterTags(const QModelIndex& index)
         add->setEnabled(!filter.isEmpty() && !containsTag(filter));
     };
     connect(search, &QLineEdit::textChanged, popup, updateFilter);
-    connect(list, &QListWidget::itemClicked, popup, [list, commit](QListWidgetItem* current) {
+    const auto toggleTag = [list, commit](QListWidgetItem* current) {
         current->setData(selectedRole, !current->data(selectedRole).toBool());
         for (int itemIndex = 0; itemIndex < list->count(); ++itemIndex) {
             list->item(itemIndex)->setSelected(
                 list->item(itemIndex)->data(selectedRole).toBool());
         }
         commit();
-    });
+    };
+    connect(list, &QListWidget::itemClicked, popup, toggleTag);
     connect(add, &QToolButton::clicked, popup, [=] {
         const QString candidate = search->text().trimmed();
         if (candidate.isEmpty() || containsTag(candidate)) {
@@ -3793,11 +3794,24 @@ void MainWindow::editRegisterTags(const QModelIndex& index)
         search->clear();
         commit();
     });
-    connect(search, &QLineEdit::returnPressed, popup, [add] {
-        if (add->isEnabled()) {
-            add->click();
-        }
-    });
+    connect(search, &QLineEdit::returnPressed, popup,
+            [search, add, list, toggleTag] {
+                if (add->isEnabled()) {
+                    add->click();
+                    return;
+                }
+                const QString candidate = search->text().trimmed();
+                if (candidate.isEmpty()) {
+                    return;
+                }
+                for (int itemIndex = 0; itemIndex < list->count(); ++itemIndex) {
+                    auto* current = list->item(itemIndex);
+                    if (current->text().compare(candidate, Qt::CaseInsensitive) == 0) {
+                        toggleTag(current);
+                        return;
+                    }
+                }
+            });
 
     popup->show();
     search->setFocus();
