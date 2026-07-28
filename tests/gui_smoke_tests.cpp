@@ -85,6 +85,7 @@ private slots:
     void navigatesFieldProblemsAndFallsBackForHiddenFields();
     void navigatesEnumValuesFromSearchAndProblems();
     void supportsTrailingRowsAndFieldMovement();
+    void keepsCompoundFieldsUsableDuringConversionAndDeletion();
     void dragsFieldsAndResolvesOverlaps();
     void cancelsInterruptedFieldDrag();
     void editsTagsAndAccessFromDoubleClick();
@@ -2344,24 +2345,16 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
             return triggered;
         };
 
-    QString memberMenuFailure;
-    const bool memberActionTriggered =
-        addMemberThroughContextMenu(parentFieldId, memberMenuFailure);
-    QVERIFY2(memberMenuFailure.isEmpty(), qPrintable(memberMenuFailure));
-    QVERIFY(memberActionTriggered);
     QTRY_COMPARE_WITH_TIMEOUT(fields->model()->rowCount(), 3, 2000);
-    QTRY_VERIFY_WITH_TIMEOUT(visibleFieldEditor() != nullptr, 2000);
-    auto* memberNameEditor = visibleFieldEditor();
-    QCOMPARE(memberNameEditor->text(), QStringLiteral("NEW_MEMBER"));
     const QString memberFieldId =
-        fields->currentIndex().data(Qt::UserRole + 1).toString();
+        fields->model()->index(1, 0).data(Qt::UserRole + 1).toString();
     QVERIFY(!memberFieldId.isEmpty());
     QVERIFY(memberFieldId != parentFieldId);
-    QTest::keyClick(memberNameEditor, Qt::Key_Escape);
-    QCoreApplication::processEvents();
     QCOMPARE(fields->model()->index(1, 0).data().toString(),
              QStringLiteral("NEW_MEMBER"));
-    QCOMPARE(fields->currentIndex().data(Qt::UserRole + 1).toString(), memberFieldId);
+    QCOMPARE(fields->model()->index(1, 5).data().toString(),
+             QStringLiteral("bits"));
+    QVERIFY(visibleFieldEditor() == nullptr);
 
     const QModelIndex memberWidthIndex = fields->model()->index(1, 4);
     fields->scrollTo(memberWidthIndex);
@@ -2583,6 +2576,186 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     QVERIFY(!secondFieldId.isEmpty());
     QTest::keyClick(secondFieldNameEditor, Qt::Key_Escape);
     QCoreApplication::processEvents();
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::keepsCompoundFieldsUsableDuringConversionAndDeletion()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+
+    auto* controller = window.findChild<ProjectController*>();
+    auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* fields = window.findChild<QTableView*>(QStringLiteral("fieldView"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Widen scalar Field fixture"),
+        [](regmap::Workspace& workspace) {
+            if (auto* field = regmap::findField(workspace, "field-ready")) {
+                field->msb = 3;
+                field->type = regmap::FieldType::bits;
+            }
+        }));
+
+    Q_EMIT registers->clicked(registers->model()->index(0, 5));
+    QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->rowCount(), 2, 2000);
+    const std::size_t initialUndoDepth = controller->undoDepth();
+
+    QVERIFY(fields->model()->setData(fields->model()->index(0, 5),
+                                     QStringLiteral("field")));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findField(*controller->workspace(), "field-ready") != nullptr &&
+            regmap::findField(*controller->workspace(), "field-ready")->members.size() == 1,
+        2000);
+    const auto* compound =
+        regmap::findField(*controller->workspace(), "field-ready");
+    QVERIFY(compound != nullptr);
+    QCOMPARE(compound->type, regmap::FieldType::structure);
+    QCOMPARE(compound->softwareAccess, regmap::AccessMode::none);
+    QCOMPARE(compound->hardwareAccess, regmap::AccessMode::none);
+    const std::string firstMemberId = compound->members.front().id;
+    QVERIFY(!firstMemberId.empty());
+    QCOMPARE(QString::fromStdString(compound->members.front().name),
+             QStringLiteral("NEW_MEMBER"));
+    QCOMPARE(compound->members.front().lsb, 0U);
+    QCOMPARE(compound->members.front().msb, 0U);
+    QCOMPARE(compound->members.front().softwareAccess,
+             regmap::AccessMode::readOnly);
+    QCOMPARE(compound->members.front().hardwareAccess,
+             regmap::AccessMode::writeOnly);
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+    QCOMPARE(controller->undoDepth(), initialUndoDepth + 1);
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->rowCount(), 3, 2000);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("NEW_MEMBER created")));
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("Ctrl+Z")));
+
+    const auto findAction = [&window](QKeySequence::StandardKey key) -> QAction* {
+        const auto actions = window.findChildren<QAction*>();
+        const auto found = std::ranges::find_if(actions, [key](const QAction* action) {
+            return action->shortcut().matches(QKeySequence(key)) ==
+                   QKeySequence::ExactMatch;
+        });
+        return found == actions.end() ? nullptr : *found;
+    };
+    auto* undo = findAction(QKeySequence::Undo);
+    auto* redo = findAction(QKeySequence::Redo);
+    QVERIFY(undo != nullptr);
+    QVERIFY(redo != nullptr);
+    undo->trigger();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findField(*controller->workspace(), "field-ready") != nullptr &&
+            regmap::findField(*controller->workspace(), "field-ready")->type ==
+                regmap::FieldType::bits &&
+            regmap::findField(*controller->workspace(), "field-ready")->members.empty(),
+        2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+    redo->trigger();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findField(*controller->workspace(), firstMemberId) != nullptr, 2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth + 1);
+
+    const auto rowForId = [fields](std::string_view id) {
+        for (int row = 0; row < fields->model()->rowCount(); ++row) {
+            if (fields->model()
+                    ->index(row, 0)
+                    .data(Qt::UserRole + 1)
+                    .toString()
+                    .toStdString() == id) {
+                return row;
+            }
+        }
+        return -1;
+    };
+    int firstMemberRow = rowForId(firstMemberId);
+    QVERIFY(firstMemberRow >= 0);
+    fields->setCurrentIndex(fields->model()->index(firstMemberRow, 0));
+    fields->setFocus(Qt::OtherFocusReason);
+    window.statusBar()->clearMessage();
+    QTest::keyClick(fields, Qt::Key_Delete);
+    QCoreApplication::processEvents();
+    QVERIFY(regmap::findField(*controller->workspace(), firstMemberId) != nullptr);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth + 1);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("final Member")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("add another Member")));
+
+    const int parentRow = rowForId("field-ready");
+    QVERIFY(parentRow >= 0);
+    fields->setCurrentIndex(fields->model()->index(parentRow, 0));
+    bool addMemberTriggered = false;
+    QString addMemberFailure;
+    QTimer::singleShot(0, &window, [&] {
+        auto* action =
+            window.findChild<QAction*>(QStringLiteral("addMemberFieldAction"));
+        auto* menu =
+            action == nullptr ? qobject_cast<QMenu*>(QApplication::activePopupWidget())
+                              : qobject_cast<QMenu*>(action->parent());
+        if (menu == nullptr || action == nullptr || !action->isEnabled()) {
+            addMemberFailure = QStringLiteral("Add Member action is unavailable");
+            if (menu != nullptr) {
+                menu->close();
+            }
+            return;
+        }
+        addMemberTriggered = true;
+        QTest::mouseClick(menu, Qt::LeftButton, Qt::NoModifier,
+                          menu->actionGeometry(action).center());
+    });
+    const QModelIndex parentIndex = fields->model()->index(parentRow, 0);
+    const QPoint position = fields->visualRect(parentIndex).center();
+    QContextMenuEvent contextEvent(
+        QContextMenuEvent::Mouse, position,
+        fields->viewport()->mapToGlobal(position));
+    QCoreApplication::sendEvent(fields->viewport(), &contextEvent);
+    QVERIFY2(addMemberFailure.isEmpty(), qPrintable(addMemberFailure));
+    QVERIFY(addMemberTriggered);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findField(*controller->workspace(), "field-ready")->members.size() == 2,
+        2000);
+    const std::string secondMemberId =
+        regmap::findField(*controller->workspace(), "field-ready")->members.back().id;
+    QTest::keyClick(fields, Qt::Key_Escape);
+    QCoreApplication::processEvents();
+
+    firstMemberRow = rowForId(firstMemberId);
+    QVERIFY(firstMemberRow >= 0);
+    fields->setCurrentIndex(fields->model()->index(firstMemberRow, 0));
+    QCOMPARE(fields->currentIndex().data(Qt::UserRole + 1).toString(),
+             QString::fromStdString(firstMemberId));
+    window.activateWindow();
+    fields->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
+    const auto actions = window.findChildren<QAction*>();
+    const auto deleteAction =
+        std::ranges::find_if(actions, [](const QAction* action) {
+            return action->shortcut().matches(QKeySequence::Delete) ==
+                   QKeySequence::ExactMatch;
+        });
+    QVERIFY(deleteAction != actions.end());
+    window.statusBar()->clearMessage();
+    (*deleteAction)->trigger();
+    QTest::qWait(50);
+    QVERIFY2(regmap::findField(*controller->workspace(), firstMemberId) == nullptr,
+             qPrintable(window.statusBar()->currentMessage()));
+    QVERIFY(regmap::findField(*controller->workspace(), secondMemberId) != nullptr);
+    QCOMPARE(regmap::findField(*controller->workspace(), "field-ready")->members.size(),
+             1U);
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
 
     makeGeneratedFilesWritable(directory.path());
 }

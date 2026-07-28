@@ -1186,6 +1186,37 @@ fieldSiblings(const regmap::Workspace& workspace, std::string_view fieldId)
     return nullptr;
 }
 
+[[nodiscard]] const regmap::Field*
+parentFieldOf(const std::vector<regmap::Field>& fields, std::string_view fieldId)
+{
+    for (const auto& field : fields) {
+        if (std::ranges::any_of(
+                field.members,
+                [&](const regmap::Field& member) { return member.id == fieldId; })) {
+            return &field;
+        }
+        if (const auto* parent = parentFieldOf(field.members, fieldId)) {
+            return parent;
+        }
+    }
+    return nullptr;
+}
+
+[[nodiscard]] const regmap::Field*
+parentFieldOf(const regmap::Workspace& workspace, std::string_view fieldId)
+{
+    for (const auto& page : workspace.addressSpaces) {
+        for (const auto& block : page.blocks) {
+            for (const auto& reg : block.registers) {
+                if (const auto* parent = parentFieldOf(reg.fields, fieldId)) {
+                    return parent;
+                }
+            }
+        }
+    }
+    return nullptr;
+}
+
 [[nodiscard]] const std::vector<regmap::Register>*
 registerSiblings(const regmap::Workspace& workspace, std::string_view registerId)
 {
@@ -3664,6 +3695,34 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                 currentField != nullptr && !enumerationLike && !currentField->enumValues.empty();
             const bool clearsRange = currentField != nullptr && !numeric &&
                                      (currentField->minimumValue || currentField->maximumValue);
+            std::optional<regmap::Field> defaultMember;
+            if (*parsed == regmap::FieldType::structure && currentField != nullptr &&
+                owner != nullptr && currentField->members.empty()) {
+                regmap::Field member;
+                member.id = regmap::makeStableObjectId(*workspace, "field");
+                member.name = uniqueDefaultName(currentField->members, "NEW_MEMBER");
+                member.msb = 0;
+                member.lsb = 0;
+                member.type = regmap::FieldType::bits;
+                member.softwareAccess = currentField->softwareAccess;
+                member.hardwareAccess = currentField->hardwareAccess;
+                if (member.softwareAccess == regmap::AccessMode::none &&
+                    member.hardwareAccess == regmap::AccessMode::none) {
+                    member.softwareAccess = owner->access;
+                }
+                member.readSideEffect = currentField->readSideEffect;
+                member.writeSideEffect = currentField->writeSideEffect;
+                if (currentField->resetValue) {
+                    member.resetValue = currentField->resetValue->slice(0, 1);
+                } else if (owner->resetValue) {
+                    const auto absoluteLsb =
+                        fieldAbsoluteLsb(owner->fields, objectId);
+                    if (absoluteLsb) {
+                        member.resetValue = owner->resetValue->slice(*absoluteLsb, 1);
+                    }
+                }
+                defaultMember = std::move(member);
+            }
             const regmap::WorkspaceStore::Mutation mutation =
                 [=](regmap::Workspace& candidate) {
                 if (auto* field = regmap::findField(candidate, objectId)) {
@@ -3686,6 +3745,9 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                         field->minimumValue.reset();
                         field->maximumValue.reset();
                     }
+                    if (defaultMember && field->members.empty()) {
+                        field->members.push_back(*defaultMember);
+                    }
                     if (auto* reg = findRegisterContainingField(candidate, objectId)) {
                         refreshRegisterFieldResets(*reg);
                     }
@@ -3697,12 +3759,25 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                         "a Type whose width preserves a valid, non-overlapping Field layout"));
             }
             const PropertyEditResult result = commit(mutation);
-            if (result.status == PropertyEditStatus::changed &&
-                (clearsEnumValues || clearsRange) && reportFeedback) {
-                statusBar()->showMessage(
-                    QStringLiteral(
-                        "Type changed · incompatible Enum/Range data cleared · Ctrl+Z to restore"),
-                    6000);
+            if (result.status == PropertyEditStatus::changed && reportFeedback) {
+                if (defaultMember && (clearsEnumValues || clearsRange)) {
+                    statusBar()->showMessage(
+                        QStringLiteral(
+                            "Type changed · NEW_MEMBER created · incompatible Enum/Range "
+                            "data cleared · Ctrl+Z to restore"),
+                        6000);
+                } else if (defaultMember) {
+                    statusBar()->showMessage(
+                        QStringLiteral(
+                            "Type changed · NEW_MEMBER created · Ctrl+Z to restore"),
+                        6000);
+                } else if (clearsEnumValues || clearsRange) {
+                    statusBar()->showMessage(
+                        QStringLiteral(
+                            "Type changed · incompatible Enum/Range data cleared · "
+                            "Ctrl+Z to restore"),
+                        6000);
+                }
             }
             return result;
         }
@@ -5556,6 +5631,18 @@ void MainWindow::deleteObject(const std::string& id, bool deletingEnumValue)
         label = QStringLiteral("register %1").arg(fromUtf8(reg->name));
     } else if (const auto* field = regmap::findField(*workspace, id)) {
         deletingField = true;
+        const auto* parent = parentFieldOf(*workspace, id);
+        if (parent != nullptr && parent->type == regmap::FieldType::structure &&
+            parent->members.size() == 1) {
+            statusBar()->showMessage(
+                QStringLiteral(
+                    "Cannot delete the final Member of compound Field %1; "
+                    "add another Member first (increase Width if needed), or delete "
+                    "the compound Field")
+                    .arg(fromUtf8(parent->name)),
+                7000);
+            return;
+        }
         label = QStringLiteral("field %1").arg(fromUtf8(field->name));
     } else if (const auto* enumValue = regmap::findEnumValue(*workspace, id)) {
         deletingEnumValue = true;

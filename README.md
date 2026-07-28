@@ -91,8 +91,12 @@ bit-field view. Every block shows its bit range above it; the moving block is pa
 its MSB/LSB update continuously. On overlap, Workbench asks whether to trim the moving field or
 the overlapping fields. Field types may be selected from the field context menu;
 `int8`, `uint32`, and the other `intN`/`uintN` forms set signedness and width together. Numeric
-ranges use **Minimum/Maximum**. A `field` type can contain member fields added from its context
-menu. Boolean fields retain the visible type `bool` and have implicit `FALSE=0`/`TRUE=1` values.
+ranges use **Minimum/Maximum**. Changing a scalar Field to `field` creates the first
+`NEW_MEMBER` in the same undoable edit, so the compound Field is immediately valid. Further
+members are added from the compound Field context menu. The final Member cannot be deleted
+until another Member exists; Workbench reports how to recover instead of leaving an invalid
+compound Field. Boolean fields retain the visible type `bool` and have implicit
+`FALSE=0`/`TRUE=1` values.
 Register types use the same value-type vocabulary. A register's **Range** cell uses
 `minimum .. maximum`; **Initial** is independent of **Reset**. For `enum` and `bool` registers,
 enum values for the selected register are edited in the same table below the field table.
