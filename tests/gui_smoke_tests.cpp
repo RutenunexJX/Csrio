@@ -87,6 +87,7 @@ private slots:
     void dragsFieldsAndResolvesOverlaps();
     void cancelsInterruptedFieldDrag();
     void editsTagsAndAccessFromDoubleClick();
+    void editsFieldAccessFromConstrainedChoices();
     void closesTagPopupWhenFilteredRegisterDisappears();
     void insertsRegisterBetweenRows();
     void showsUnifiedSyncStateAndGeneratedResults();
@@ -2878,6 +2879,78 @@ void GuiSmokeTests::editsTagsAndAccessFromDoubleClick()
     QTest::keyClick(access, Qt::Key_Return);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 9).data().toString(),
                               QStringLiteral("RO"), 2000);
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::editsFieldAccessFromConstrainedChoices()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+
+    auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* fields = window.findChild<QTableView*>(QStringLiteral("fieldView"));
+    auto* controller = window.findChild<ProjectController*>();
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+    QVERIFY(controller != nullptr);
+
+    Q_EMIT registers->clicked(registers->model()->index(0, 5));
+    QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
+    const QModelIndex softwareAccess = fields->model()->index(0, 8);
+    QCOMPARE(softwareAccess.data().toString(), QStringLiteral("RO"));
+
+    fields->scrollTo(softwareAccess);
+    QTest::mouseClick(fields->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      fields->visualRect(softwareAccess).center());
+    QCOMPARE(fields->currentIndex(), softwareAccess);
+    fields->setFocus(Qt::OtherFocusReason);
+    QTest::keyClick(fields, Qt::Key_C, Qt::ControlModifier);
+    QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("RO"));
+
+    QTest::mouseDClick(fields->viewport(), Qt::LeftButton, Qt::NoModifier,
+                       fields->visualRect(softwareAccess).center());
+    const auto visibleAccessEditor = [fields]() -> QComboBox* {
+        for (auto* editor :
+             fields->findChildren<QComboBox*>(QStringLiteral("fieldAccessEditor"))) {
+            if (editor->isVisible()) {
+                return editor;
+            }
+        }
+        return nullptr;
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(visibleAccessEditor() != nullptr, 2000);
+    auto* editor = visibleAccessEditor();
+    QStringList choices;
+    for (int index = 0; index < editor->count(); ++index) {
+        choices.push_back(editor->itemText(index));
+    }
+    QCOMPARE(choices, QStringList({QStringLiteral("NONE"), QStringLiteral("RO"),
+                                   QStringLiteral("WO"), QStringLiteral("RW")}));
+    QVERIFY(!editor->isEditable());
+
+    const std::size_t undoDepth = controller->undoDepth();
+    editor->setCurrentText(QStringLiteral("RW"));
+    Q_EMIT editor->activated(editor->currentIndex());
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(0, 8).data().toString(),
+                              QStringLiteral("RW"), 2000);
+    QCOMPARE(regmap::findField(*controller->workspace(), "field-ready")->softwareAccess,
+             regmap::AccessMode::readWrite);
+    QCOMPARE(controller->undoDepth(), undoDepth + 1);
+
+    fields->setFocus(Qt::OtherFocusReason);
+    QTest::keyClick(fields, Qt::Key_Z, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(0, 8).data().toString(),
+                              QStringLiteral("RO"), 2000);
+    QCOMPARE(controller->undoDepth(), undoDepth);
 
     makeGeneratedFilesWritable(directory.path());
 }

@@ -455,6 +455,62 @@ public:
     }
 };
 
+class AccessItemDelegate final : public QStyledItemDelegate {
+public:
+    explicit AccessItemDelegate(QObject* parent = nullptr)
+        : QStyledItemDelegate(parent)
+    {
+    }
+
+    [[nodiscard]] QWidget* createEditor(
+        QWidget* parent, const QStyleOptionViewItem& option,
+        const QModelIndex& index) const override
+    {
+        Q_UNUSED(option)
+        Q_UNUSED(index)
+        auto* editor = new QComboBox(parent);
+        editor->setObjectName(QStringLiteral("fieldAccessEditor"));
+        editor->setEditable(false);
+        editor->addItems({QStringLiteral("NONE"), QStringLiteral("RO"),
+                          QStringLiteral("WO"), QStringLiteral("RW")});
+        auto* delegate = const_cast<AccessItemDelegate*>(this);
+        connect(editor, QOverload<int>::of(&QComboBox::activated), editor,
+                [delegate, editor] {
+                    Q_EMIT delegate->commitData(editor);
+                    Q_EMIT delegate->closeEditor(editor);
+                });
+        return editor;
+    }
+
+    void setEditorData(QWidget* editor, const QModelIndex& index) const override
+    {
+        auto* combo = qobject_cast<QComboBox*>(editor);
+        if (combo == nullptr) {
+            return;
+        }
+        const int current = combo->findText(index.data().toString(), Qt::MatchFixedString);
+        if (current >= 0) {
+            combo->setCurrentIndex(current);
+        }
+    }
+
+    void setModelData(QWidget* editor, QAbstractItemModel* model,
+                      const QModelIndex& index) const override
+    {
+        const auto* combo = qobject_cast<QComboBox*>(editor);
+        if (combo != nullptr) {
+            model->setData(index, combo->currentText());
+        }
+    }
+
+    void updateEditorGeometry(QWidget* editor, const QStyleOptionViewItem& option,
+                              const QModelIndex& index) const override
+    {
+        Q_UNUSED(index)
+        editor->setGeometry(option.rect);
+    }
+};
+
 class FieldsButtonDelegate final : public QStyledItemDelegate {
 public:
     FieldsButtonDelegate(int actionRole, int activeRole, QObject* parent = nullptr)
@@ -1157,6 +1213,10 @@ void MainWindow::buildUi()
     fieldView_->setObjectName(QStringLiteral("fieldView"));
     fieldView_->setModel(fieldModel_);
     configureTable(fieldView_);
+    fieldView_->setItemDelegateForColumn(
+        fieldSoftwareAccessColumn, new AccessItemDelegate(fieldView_));
+    fieldView_->setItemDelegateForColumn(
+        fieldHardwareAccessColumn, new AccessItemDelegate(fieldView_));
     fieldView_->setEditTriggers(
         QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
     fieldView_->setContextMenuPolicy(Qt::CustomContextMenu);
