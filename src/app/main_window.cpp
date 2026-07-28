@@ -5771,6 +5771,7 @@ void MainWindow::showRegisterContextMenu(const QPoint& position)
     QAction* editTags = menu.addAction(QStringLiteral("编辑标签…"));
     menu.addSeparator();
     QAction* reserve = menu.addAction(QStringLiteral("设为 Reserved（保留偏移）"));
+    reserve->setObjectName(QStringLiteral("reserveRegisterAction"));
     QFont reserveFont = reserve->font();
     reserveFont.setWeight(QFont::DemiBold);
     reserve->setFont(reserveFont);
@@ -5851,6 +5852,69 @@ void MainWindow::convertSelectedRegisterToReserved()
         (QStringLiteral("RESERVED_%1").arg(hex(reg->offset).mid(2).toUpper()))
             .toUtf8()
             .toStdString();
+    const std::size_t fieldCount = fieldTreeSize(reg->fields);
+    const std::size_t enumValueCount = reg->enumValues.size();
+    const std::size_t rangeBoundCount =
+        static_cast<std::size_t>(reg->minimumValue.has_value()) +
+        reg->maximumValue.has_value();
+    const std::size_t nonZeroValueCount =
+        static_cast<std::size_t>(
+            reg->initialValue.has_value() && !reg->initialValue->isZero()) +
+        static_cast<std::size_t>(
+            reg->resetValue.has_value() && !reg->resetValue->isZero());
+    const bool replacesDescription =
+        !reg->description.empty() &&
+        reg->description != "Reserved address slot.";
+    QStringList impacts;
+    if (fieldCount != 0) {
+        impacts << (
+            fieldCount == 1
+                ? QStringLiteral("1 Field and its definition")
+                : QStringLiteral("%1 Fields/Members and their definitions")
+                      .arg(fieldCount));
+    }
+    if (enumValueCount != 0) {
+        impacts << (
+            enumValueCount == 1
+                ? QStringLiteral("1 Register Enum value")
+                : QStringLiteral("%1 Register Enum values").arg(enumValueCount));
+    }
+    if (rangeBoundCount != 0) {
+        impacts << (
+            rangeBoundCount == 1
+                ? QStringLiteral("1 Range bound")
+                : QStringLiteral("%1 Range bounds").arg(rangeBoundCount));
+    }
+    if (nonZeroValueCount != 0) {
+        impacts << (
+            nonZeroValueCount == 1
+                ? QStringLiteral("1 non-zero Initial/Reset value")
+                : QStringLiteral("%1 non-zero Initial/Reset values")
+                      .arg(nonZeroValueCount));
+    }
+    if (replacesDescription) {
+        impacts << QStringLiteral("the Register description");
+    }
+    if (!impacts.empty()) {
+        const auto answer = QMessageBox::warning(
+            this, QStringLiteral("Set Register to Reserved"),
+            QStringLiteral(
+                "Set Register %1 at offset %2 to Reserved?\n\n"
+                "The offset and tags will be kept. The name changes to %3; "
+                "Type, Access, Initial, Reset, and Description use Reserved defaults.\n\n"
+                "This removes or replaces %4.\n\n"
+                "Ctrl+Z can restore the complete Register definition.")
+                .arg(fromUtf8(reg->name), hex(reg->offset),
+                     fromUtf8(reservedName), impacts.join(QStringLiteral(", "))),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (answer != QMessageBox::Yes) {
+            statusBar()->showMessage(
+                QStringLiteral("Reserved conversion cancelled · %1 kept")
+                    .arg(fromUtf8(reg->name)),
+                6000);
+            return;
+        }
+    }
     if (controller_.editWorkspace(QStringLiteral("Reserve register address"),
                                   [registerId, reservedName](regmap::Workspace& candidate) {
                                       if (auto* target =
@@ -5873,8 +5937,15 @@ void MainWindow::convertSelectedRegisterToReserved()
         selectedRegisterId_ = registerId;
         refreshProject();
         selectRegister(registerId);
-        statusBar()->showMessage(QStringLiteral("Register set to Reserved · Ctrl+Z to restore"),
-                                 5000);
+        const QString impactFeedback =
+            impacts.empty()
+                ? QString{}
+                : QStringLiteral(" · %1 removed or normalized")
+                      .arg(impacts.join(QStringLiteral(", ")));
+        statusBar()->showMessage(
+            QStringLiteral("Register set to Reserved%1 · Ctrl+Z to restore")
+                .arg(impactFeedback),
+            6000);
     }
 }
 

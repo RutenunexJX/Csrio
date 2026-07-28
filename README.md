@@ -29,6 +29,9 @@ Workspace -> Page (Address Space) -> Register Block -> Register -> Field -> Enum
 - Trailing `+` rows for register/field creation; page and block base addresses appear once in
   the context bar above the register table and remain directly editable.
 - Reserved address slots and delete-with-offset-shift operations from the register context menu.
+  Converting a populated Register to Reserved first reports the Fields, Enum values, Range
+  bounds, non-zero Initial/Reset values, and Description that will be removed or replaced; the
+  confirmation defaults to cancel and a confirmed conversion remains one undoable edit.
 - Multi-tag register assignment with existing-tag selection, new-tag creation, and tag filtering.
 - Single-click cell selection and double-click/F2 editing for register and field properties,
   including register type, value range, initial value, and reset value.

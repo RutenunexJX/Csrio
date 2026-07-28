@@ -104,6 +104,7 @@ private slots:
     void rejectsOutOfRangeNumericEdits();
     void rejectsInvalidNumericRangesDuringEditing();
     void protectsNumericRangesDuringShapeChanges();
+    void confirmsReservedConversionBeforeClearingContent();
     void rejectsAddressEditsThatIntroduceConflicts();
     void rejectsGeometryConflictsFromWidthAndTypeEdits();
     void synchronizesFieldResetEdits();
@@ -5535,6 +5536,250 @@ void GuiSmokeTests::protectsNumericRangesDuringShapeChanges()
             ->maximumValue,
         std::optional<std::string>{"100"});
     QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::confirmsReservedConversionBeforeClearingContent()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest =
+        directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createTwoRegisterProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+
+    auto* controller = window.findChild<ProjectController*>();
+    auto* registers =
+        window.findChild<QTableView*>(QStringLiteral("registerView"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Configure Reserved conversion fixture"),
+        [](regmap::Workspace& workspace) {
+            auto* status = regmap::findRegister(workspace, "reg-status");
+            auto* ready = regmap::findField(workspace, "field-ready");
+            QVERIFY(status != nullptr);
+            QVERIFY(ready != nullptr);
+            status->description = "Status register definition.";
+            status->initialValue = regmap::UnsignedValue(1);
+            status->resetValue = regmap::UnsignedValue(1);
+            ready->resetValue = regmap::UnsignedValue(1);
+        }));
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+
+    const auto registerRowForId = [registers](const QString& id) {
+        for (int row = 0; row < registers->model()->rowCount(); ++row) {
+            if (registers->model()
+                    ->index(row, 0)
+                    .data(Qt::UserRole + 1)
+                    .toString() == id) {
+                return row;
+            }
+        }
+        return -1;
+    };
+
+    struct ReserveInvocation {
+        bool actionTriggered{false};
+        bool dialogSeen{false};
+        QString failure;
+    };
+    const auto invokeReserve =
+        [&](const QString& registerId,
+            QMessageBox::StandardButton response,
+            bool expectDialog) {
+            ReserveInvocation result;
+            const int row = registerRowForId(registerId);
+            if (row < 0) {
+                result.failure = QStringLiteral("Register row was not found");
+                return result;
+            }
+            const QModelIndex index = registers->model()->index(row, 0);
+            registers->setCurrentIndex(index);
+            registers->scrollTo(index);
+            QCoreApplication::processEvents();
+            QTimer::singleShot(0, &window, [&] {
+                auto* action = window.findChild<QAction*>(
+                    QStringLiteral("reserveRegisterAction"));
+                auto* menu =
+                    action == nullptr
+                        ? qobject_cast<QMenu*>(
+                              QApplication::activePopupWidget())
+                        : qobject_cast<QMenu*>(action->parent());
+                if (menu == nullptr || action == nullptr ||
+                    !action->isEnabled()) {
+                    result.failure =
+                        QStringLiteral("Reserved action is unavailable");
+                    if (menu != nullptr) {
+                        menu->close();
+                    }
+                    return;
+                }
+                result.actionTriggered = true;
+                QTimer::singleShot(0, &window, [&] {
+                    auto* dialog = qobject_cast<QMessageBox*>(
+                        QApplication::activeModalWidget());
+                    if (dialog == nullptr) {
+                        if (expectDialog) {
+                            result.failure =
+                                QStringLiteral(
+                                    "Reserved impact confirmation did not open");
+                        }
+                        return;
+                    }
+                    result.dialogSeen = true;
+                    if (!expectDialog) {
+                        result.failure =
+                            QStringLiteral(
+                                "Empty Register unexpectedly required confirmation");
+                        dialog->reject();
+                        return;
+                    }
+                    if (dialog->windowTitle() !=
+                            QStringLiteral("Set Register to Reserved") ||
+                        !dialog->text().contains(QStringLiteral("STATUS")) ||
+                        !dialog->text().contains(QStringLiteral("offset 0x0")) ||
+                        !dialog->text().contains(
+                            QStringLiteral("RESERVED_0")) ||
+                        !dialog->text().contains(QStringLiteral("1 Field")) ||
+                        !dialog->text().contains(
+                            QStringLiteral(
+                                "2 non-zero Initial/Reset values")) ||
+                        !dialog->text().contains(
+                            QStringLiteral("Register description")) ||
+                        !dialog->text().contains(
+                            QStringLiteral("offset and tags will be kept")) ||
+                        !dialog->text().contains(QStringLiteral("Ctrl+Z")) ||
+                        dialog->defaultButton() !=
+                            dialog->button(QMessageBox::No)) {
+                        result.failure =
+                            QStringLiteral(
+                                "Reserved confirmation lacks impact or recovery details");
+                    }
+                    if (auto* button = dialog->button(response)) {
+                        QTest::mouseClick(button, Qt::LeftButton);
+                    } else {
+                        result.failure =
+                            QStringLiteral(
+                                "Requested Reserved confirmation button is unavailable");
+                        dialog->reject();
+                    }
+                });
+                QTest::mouseClick(
+                    menu, Qt::LeftButton, Qt::NoModifier,
+                    menu->actionGeometry(action).center());
+            });
+            const QPoint position =
+                registers->visualRect(index).center();
+            QContextMenuEvent event(
+                QContextMenuEvent::Mouse, position,
+                registers->viewport()->mapToGlobal(position));
+            QCoreApplication::sendEvent(registers->viewport(), &event);
+            QCoreApplication::processEvents();
+            return result;
+        };
+
+    const std::size_t initialUndoDepth = controller->undoDepth();
+    window.statusBar()->clearMessage();
+    const ReserveInvocation cancelled =
+        invokeReserve(QStringLiteral("reg-status"), QMessageBox::No, true);
+    QVERIFY2(cancelled.failure.isEmpty(), qPrintable(cancelled.failure));
+    QVERIFY(cancelled.actionTriggered);
+    QVERIFY(cancelled.dialogSeen);
+    const auto* retained =
+        regmap::findRegister(*controller->workspace(), "reg-status");
+    QVERIFY(retained != nullptr);
+    QCOMPARE(retained->name, std::string("STATUS"));
+    QCOMPARE(retained->type, regmap::FieldType::structure);
+    QCOMPARE(retained->fields.size(), std::size_t{1});
+    QCOMPARE(retained->description,
+             std::string("Status register definition."));
+    QVERIFY(retained->initialValue ==
+            std::optional(regmap::UnsignedValue(1)));
+    QVERIFY(retained->resetValue ==
+            std::optional(regmap::UnsignedValue(1)));
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("conversion cancelled")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("STATUS kept")));
+
+    window.statusBar()->clearMessage();
+    const ReserveInvocation confirmed =
+        invokeReserve(QStringLiteral("reg-status"), QMessageBox::Yes, true);
+    QVERIFY2(confirmed.failure.isEmpty(), qPrintable(confirmed.failure));
+    QVERIFY(confirmed.actionTriggered);
+    QVERIFY(confirmed.dialogSeen);
+    const auto* reserved =
+        regmap::findRegister(*controller->workspace(), "reg-status");
+    QVERIFY(reserved != nullptr);
+    QCOMPARE(reserved->name, std::string("RESERVED_0"));
+    QVERIFY(reserved->reserved);
+    QCOMPARE(reserved->type, regmap::FieldType::reserved);
+    QCOMPARE(reserved->access, regmap::AccessMode::none);
+    QVERIFY(reserved->fields.empty());
+    QVERIFY(reserved->initialValue ==
+            std::optional(regmap::UnsignedValue(0)));
+    QVERIFY(reserved->resetValue ==
+            std::optional(regmap::UnsignedValue(0)));
+    QCOMPARE(reserved->description,
+             std::string("Reserved address slot."));
+    QCOMPARE(reserved->tags, std::vector<std::string>{"existing"});
+    QCOMPARE(controller->undoDepth(), initialUndoDepth + 1);
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Register set to Reserved")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("1 Field")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Ctrl+Z")));
+
+    controller->undo();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findRegister(*controller->workspace(), "reg-status")->type ==
+            regmap::FieldType::structure,
+        2000);
+    const auto* restored =
+        regmap::findRegister(*controller->workspace(), "reg-status");
+    QVERIFY(restored != nullptr);
+    QCOMPARE(restored->name, std::string("STATUS"));
+    QCOMPARE(restored->fields.size(), std::size_t{1});
+    QCOMPARE(restored->description,
+             std::string("Status register definition."));
+    QVERIFY(restored->initialValue ==
+            std::optional(regmap::UnsignedValue(1)));
+    QVERIFY(restored->resetValue ==
+            std::optional(regmap::UnsignedValue(1)));
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+
+    const std::size_t emptyUndoDepth = controller->undoDepth();
+    const ReserveInvocation empty =
+        invokeReserve(QStringLiteral("reg-control"), QMessageBox::No, false);
+    QVERIFY2(empty.failure.isEmpty(), qPrintable(empty.failure));
+    QVERIFY(empty.actionTriggered);
+    QVERIFY(!empty.dialogSeen);
+    const auto* emptyReserved =
+        regmap::findRegister(*controller->workspace(), "reg-control");
+    QVERIFY(emptyReserved != nullptr);
+    QVERIFY(emptyReserved->reserved);
+    QCOMPARE(emptyReserved->name, std::string("RESERVED_4"));
+    QCOMPARE(emptyReserved->tags,
+             std::vector<std::string>{"control"});
+    QCOMPARE(controller->undoDepth(), emptyUndoDepth + 1);
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+    controller->undo();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !regmap::findRegister(*controller->workspace(), "reg-control")
+             ->reserved,
+        2000);
+    QCOMPARE(controller->undoDepth(), emptyUndoDepth);
 
     makeGeneratedFilesWritable(directory.path());
 }
