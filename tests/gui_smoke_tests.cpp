@@ -3886,6 +3886,47 @@ void GuiSmokeTests::protectsEnumContractsDuringEditing()
         }
         return -1;
     };
+    const auto invokeEnumDelete = [&window, enums](int row) {
+        QString failure;
+        bool triggered = false;
+        const QModelIndex index = enums->model()->index(row, 0);
+        enums->scrollTo(index);
+        QCoreApplication::processEvents();
+
+        QTimer::singleShot(0, &window, [&] {
+            auto* action =
+                window.findChild<QAction*>(QStringLiteral("deleteEnumValueAction"));
+            auto* menu =
+                action == nullptr ? qobject_cast<QMenu*>(QApplication::activePopupWidget())
+                                  : qobject_cast<QMenu*>(action->parent());
+            if (menu == nullptr) {
+                failure = QStringLiteral("Enum context menu did not open");
+                return;
+            }
+            if (menu->objectName() != QStringLiteral("enumContextMenu")) {
+                failure = QStringLiteral("Unexpected enum context menu");
+                menu->close();
+                return;
+            }
+            if (action == nullptr || !action->isEnabled()) {
+                failure = QStringLiteral("Delete Enum Value action is unavailable");
+                menu->close();
+                return;
+            }
+            triggered = true;
+            QTest::mouseClick(menu, Qt::LeftButton, Qt::NoModifier,
+                              menu->actionGeometry(action).center());
+        });
+        const QPoint position = enums->visualRect(index).center();
+        QContextMenuEvent event(
+            QContextMenuEvent::Mouse, position,
+            enums->viewport()->mapToGlobal(position));
+        QCoreApplication::sendEvent(enums->viewport(), &event);
+        if (!triggered && failure.isEmpty()) {
+            failure = QStringLiteral("Delete Enum Value action was not triggered");
+        }
+        return failure;
+    };
     int zeroRow = enumRow(QStringLiteral("enum-register-zero"));
     int threeRow = enumRow(QStringLiteral("enum-register-three"));
     QVERIFY(zeroRow >= 0);
@@ -3915,6 +3956,18 @@ void GuiSmokeTests::protectsEnumContractsDuringEditing()
     QVERIFY(window.statusBar()->currentMessage().contains(
         QStringLiteral("unique Enum value")));
 
+    const int registerEnumRows = enums->model()->rowCount();
+    window.statusBar()->clearMessage();
+    const QString registerDeleteFailure = invokeEnumDelete(zeroRow);
+    QVERIFY2(registerDeleteFailure.isEmpty(), qPrintable(registerDeleteFailure));
+    QTRY_COMPARE_WITH_TIMEOUT(enums->model()->rowCount(), registerEnumRows, 2000);
+    QVERIFY(enumRow(QStringLiteral("enum-register-zero")) >= 0);
+    QCOMPARE(controller->undoDepth(), registerEnumUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Cannot delete")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Initial/Reset")));
+
     zeroRow = enumRow(QStringLiteral("enum-register-zero"));
     QVERIFY(enums->model()->setData(enums->model()->index(zeroRow, 1),
                                     QStringLiteral("0x1")));
@@ -3931,7 +3984,7 @@ void GuiSmokeTests::protectsEnumContractsDuringEditing()
     QVERIFY(window.statusBar()->currentMessage().contains(
         QStringLiteral("Initial/Reset updated")));
 
-    QTest::keyClick(&window, Qt::Key_Z, Qt::ControlModifier);
+    controller->undo();
     QTRY_COMPARE_WITH_TIMEOUT(
         enums->model()->index(enumRow(QStringLiteral("enum-register-zero")), 1)
             .data()
@@ -3958,6 +4011,32 @@ void GuiSmokeTests::protectsEnumContractsDuringEditing()
     QCOMPARE(controller->undoDepth(), registerEnumUndoDepth);
     QVERIFY(window.statusBar()->currentMessage().contains(
         QStringLiteral("existing Enum value")));
+
+    threeRow = enumRow(QStringLiteral("enum-register-three"));
+    QVERIFY(threeRow >= 0);
+    window.statusBar()->clearMessage();
+    const QString unreferencedDeleteFailure = invokeEnumDelete(threeRow);
+    QVERIFY2(unreferencedDeleteFailure.isEmpty(),
+             qPrintable(unreferencedDeleteFailure));
+    QTRY_COMPARE_WITH_TIMEOUT(enums->model()->rowCount(), registerEnumRows - 1, 2000);
+    QVERIFY(enumRow(QStringLiteral("enum-register-three")) < 0);
+    QCOMPARE(controller->undoDepth(), registerEnumUndoDepth + 1);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Deleted enum value")));
+
+    zeroRow = enumRow(QStringLiteral("enum-register-zero"));
+    QVERIFY(zeroRow >= 0);
+    window.statusBar()->clearMessage();
+    const QString lastDeleteFailure = invokeEnumDelete(zeroRow);
+    QVERIFY2(lastDeleteFailure.isEmpty(), qPrintable(lastDeleteFailure));
+    QTRY_COMPARE_WITH_TIMEOUT(enums->model()->rowCount(), registerEnumRows - 1, 2000);
+    QVERIFY(enumRow(QStringLiteral("enum-register-zero")) >= 0);
+    QCOMPARE(controller->undoDepth(), registerEnumUndoDepth + 1);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("retain at least one value")));
+    controller->undo();
+    QTRY_COMPARE_WITH_TIMEOUT(enums->model()->rowCount(), registerEnumRows, 2000);
+    QCOMPARE(controller->undoDepth(), registerEnumUndoDepth);
 
     QVERIFY(controller->editWorkspace(
         QStringLiteral("Configure Field Enum fixture"),
@@ -3996,6 +4075,20 @@ void GuiSmokeTests::protectsEnumContractsDuringEditing()
     }
     QVERIFY(fieldRow >= 0);
     const std::size_t fieldEnumUndoDepth = controller->undoDepth();
+    zeroRow = enumRow(QStringLiteral("enum-field-zero"));
+    QVERIFY(zeroRow >= 0);
+    const int fieldEnumRows = enums->model()->rowCount();
+    window.statusBar()->clearMessage();
+    const QString fieldDeleteFailure = invokeEnumDelete(zeroRow);
+    QVERIFY2(fieldDeleteFailure.isEmpty(), qPrintable(fieldDeleteFailure));
+    QTRY_COMPARE_WITH_TIMEOUT(enums->model()->rowCount(), fieldEnumRows, 2000);
+    QVERIFY(enumRow(QStringLiteral("enum-field-zero")) >= 0);
+    QCOMPARE(controller->undoDepth(), fieldEnumUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Cannot delete")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Field Reset")));
+
     QVERIFY(fields->model()->setData(fields->model()->index(fieldRow, 10),
                                      QStringLiteral("0x1")));
     QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(fieldRow, 10).data().toString(),
@@ -4004,8 +4097,6 @@ void GuiSmokeTests::protectsEnumContractsDuringEditing()
     QVERIFY(window.statusBar()->currentMessage().contains(
         QStringLiteral("existing Enum value")));
 
-    zeroRow = enumRow(QStringLiteral("enum-field-zero"));
-    QVERIFY(zeroRow >= 0);
     QVERIFY(enums->model()->setData(enums->model()->index(zeroRow, 1),
                                     QStringLiteral("0x1")));
     QTRY_COMPARE_WITH_TIMEOUT(
@@ -4021,7 +4112,7 @@ void GuiSmokeTests::protectsEnumContractsDuringEditing()
     QVERIFY(window.statusBar()->currentMessage().contains(
         QStringLiteral("Field/Register Reset updated")));
 
-    QTest::keyClick(&window, Qt::Key_Z, Qt::ControlModifier);
+    controller->undo();
     QTRY_COMPARE_WITH_TIMEOUT(
         enums->model()->index(enumRow(QStringLiteral("enum-field-zero")), 1)
             .data()

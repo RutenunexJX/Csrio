@@ -857,6 +857,7 @@ struct EnumOwnerContext {
     const std::vector<regmap::EnumValue>* values;
     std::size_t width;
     regmap::ObjectId ownerId;
+    regmap::FieldType ownerType;
     bool registerOwner;
 };
 
@@ -870,7 +871,7 @@ enumOwnerContext(const std::vector<regmap::Field>& fields,
             })) {
             return EnumOwnerContext{&field.enumValues,
                                     static_cast<std::size_t>(field.width()),
-                                    field.id, false};
+                                    field.id, field.type, false};
         }
         if (auto context = enumOwnerContext(field.members, enumValueId)) {
             return context;
@@ -890,7 +891,7 @@ enumOwnerContext(const regmap::Workspace& workspace, std::string_view enumValueI
                     })) {
                     return EnumOwnerContext{&reg.enumValues,
                                             static_cast<std::size_t>(reg.width),
-                                            reg.id, true};
+                                            reg.id, reg.type, true};
                 }
                 if (auto context = enumOwnerContext(reg.fields, enumValueId)) {
                     return context;
@@ -1211,6 +1212,41 @@ void assignFieldReset(regmap::Workspace& workspace, std::string_view fieldId,
                    ->slice(static_cast<std::size_t>(*absoluteLsb),
                            static_cast<std::size_t>(field->width())) ==
                value;
+}
+
+enum class EnumDeleteBlock {
+    none,
+    referencedValue,
+    lastEnumerationValue,
+};
+
+[[nodiscard]] EnumDeleteBlock
+enumDeleteBlock(const regmap::Workspace& workspace,
+                const EnumOwnerContext& context,
+                const regmap::EnumValue& value)
+{
+    if (context.ownerType == regmap::FieldType::enumeration &&
+        context.values->size() == 1) {
+        return EnumDeleteBlock::lastEnumerationValue;
+    }
+    const bool enumerationLike =
+        context.ownerType == regmap::FieldType::enumeration ||
+        context.ownerType == regmap::FieldType::boolean;
+    if (!enumerationLike ||
+        !enumValueIsReferenced(workspace, context, value.value)) {
+        return EnumDeleteBlock::none;
+    }
+    const bool representedAfterDeletion =
+        std::ranges::any_of(
+            *context.values, [&](const regmap::EnumValue& candidate) {
+                return candidate.id != value.id && candidate.value == value.value;
+            });
+    if (representedAfterDeletion ||
+        (context.ownerType == regmap::FieldType::boolean &&
+         context.values->size() == 1)) {
+        return EnumDeleteBlock::none;
+    }
+    return EnumDeleteBlock::referencedValue;
 }
 
 [[nodiscard]] bool
@@ -1969,19 +2005,49 @@ void MainWindow::connectSignals()
         if (enumValue == nullptr) {
             return;
         }
+        const auto ownerContext = enumOwnerContext(*workspace, id);
+        const EnumDeleteBlock deleteBlock =
+            ownerContext ? enumDeleteBlock(*workspace, *ownerContext, *enumValue)
+                         : EnumDeleteBlock::none;
         const QString label = fromUtf8(enumValue->name);
         QMenu menu(this);
         menu.setObjectName(QStringLiteral("enumContextMenu"));
         QAction* remove = menu.addAction(QStringLiteral("Delete Enum Value"));
         remove->setObjectName(QStringLiteral("deleteEnumValueAction"));
-        if (menu.exec(enumView_->viewport()->mapToGlobal(position)) == remove &&
-            controller_.editWorkspace(QStringLiteral("Delete enum value"),
-                                      [id](regmap::Workspace& candidate) {
-                                          static_cast<void>(regmap::removeObject(candidate, id));
-                                      })) {
+        if (menu.exec(enumView_->viewport()->mapToGlobal(position)) != remove) {
+            return;
+        }
+        if (deleteBlock == EnumDeleteBlock::lastEnumerationValue) {
+            statusBar()->showMessage(
+                QStringLiteral(
+                    "Cannot delete %1: an Enumeration must retain at least one value. "
+                    "Change its Type instead.")
+                    .arg(label),
+                7000);
+            return;
+        }
+        if (deleteBlock == EnumDeleteBlock::referencedValue) {
+            statusBar()->showMessage(
+                (ownerContext->registerOwner
+                     ? QStringLiteral(
+                           "Cannot delete %1: this value is used by Register "
+                           "Initial/Reset. Change the reference first.")
+                     : QStringLiteral(
+                           "Cannot delete %1: this value is used by Field Reset. "
+                           "Change the reference first."))
+                    .arg(label),
+                7000);
+            return;
+        }
+        if (controller_.editWorkspace(
+                QStringLiteral("Delete enum value"),
+                [id](regmap::Workspace& candidate) {
+                    static_cast<void>(regmap::removeObject(candidate, id));
+                })) {
             refreshProject();
             statusBar()->showMessage(
-                QStringLiteral("Deleted enum value %1 · Ctrl+Z to restore").arg(label), 5000);
+                QStringLiteral("Deleted enum value %1 · Ctrl+Z to restore").arg(label),
+                5000);
         }
     });
     connect(hierarchyView_, &QWidget::customContextMenuRequested, this,
