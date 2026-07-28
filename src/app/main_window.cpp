@@ -2619,12 +2619,13 @@ const regmap::Field* MainWindow::findField(const regmap::Register& reg, const st
     return findFieldRecursive(reg.fields, id);
 }
 
-void MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& property,
-                                   const QString& value)
+MainWindow::PropertyEditResult
+MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& property,
+                              const QString& value, bool reportFeedback)
 {
     const regmap::Workspace* workspace = controller_.workspace();
     if (workspace == nullptr) {
-        return;
+        return {PropertyEditStatus::rejected, QStringLiteral("an open project")};
     }
     const std::string textValue = value.trimmed().toUtf8().toStdString();
     const auto parseUnsigned = [&]() -> std::optional<regmap::UnsignedValue> {
@@ -2641,46 +2642,52 @@ void MainWindow::applyPropertyEdit(const std::string& objectId, const std::strin
         }
         return static_cast<std::uint32_t>(*parsed);
     };
-    const auto reject = [this](const QString& expectation) {
-        statusBar()->showMessage(QStringLiteral("Edit rejected: expected %1").arg(expectation),
-                                 5000);
-        requestProjectRefresh();
-    };
     const QString description = QStringLiteral("Edit %1").arg(fromUtf8(property));
+    const auto commit =
+        [this, &description](const regmap::WorkspaceStore::Mutation& mutation) {
+            if (controller_.editWorkspace(description, mutation)) {
+                return PropertyEditResult{PropertyEditStatus::changed, {}};
+            }
+            return PropertyEditResult{PropertyEditStatus::unchanged, {}};
+        };
+    const auto reject = [this, reportFeedback](const QString& expectation) {
+        if (reportFeedback) {
+            statusBar()->showMessage(
+                QStringLiteral("Edit rejected: expected %1").arg(expectation), 5000);
+            requestProjectRefresh();
+        }
+        return PropertyEditResult{PropertyEditStatus::rejected, expectation};
+    };
 
     if (workspace->id == objectId && property == "name") {
-        controller_.editWorkspace(
-            description, [=](regmap::Workspace& candidate) { candidate.name = textValue; });
-        return;
+        return commit(
+            [=](regmap::Workspace& candidate) { candidate.name = textValue; });
     }
 
     if (regmap::findEnumValue(*workspace, objectId) != nullptr) {
         if (property == "name" || property == "description") {
-            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+            return commit([=](regmap::Workspace& candidate) {
                 if (auto* enumValue = regmap::findEnumValue(candidate, objectId)) {
                     (property == "name" ? enumValue->name : enumValue->description) = textValue;
                 }
             });
-            return;
         }
         if (property == "value") {
             const auto parsed = parseUnsigned();
             if (!parsed) {
-                reject(QStringLiteral("an unsigned integer"));
-                return;
+                return reject(QStringLiteral("an unsigned integer"));
             }
-            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+            return commit([=](regmap::Workspace& candidate) {
                 if (auto* enumValue = regmap::findEnumValue(candidate, objectId)) {
                     enumValue->value = *parsed;
                 }
             });
-            return;
         }
     }
 
     if (regmap::findField(*workspace, objectId) != nullptr) {
         if (property == "name" || property == "description") {
-            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+            return commit([=](regmap::Workspace& candidate) {
                 if (auto* field = regmap::findField(candidate, objectId)) {
                     if (property == "name") {
                         field->name = textValue;
@@ -2689,17 +2696,15 @@ void MainWindow::applyPropertyEdit(const std::string& objectId, const std::strin
                     }
                 }
             });
-            return;
         }
         if (property == "minimum" || property == "maximum") {
             const std::optional<std::string> range =
                 textValue.empty() ? std::nullopt : std::optional{textValue};
-            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+            return commit([=](regmap::Workspace& candidate) {
                 if (auto* field = regmap::findField(candidate, objectId)) {
                     (property == "minimum" ? field->minimumValue : field->maximumValue) = range;
                 }
             });
-            return;
         }
         if (property == "msb") {
             const auto parsed = parseUInt32();
@@ -2707,10 +2712,10 @@ void MainWindow::applyPropertyEdit(const std::string& objectId, const std::strin
             const auto* owner = findRegisterContainingField(*workspace, objectId);
             if (!parsed || current == nullptr || owner == nullptr || *parsed < current->lsb ||
                 *parsed >= owner->width) {
-                reject(QStringLiteral("an MSB between the field LSB and register width"));
-                return;
+                return reject(
+                    QStringLiteral("an MSB between the field LSB and register width"));
             }
-            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+            return commit([=](regmap::Workspace& candidate) {
                 if (auto* field = regmap::findField(candidate, objectId)) {
                     field->msb = *parsed;
                     if (auto* reg = findRegisterContainingField(candidate, objectId)) {
@@ -2718,7 +2723,6 @@ void MainWindow::applyPropertyEdit(const std::string& objectId, const std::strin
                     }
                 }
             });
-            return;
         }
         if (property == "field_width") {
             const auto parsed = parseUInt32();
@@ -2727,10 +2731,10 @@ void MainWindow::applyPropertyEdit(const std::string& objectId, const std::strin
             if (!parsed || *parsed == 0 || *parsed > maximumEditableWidth || current == nullptr ||
                 owner == nullptr ||
                 static_cast<std::uint64_t>(current->lsb) + *parsed - 1 >= owner->width) {
-                reject(QStringLiteral("a positive field width that fits in the register"));
-                return;
+                return reject(
+                    QStringLiteral("a positive field width that fits in the register"));
             }
-            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+            return commit([=](regmap::Workspace& candidate) {
                 if (auto* field = regmap::findField(candidate, objectId)) {
                     field->msb = field->lsb + *parsed - 1;
                     if (auto* reg = findRegisterContainingField(candidate, objectId)) {
@@ -2738,23 +2742,21 @@ void MainWindow::applyPropertyEdit(const std::string& objectId, const std::strin
                     }
                 }
             });
-            return;
         }
         if (property == "reset") {
             std::optional<regmap::UnsignedValue> parsed;
             if (!textValue.empty()) {
                 parsed = parseUnsigned();
                 if (!parsed) {
-                    reject(QStringLiteral("an unsigned integer or an empty value"));
-                    return;
+                    return reject(
+                        QStringLiteral("an unsigned integer or an empty value"));
                 }
             }
-            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+            return commit([=](regmap::Workspace& candidate) {
                 if (auto* field = regmap::findField(candidate, objectId)) {
                     field->resetValue = parsed;
                 }
             });
-            return;
         }
         if (property == "type") {
             const QString normalized = value.trimmed().toLower();
@@ -2775,23 +2777,23 @@ void MainWindow::applyPropertyEdit(const std::string& objectId, const std::strin
                 parsed = regmap::parseFieldType(textValue);
             }
             if (!parsed) {
-                reject(QStringLiteral("bits, bool, intN, uintN, enum, field, or reserved"));
-                return;
+                return reject(
+                    QStringLiteral("bits, bool, intN, uintN, enum, field, or reserved"));
             }
             const auto* currentField = regmap::findField(*workspace, objectId);
             const auto* owner = findRegisterContainingField(*workspace, objectId);
             if (currentField != nullptr && *parsed != regmap::FieldType::structure &&
                 !currentField->members.empty()) {
-                reject(QStringLiteral("field/compound type while the field contains members"));
-                return;
+                return reject(
+                    QStringLiteral("field/compound type while the field contains members"));
             }
             if (numericWidth &&
                 (currentField == nullptr || owner == nullptr ||
                  *numericWidth > maximumEditableWidth ||
                  static_cast<std::uint64_t>(currentField->lsb) + *numericWidth - 1 >=
                      owner->width)) {
-                reject(QStringLiteral("a numeric type width that fits the field position"));
-                return;
+                return reject(
+                    QStringLiteral("a numeric type width that fits the field position"));
             }
             const bool enumerationLike =
                 *parsed == regmap::FieldType::enumeration ||
@@ -2802,7 +2804,8 @@ void MainWindow::applyPropertyEdit(const std::string& objectId, const std::strin
                 currentField != nullptr && !enumerationLike && !currentField->enumValues.empty();
             const bool clearsRange = currentField != nullptr && !numeric &&
                                      (currentField->minimumValue || currentField->maximumValue);
-            if (controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+            const PropertyEditResult result =
+                commit([=](regmap::Workspace& candidate) {
                 if (auto* field = regmap::findField(candidate, objectId)) {
                     field->type = *parsed;
                     if (numericWidth) {
@@ -2827,64 +2830,60 @@ void MainWindow::applyPropertyEdit(const std::string& objectId, const std::strin
                         refreshRegisterFieldResets(*reg);
                     }
                 }
-            }) && (clearsEnumValues || clearsRange)) {
+            });
+            if (result.status == PropertyEditStatus::changed &&
+                (clearsEnumValues || clearsRange) && reportFeedback) {
                 statusBar()->showMessage(
                     QStringLiteral(
                         "Type changed · incompatible Enum/Range data cleared · Ctrl+Z to restore"),
                     6000);
             }
-            return;
+            return result;
         }
         if (property == "sw_access" || property == "hw_access") {
             const auto parsed = regmap::parseAccessMode(textValue);
             if (!parsed) {
-                reject(QStringLiteral("none, ro, wo, or rw"));
-                return;
+                return reject(QStringLiteral("none, ro, wo, or rw"));
             }
-            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+            return commit([=](regmap::Workspace& candidate) {
                 if (auto* field = regmap::findField(candidate, objectId)) {
                     (property == "sw_access" ? field->softwareAccess : field->hardwareAccess) =
                         *parsed;
                 }
             });
-            return;
         }
         if (property == "read_side_effect") {
             const auto parsed = regmap::parseReadSideEffect(textValue);
             if (!parsed) {
-                reject(QStringLiteral("none, clear, or set"));
-                return;
+                return reject(QStringLiteral("none, clear, or set"));
             }
-            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+            return commit([=](regmap::Workspace& candidate) {
                 if (auto* field = regmap::findField(candidate, objectId)) {
                     field->readSideEffect = *parsed;
                 }
             });
-            return;
         }
         if (property == "write_side_effect") {
             const auto parsed = regmap::parseWriteSideEffect(textValue);
             if (!parsed) {
-                reject(QStringLiteral("none, write, w1c, w1s, w0c, w0s, or toggle"));
-                return;
+                return reject(
+                    QStringLiteral("none, write, w1c, w1s, w0c, w0s, or toggle"));
             }
-            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+            return commit([=](regmap::Workspace& candidate) {
                 if (auto* field = regmap::findField(candidate, objectId)) {
                     field->writeSideEffect = *parsed;
                 }
             });
-            return;
         }
     }
 
     if (regmap::findRegister(*workspace, objectId) != nullptr) {
         if (property == "name" || property == "description") {
-            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+            return commit([=](regmap::Workspace& candidate) {
                 if (auto* reg = regmap::findRegister(candidate, objectId)) {
                     (property == "name" ? reg->name : reg->description) = textValue;
                 }
             });
-            return;
         }
         if (property == "tags") {
             std::vector<std::string> tags;
@@ -2900,14 +2899,12 @@ void MainWindow::applyPropertyEdit(const std::string& objectId, const std::strin
                 tags.push_back(normalized.toUtf8().toStdString());
             }
             std::ranges::sort(tags);
-            controller_.editWorkspace(
-                description,
+            return commit(
                 [objectId, tags = std::move(tags)](regmap::Workspace& candidate) {
                     if (auto* reg = regmap::findRegister(candidate, objectId)) {
                         reg->tags = tags;
                     }
                 });
-            return;
         }
         if (property == "range") {
             std::optional<std::string> minimum;
@@ -2917,14 +2914,13 @@ void MainWindow::applyPropertyEdit(const std::string& objectId, const std::strin
                     QStringLiteral(R"(^\s*(.*?)\s*\.\.\s*(.*?)\s*$)"));
                 const QRegularExpressionMatch match = rangePattern.match(value);
                 if (!match.hasMatch()) {
-                    reject(QStringLiteral("a range in the form minimum .. maximum"));
-                    return;
+                    return reject(
+                        QStringLiteral("a range in the form minimum .. maximum"));
                 }
                 const QString minimumText = match.captured(1).trimmed();
                 const QString maximumText = match.captured(2).trimmed();
                 if (minimumText.isEmpty() && maximumText.isEmpty()) {
-                    reject(QStringLiteral("at least one range bound"));
-                    return;
+                    return reject(QStringLiteral("at least one range bound"));
                 }
                 if (!minimumText.isEmpty()) {
                     minimum = minimumText.toUtf8().toStdString();
@@ -2933,13 +2929,12 @@ void MainWindow::applyPropertyEdit(const std::string& objectId, const std::strin
                     maximum = maximumText.toUtf8().toStdString();
                 }
             }
-            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+            return commit([=](regmap::Workspace& candidate) {
                 if (auto* reg = regmap::findRegister(candidate, objectId)) {
                     reg->minimumValue = minimum;
                     reg->maximumValue = maximum;
                 }
             });
-            return;
         }
         if (property == "type") {
             const QString normalized = value.trimmed().toLower();
@@ -2961,12 +2956,12 @@ void MainWindow::applyPropertyEdit(const std::string& objectId, const std::strin
             }
             const auto* current = regmap::findRegister(*workspace, objectId);
             if (!parsed || current == nullptr) {
-                reject(QStringLiteral("bits, bool, intN, uintN, enum, field, or reserved"));
-                return;
+                return reject(
+                    QStringLiteral("bits, bool, intN, uintN, enum, field, or reserved"));
             }
             if (*parsed != regmap::FieldType::structure && !current->fields.empty()) {
-                reject(QStringLiteral("field type while the register contains fields"));
-                return;
+                return reject(
+                    QStringLiteral("field type while the register contains fields"));
             }
             const bool enumerationLike =
                 *parsed == regmap::FieldType::enumeration ||
@@ -2981,7 +2976,8 @@ void MainWindow::applyPropertyEdit(const std::string& objectId, const std::strin
                 (current->access != regmap::AccessMode::none ||
                  (current->initialValue && !current->initialValue->isZero()) ||
                  (current->resetValue && !current->resetValue->isZero()));
-            if (controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+            const PropertyEditResult result =
+                commit([=](regmap::Workspace& candidate) {
                 if (auto* reg = regmap::findRegister(candidate, objectId)) {
                     reg->type = *parsed;
                     reg->reserved = *parsed == regmap::FieldType::reserved;
@@ -3005,50 +3001,49 @@ void MainWindow::applyPropertyEdit(const std::string& objectId, const std::strin
                         reg->maximumValue.reset();
                     }
                 }
-            }) && (clearsEnumValues || clearsRange || normalizesReserved)) {
+            });
+            if (result.status == PropertyEditStatus::changed &&
+                (clearsEnumValues || clearsRange || normalizesReserved) && reportFeedback) {
                 statusBar()->showMessage(
                     QStringLiteral(
                         "Type changed · incompatible data cleared or normalized · Ctrl+Z to restore"),
                     6000);
             }
-            return;
+            return result;
         }
         if (property == "offset" || property == "stride") {
             const auto parsed = parseUInt64();
             if (!parsed) {
-                reject(QStringLiteral("a 64-bit unsigned integer"));
-                return;
+                return reject(QStringLiteral("a 64-bit unsigned integer"));
             }
-            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+            return commit([=](regmap::Workspace& candidate) {
                 if (auto* reg = regmap::findRegister(candidate, objectId)) {
                     (property == "offset" ? reg->offset : reg->array.stride) = *parsed;
                 }
             });
-            return;
         }
         if (property == "width" || property == "array_count") {
             const auto parsed = parseUInt32();
             if (!parsed || *parsed == 0 ||
                 (property == "width" && *parsed > maximumEditableWidth)) {
-                reject(property == "width" ? QStringLiteral("a register width from 1 to 65536 that "
-                                                            "contains all fields")
-                                           : QStringLiteral("a positive array count"));
-                return;
+                return reject(
+                    property == "width"
+                        ? QStringLiteral("a register width from 1 to 65536 that contains all fields")
+                        : QStringLiteral("a positive array count"));
             }
             const auto* current = regmap::findRegister(*workspace, objectId);
             if (property == "width" && current != nullptr &&
                 !std::ranges::all_of(current->fields, [&](const regmap::Field& field) {
                     return field.msb < *parsed;
                 })) {
-                reject(QStringLiteral("a register width that contains all existing fields"));
-                return;
+                return reject(
+                    QStringLiteral("a register width that contains all existing fields"));
             }
-            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+            return commit([=](regmap::Workspace& candidate) {
                 if (auto* reg = regmap::findRegister(candidate, objectId)) {
                     (property == "width" ? reg->width : reg->array.count) = *parsed;
                 }
             });
-            return;
         }
         if (property == "initial" || property == "reset") {
             std::optional<regmap::UnsignedValue> parsed;
@@ -3056,12 +3051,11 @@ void MainWindow::applyPropertyEdit(const std::string& objectId, const std::strin
                 parsed = parseUnsigned();
                 const auto* current = regmap::findRegister(*workspace, objectId);
                 if (!parsed || current == nullptr || !parsed->fitsInBits(current->width)) {
-                    reject(
+                    return reject(
                         QStringLiteral("an unsigned integer fitting the register width, or empty"));
-                    return;
                 }
             }
-            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+            return commit([=](regmap::Workspace& candidate) {
                 if (auto* reg = regmap::findRegister(candidate, objectId)) {
                     if (property == "initial") {
                         reg->initialValue = parsed;
@@ -3071,42 +3065,37 @@ void MainWindow::applyPropertyEdit(const std::string& objectId, const std::strin
                     }
                 }
             });
-            return;
         }
         if (property == "access") {
             const auto parsed = regmap::parseAccessMode(textValue);
             if (!parsed) {
-                reject(QStringLiteral("none, ro, wo, or rw"));
-                return;
+                return reject(QStringLiteral("none, ro, wo, or rw"));
             }
-            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+            return commit([=](regmap::Workspace& candidate) {
                 if (auto* reg = regmap::findRegister(candidate, objectId)) {
                     reg->access = *parsed;
                 }
             });
-            return;
         }
     }
 
     if (regmap::findRegisterBlock(*workspace, objectId) != nullptr) {
         if (property == "name" || property == "description") {
-            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+            return commit([=](regmap::Workspace& candidate) {
                 if (auto* block = regmap::findRegisterBlock(candidate, objectId)) {
                     (property == "name" ? block->name : block->description) = textValue;
                 }
             });
-            return;
         }
         if (property == "base" || property == "size") {
             std::optional<std::uint64_t> parsed;
             if (property == "base" || !textValue.empty()) {
                 parsed = parseUInt64();
                 if (!parsed) {
-                    reject(QStringLiteral("a 64-bit unsigned integer"));
-                    return;
+                    return reject(QStringLiteral("a 64-bit unsigned integer"));
                 }
             }
-            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+            return commit([=](regmap::Workspace& candidate) {
                 if (auto* block = regmap::findRegisterBlock(candidate, objectId)) {
                     if (property == "base") {
                         block->baseAddress = *parsed;
@@ -3115,48 +3104,42 @@ void MainWindow::applyPropertyEdit(const std::string& objectId, const std::strin
                     }
                 }
             });
-            return;
         }
     }
 
     if (regmap::findAddressSpace(*workspace, objectId) != nullptr) {
         if (property == "name" || property == "description") {
-            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+            return commit([=](regmap::Workspace& candidate) {
                 if (auto* space = regmap::findAddressSpace(candidate, objectId)) {
                     (property == "name" ? space->name : space->description) = textValue;
                 }
             });
-            return;
         }
         if (property == "base") {
             const auto parsed = parseUInt64();
             if (!parsed) {
-                reject(QStringLiteral("a 64-bit unsigned integer"));
-                return;
+                return reject(QStringLiteral("a 64-bit unsigned integer"));
             }
-            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+            return commit([=](regmap::Workspace& candidate) {
                 if (auto* space = regmap::findAddressSpace(candidate, objectId)) {
                     space->baseAddress = *parsed;
                 }
             });
-            return;
         }
         if (property == "address_width") {
             const auto parsed = parseUInt32();
             if (!parsed) {
-                reject(QStringLiteral("a 32-bit unsigned integer"));
-                return;
+                return reject(QStringLiteral("a 32-bit unsigned integer"));
             }
-            controller_.editWorkspace(description, [=](regmap::Workspace& candidate) {
+            return commit([=](regmap::Workspace& candidate) {
                 if (auto* space = regmap::findAddressSpace(candidate, objectId)) {
                     space->addressWidth = *parsed;
                 }
             });
-            return;
         }
     }
 
-    reject(QStringLiteral("a supported editable property"));
+    return reject(QStringLiteral("a supported editable property"));
 }
 
 void MainWindow::addAddressSpace()
@@ -4819,6 +4802,8 @@ void MainWindow::pasteSelection()
         QString value;
         int row{0};
         int column{0};
+        QString objectName;
+        QString propertyName;
     };
     std::vector<PasteTarget> targets;
     const auto appendTarget = [&](const QModelIndex& target, const QString& text) {
@@ -4837,8 +4822,12 @@ void MainWindow::pasteSelection()
                 return existing.objectId == objectId && existing.property == property;
             });
         if (!duplicate) {
-            targets.push_back(
-                PasteTarget{objectId, property, text, target.row(), target.column()});
+            const QString objectName =
+                view->model()->index(target.row(), 0).data().toString();
+            const QString propertyName =
+                view->model()->headerData(target.column(), Qt::Horizontal).toString();
+            targets.push_back(PasteTarget{objectId, property, text, target.row(),
+                                          target.column(), objectName, propertyName});
         }
     };
 
@@ -4890,33 +4879,59 @@ void MainWindow::pasteSelection()
         restoredCurrent, QItemSelectionModel::NoUpdate);
 
     const std::size_t undoDepth = controller_.undoDepth();
+    std::size_t changed = 0;
+    std::size_t unchanged = 0;
+    std::size_t rejected = 0;
+    QString firstRejected;
     const QScopedValueRollback editGuard(modelEditInProgress_, true);
     for (const auto& target : targets) {
-        applyPropertyEdit(target.objectId, target.property, target.value);
+        const PropertyEditResult result =
+            applyPropertyEdit(target.objectId, target.property, target.value, false);
+        switch (result.status) {
+        case PropertyEditStatus::changed:
+            ++changed;
+            break;
+        case PropertyEditStatus::unchanged:
+            ++unchanged;
+            break;
+        case PropertyEditStatus::rejected:
+            ++rejected;
+            if (firstRejected.isEmpty()) {
+                const QString displayValue =
+                    target.value.isEmpty() ? QStringLiteral("<empty>") : target.value;
+                firstRejected =
+                    QStringLiteral("%1 / %2 = \"%3\" (expected %4)")
+                        .arg(target.objectName, target.propertyName, displayValue,
+                             result.expectation);
+            }
+            break;
+        }
     }
-    const std::size_t currentUndoDepth = controller_.undoDepth();
-    const std::size_t changed =
-        currentUndoDepth >= undoDepth ? currentUndoDepth - undoDepth : 0;
     if (changed > 0) {
         static_cast<void>(controller_.squashUndoSince(
             undoDepth, QStringLiteral("Paste %1 cell(s)").arg(changed)));
     }
 
+    QString message;
     if (changed == 0) {
-        statusBar()->showMessage(
-            QStringLiteral("Paste made no changes in %1 target cell(s)").arg(targets.size()),
-            4000);
-    } else if (changed == targets.size()) {
-        statusBar()->showMessage(
-            QStringLiteral("Pasted into %1 cell(s); Ctrl+Z restores this paste").arg(changed),
-            4000);
+        message = QStringLiteral(
+                      "Paste made no changes: %1 unchanged, %2 rejected")
+                      .arg(unchanged)
+                      .arg(rejected);
     } else {
-        statusBar()->showMessage(
-            QStringLiteral("Pasted into %1 of %2 cell(s); invalid or unchanged values were skipped")
+        message =
+            QStringLiteral("Paste complete: %1 changed, %2 unchanged, %3 rejected")
                 .arg(changed)
-                .arg(targets.size()),
-            5000);
+                .arg(unchanged)
+                .arg(rejected);
     }
+    if (!firstRejected.isEmpty()) {
+        message += QStringLiteral("; first rejected: ") + firstRejected;
+    }
+    if (changed > 0) {
+        message += QStringLiteral("; Ctrl+Z restores this paste");
+    }
+    statusBar()->showMessage(message, rejected > 0 ? 7000 : 4000);
 }
 
 void MainWindow::copyHierarchySelection()

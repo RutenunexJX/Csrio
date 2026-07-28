@@ -150,8 +150,19 @@ private:
     void beginEnumRename(const std::string& id, const std::string& ownerId,
                          bool fieldOwner);
     void openSource(const regmap::SourceLocation& source);
-    void applyPropertyEdit(const std::string& objectId, const std::string& property,
-                           const QString& value);
+    enum class PropertyEditStatus {
+        changed,
+        unchanged,
+        rejected,
+    };
+    struct PropertyEditResult {
+        PropertyEditStatus status{PropertyEditStatus::rejected};
+        QString expectation;
+    };
+    PropertyEditResult applyPropertyEdit(const std::string& objectId,
+                                         const std::string& property,
+                                         const QString& value,
+                                         bool reportFeedback = true);
     void addAddressSpace();
     void addBlock(std::string parentId = {});
     void addRegister(std::string parentId = {});

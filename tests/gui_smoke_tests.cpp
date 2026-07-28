@@ -3035,6 +3035,32 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 1).data().toString(),
                               QStringLiteral("0x4"), 2000);
 
+    const std::size_t mixedPasteUndoDepth = controller->undoDepth();
+    QApplication::clipboard()->setText(
+        QStringLiteral("STATUS_MIXED\t0x0\tignored\tinvalid-width"));
+    registers->setCurrentIndex(registers->model()->index(0, 0));
+    registers->setFocus(Qt::OtherFocusReason);
+    QTest::keyClick(registers, Qt::Key_V, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 0).data().toString(),
+                              QStringLiteral("STATUS_MIXED"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 1).data().toString(),
+                              QStringLiteral("0x0"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 3).data().toString(),
+                              QStringLiteral("32"), 2000);
+    const QString mixedPasteMessage = window.statusBar()->currentMessage();
+    QVERIFY(mixedPasteMessage.contains(QStringLiteral("1 changed")));
+    QVERIFY(mixedPasteMessage.contains(QStringLiteral("1 unchanged")));
+    QVERIFY(mixedPasteMessage.contains(QStringLiteral("1 rejected")));
+    QVERIFY(mixedPasteMessage.contains(QStringLiteral("STATUS")));
+    QVERIFY(mixedPasteMessage.contains(QStringLiteral("Width")));
+    QVERIFY(mixedPasteMessage.contains(QStringLiteral("invalid-width")));
+    QVERIFY(mixedPasteMessage.contains(QStringLiteral("expected")));
+    QCOMPARE(controller->undoDepth(), mixedPasteUndoDepth + 1);
+    QTest::keyClick(&window, Qt::Key_Z, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 0).data().toString(),
+                              QStringLiteral("STATUS"), 2000);
+    QCOMPARE(controller->undoDepth(), mixedPasteUndoDepth);
+
     const QModelIndex sourceTags = registers->model()->index(1, 10);
     registers->scrollTo(sourceTags);
     QCoreApplication::processEvents();
@@ -3079,7 +3105,10 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
         regmap::findRegister(*controller->workspace(), "reg-status");
     QVERIFY(status != nullptr);
     QCOMPARE(status->tags, std::vector<std::string>{"control"});
-    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("1 of 2")));
+    const QString tagsPasteMessage = window.statusBar()->currentMessage();
+    QVERIFY(tagsPasteMessage.contains(QStringLiteral("1 changed")));
+    QVERIFY(tagsPasteMessage.contains(QStringLiteral("1 unchanged")));
+    QVERIFY(tagsPasteMessage.contains(QStringLiteral("0 rejected")));
 
     const QModelIndex refreshedFirstTags = registers->model()->index(0, 10);
     const QModelIndex refreshedLastTags = registers->model()->index(1, 10);
@@ -3132,6 +3161,25 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
         QItemSelectionModel::ClearAndSelect);
     QVERIFY(registers->selectionModel()->isSelected(firstAccess));
     QVERIFY(registers->selectionModel()->isSelected(lastAccess));
+    const std::size_t rejectedPasteUndoDepth = controller->undoDepth();
+    QSignalSpy rejectedPasteResetSpy(
+        registers->model(), &QAbstractItemModel::modelReset);
+    QApplication::clipboard()->setText(QStringLiteral("BAD"));
+    QTest::keyClick(registers, Qt::Key_V, Qt::ControlModifier);
+    QCoreApplication::processEvents();
+    QCOMPARE(controller->undoDepth(), rejectedPasteUndoDepth);
+    QCOMPARE(rejectedPasteResetSpy.count(), 0);
+    QCOMPARE(registers->model()->index(0, 9).data().toString(), QStringLiteral("RO"));
+    QCOMPARE(registers->model()->index(1, 9).data().toString(), QStringLiteral("RW"));
+    const QString rejectedPasteMessage = window.statusBar()->currentMessage();
+    QVERIFY(rejectedPasteMessage.contains(QStringLiteral("0 unchanged")));
+    QVERIFY(rejectedPasteMessage.contains(QStringLiteral("2 rejected")));
+    QVERIFY(rejectedPasteMessage.contains(QStringLiteral("STATUS")));
+    QVERIFY(rejectedPasteMessage.contains(QStringLiteral("Access")));
+    QVERIFY(rejectedPasteMessage.contains(QStringLiteral("none, ro, wo, or rw")));
+    QVERIFY(registers->selectionModel()->isSelected(firstAccess));
+    QVERIFY(registers->selectionModel()->isSelected(lastAccess));
+
     QApplication::clipboard()->setText(QStringLiteral("WO"));
     QTest::keyClick(registers, Qt::Key_V, Qt::ControlModifier);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 9).data().toString(),
@@ -3144,6 +3192,18 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
         2000);
     QCOMPARE(regmap::findRegister(*controller->workspace(), "reg-status")->access,
              regmap::AccessMode::writeOnly);
+
+    const std::size_t unchangedPasteUndoDepth = controller->undoDepth();
+    QApplication::clipboard()->setText(QStringLiteral("WO"));
+    QTest::keyClick(registers, Qt::Key_V, Qt::ControlModifier);
+    QCOMPARE(controller->undoDepth(), unchangedPasteUndoDepth);
+    const QString unchangedPasteMessage = window.statusBar()->currentMessage();
+    QVERIFY(unchangedPasteMessage.contains(QStringLiteral("2 unchanged")));
+    QVERIFY(unchangedPasteMessage.contains(QStringLiteral("0 rejected")));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        registers->selectionModel()->isSelected(registers->model()->index(0, 9)) &&
+            registers->selectionModel()->isSelected(registers->model()->index(1, 9)),
+        2000);
 
     QTest::keyClick(&window, Qt::Key_Z, Qt::ControlModifier);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 9).data().toString(),
