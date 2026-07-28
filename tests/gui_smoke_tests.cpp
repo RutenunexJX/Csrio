@@ -3646,6 +3646,36 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 10).data().toString(),
                               QStringLiteral("control"), 2000);
 
+    const QModelIndex emptyDescription = registers->model()->index(0, 11);
+    QCOMPARE(emptyDescription.data().toString(), QString{});
+    registers->setCurrentIndex(emptyDescription);
+    registers->selectionModel()->select(
+        emptyDescription, QItemSelectionModel::ClearAndSelect);
+    registers->setFocus(Qt::OtherFocusReason);
+    QTest::keyClick(registers, Qt::Key_C, Qt::ControlModifier);
+    QCOMPARE(QApplication::clipboard()->text(), QString{});
+
+    const QModelIndex clearFirstTags = registers->model()->index(0, 10);
+    const QModelIndex clearLastTags = registers->model()->index(1, 10);
+    registers->setCurrentIndex(clearLastTags);
+    registers->selectionModel()->select(
+        QItemSelection(clearFirstTags, clearLastTags),
+        QItemSelectionModel::ClearAndSelect);
+    const std::size_t clearTagsUndoDepth = controller->undoDepth();
+    QTest::keyClick(registers, Qt::Key_V, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 10).data().toString(),
+                              QString{}, 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 10).data().toString(),
+                              QString{}, 2000);
+    QCOMPARE(controller->undoDepth(), clearTagsUndoDepth + 1);
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("2 changed")));
+
+    QTest::keyClick(&window, Qt::Key_Z, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 10).data().toString(),
+                              QStringLiteral("control"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 10).data().toString(),
+                              QStringLiteral("control"), 2000);
+
     const QModelIndex sourceAccess = registers->model()->index(0, 9);
     registers->scrollTo(sourceAccess);
     QCoreApplication::processEvents();

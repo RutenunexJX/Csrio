@@ -84,6 +84,8 @@
 namespace {
 
 constexpr std::uint32_t maximumEditableWidth = 65536;
+constexpr auto tableClipboardMimeType =
+    "application/x-regmap-workbench-table-cells";
 constexpr auto hierarchyClipboardMimeType =
     "application/x-regmap-workbench-hierarchy-object";
 constexpr auto hierarchyDragMimeType =
@@ -4899,7 +4901,10 @@ void MainWindow::copySelection()
         }
         lines << values.join('\t');
     }
-    QApplication::clipboard()->setText(lines.join('\n'));
+    auto* mimeData = new QMimeData;
+    mimeData->setText(lines.join('\n'));
+    mimeData->setData(QString::fromLatin1(tableClipboardMimeType), QByteArrayLiteral("1"));
+    QApplication::clipboard()->setMimeData(mimeData);
     statusBar()->showMessage(QStringLiteral("Copied %1 cell(s)").arg(indexes.size()), 2000);
 }
 
@@ -4926,11 +4931,15 @@ void MainWindow::pasteSelection()
         return;
     }
 
-    QString clipboard = QApplication::clipboard()->text();
+    const QMimeData* mimeData = QApplication::clipboard()->mimeData();
+    const bool copiedFromWorkbenchTable =
+        mimeData != nullptr &&
+        mimeData->hasFormat(QString::fromLatin1(tableClipboardMimeType));
+    QString clipboard = mimeData == nullptr ? QString{} : mimeData->text();
     clipboard.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
     clipboard.replace('\r', '\n');
     QStringList rows = clipboard.split('\n', Qt::KeepEmptyParts);
-    if (!rows.empty() && rows.back().isEmpty()) {
+    if (!copiedFromWorkbenchTable && !rows.empty() && rows.back().isEmpty()) {
         rows.removeLast();
     }
     if (rows.empty()) {
