@@ -20,6 +20,9 @@
 #include <QComboBox>
 #include <QContextMenuEvent>
 #include <QDir>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
 #include <QEvent>
 #include <QFile>
 #include <QFileDevice>
@@ -31,6 +34,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMenu>
+#include <QMimeData>
 #include <QMessageBox>
 #include <QPalette>
 #include <QSplitter>
@@ -68,13 +72,15 @@ private slots:
     void opensProjectAndPopulatesEditableViews();
     void navigatesHierarchyAndOpensFieldsExplicitly();
     void hierarchyContextActionsUseRightClickedTarget();
+    void copiesAndPastesHierarchyObjects();
+    void movesHierarchyObjectsByDrag();
     void switchesProjectsWithoutReusingFieldWorkspaceState();
     void reloadsProjectWithoutLosingFieldWorkspaceContext();
     void navigatesFieldProblemsAndFallsBackForHiddenFields();
     void supportsTrailingRowsAndFieldMovement();
     void dragsFieldsAndResolvesOverlaps();
     void cancelsInterruptedFieldDrag();
-    void editsTagsAndAccessFromSingleClick();
+    void editsTagsAndAccessFromDoubleClick();
     void insertsRegisterBetweenRows();
     void showsUnifiedSyncStateAndGeneratedResults();
     void searchesAndNavigatesProblems();
@@ -286,6 +292,42 @@ QModelIndex hierarchyIndexByObjectId(QAbstractItemModel* model, const QString& o
         }
     }
     return {};
+}
+
+bool dropHierarchyObject(QTreeView* view, const QModelIndex& source,
+                         const QModelIndex& target)
+{
+    if (view == nullptr || !source.isValid() || !target.isValid() ||
+        view->model() == nullptr) {
+        return false;
+    }
+    QMimeData* mimeData = view->model()->mimeData(QModelIndexList{source});
+    if (mimeData == nullptr) {
+        mimeData = new QMimeData;
+    }
+    mimeData->setData(
+        QStringLiteral("application/x-regmap-workbench-hierarchy-drag"),
+        source.data(Qt::UserRole + 1).toString().toUtf8());
+    view->scrollTo(target);
+    QCoreApplication::processEvents();
+    const QRect rectangle = view->visualRect(target);
+    if (!rectangle.isValid()) {
+        delete mimeData;
+        return false;
+    }
+    const QPoint position = rectangle.center();
+    QDragEnterEvent enter(position, Qt::MoveAction, mimeData,
+                          Qt::LeftButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(view->viewport(), &enter);
+    QDragMoveEvent move(position, Qt::MoveAction, mimeData,
+                        Qt::LeftButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(view->viewport(), &move);
+    QDropEvent drop(QPointF(position), Qt::MoveAction, mimeData,
+                    Qt::LeftButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(view->viewport(), &drop);
+    delete mimeData;
+    QCoreApplication::processEvents();
+    return drop.isAccepted();
 }
 
 void editManagedRtlValue(const QString& path, const QString& objectId, const QString& property,
@@ -1678,6 +1720,9 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     enums->scrollTo(enumValueIndex);
     QTest::mouseClick(enums->viewport(), Qt::LeftButton, Qt::NoModifier,
                       enums->visualRect(enumValueIndex).center());
+    QVERIFY(visibleEnumEditor() == nullptr);
+    QTest::mouseDClick(enums->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      enums->visualRect(enumValueIndex).center());
     QTRY_VERIFY_WITH_TIMEOUT(visibleEnumEditor() != nullptr, 2000);
     auto* enumValueEditor = visibleEnumEditor();
     enumValueEditor->selectAll();
@@ -1926,6 +1971,9 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     fields->scrollTo(widthIndex);
     QTest::mouseClick(fields->viewport(), Qt::LeftButton, Qt::NoModifier,
                       fields->visualRect(widthIndex).center());
+    QVERIFY(visibleFieldEditor() == nullptr);
+    QTest::mouseDClick(fields->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      fields->visualRect(widthIndex).center());
     QTRY_VERIFY_WITH_TIMEOUT(visibleFieldEditor() != nullptr, 2000);
     auto* widthEditor = visibleFieldEditor();
     widthEditor->selectAll();
@@ -2029,6 +2077,9 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     const QModelIndex memberWidthIndex = fields->model()->index(1, 4);
     fields->scrollTo(memberWidthIndex);
     QTest::mouseClick(fields->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      fields->visualRect(memberWidthIndex).center());
+    QVERIFY(visibleFieldEditor() == nullptr);
+    QTest::mouseDClick(fields->viewport(), Qt::LeftButton, Qt::NoModifier,
                       fields->visualRect(memberWidthIndex).center());
     QTRY_VERIFY_WITH_TIMEOUT(visibleFieldEditor() != nullptr, 2000);
     auto* memberWidthEditor = visibleFieldEditor();
@@ -2461,7 +2512,7 @@ void GuiSmokeTests::cancelsInterruptedFieldDrag()
     makeGeneratedFilesWritable(directory.path());
 }
 
-void GuiSmokeTests::editsTagsAndAccessFromSingleClick()
+void GuiSmokeTests::editsTagsAndAccessFromDoubleClick()
 {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
@@ -2481,6 +2532,14 @@ void GuiSmokeTests::editsTagsAndAccessFromSingleClick()
     registers->scrollTo(tagIndex);
     QTest::mouseClick(registers->viewport(), Qt::LeftButton, Qt::NoModifier,
                       registers->visualRect(tagIndex).center());
+    QVERIFY(QApplication::activePopupWidget() == nullptr);
+    QCOMPARE(registers->currentIndex(), tagIndex);
+    registers->setFocus(Qt::OtherFocusReason);
+    QTest::keyClick(registers, Qt::Key_C, Qt::ControlModifier);
+    QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("existing"));
+
+    QTest::mouseDClick(registers->viewport(), Qt::LeftButton, Qt::NoModifier,
+                       registers->visualRect(tagIndex).center());
     QTRY_VERIFY_WITH_TIMEOUT(QApplication::activePopupWidget() != nullptr, 2000);
     auto* tagPopup = qobject_cast<QFrame*>(QApplication::activePopupWidget());
     QVERIFY(tagPopup != nullptr);
@@ -2495,14 +2554,19 @@ void GuiSmokeTests::editsTagsAndAccessFromSingleClick()
     QVERIFY(tags->styleSheet().contains(QStringLiteral("item:hover")));
 
     QListWidgetItem* control = nullptr;
+    QListWidgetItem* existing = nullptr;
     for (int itemIndex = 0; itemIndex < tags->count(); ++itemIndex) {
         QVERIFY(!(tags->item(itemIndex)->flags() & Qt::ItemIsUserCheckable));
         if (tags->item(itemIndex)->text() == QStringLiteral("control")) {
             control = tags->item(itemIndex);
+        } else if (tags->item(itemIndex)->text() == QStringLiteral("existing")) {
+            existing = tags->item(itemIndex);
         }
     }
     QVERIFY(control != nullptr);
+    QVERIFY(existing != nullptr);
     QVERIFY(!control->isSelected());
+    QVERIFY(existing->isSelected());
     QTest::mouseMove(tags->viewport(), tags->visualItemRect(control).center());
     QTest::mouseClick(tags->viewport(), Qt::LeftButton, Qt::NoModifier,
                       tags->visualItemRect(control).center());
@@ -2525,6 +2589,11 @@ void GuiSmokeTests::editsTagsAndAccessFromSingleClick()
     registers->scrollTo(accessIndex);
     QTest::mouseClick(registers->viewport(), Qt::LeftButton, Qt::NoModifier,
                       registers->visualRect(accessIndex).center());
+    QVERIFY(QApplication::activePopupWidget() == nullptr);
+    QCOMPARE(registers->currentIndex(), accessIndex);
+
+    QTest::mouseDClick(registers->viewport(), Qt::LeftButton, Qt::NoModifier,
+                       registers->visualRect(accessIndex).center());
     QTRY_VERIFY_WITH_TIMEOUT(QApplication::activePopupWidget() != nullptr, 2000);
     auto* accessPopup = qobject_cast<QFrame*>(QApplication::activePopupWidget());
     QVERIFY(accessPopup != nullptr);
@@ -2727,6 +2796,185 @@ void GuiSmokeTests::searchesAndNavigatesProblems()
     makeGeneratedFilesWritable(directory.path());
 }
 
+void GuiSmokeTests::copiesAndPastesHierarchyObjects()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+
+    auto* hierarchy = window.findChild<QTreeView*>(QStringLiteral("hierarchyView"));
+    auto* controller = window.findChild<ProjectController*>();
+    QVERIFY(hierarchy != nullptr);
+    QVERIFY(controller != nullptr);
+    QVERIFY(controller->workspace() != nullptr);
+
+    const QString pageId = QStringLiteral("space-main");
+    const QString blockId = QStringLiteral("block-control");
+    QModelIndex pageIndex =
+        hierarchyIndexByObjectId(hierarchy->model(), pageId);
+    QVERIFY(pageIndex.isValid());
+    hierarchy->setCurrentIndex(pageIndex);
+    hierarchy->setFocus(Qt::OtherFocusReason);
+    QTest::keyClick(hierarchy, Qt::Key_C, Qt::ControlModifier);
+    QTest::keyClick(hierarchy, Qt::Key_V, Qt::ControlModifier);
+
+    QTRY_COMPARE_WITH_TIMEOUT(controller->workspace()->addressSpaces.size(),
+                              std::size_t{2}, 2000);
+    const auto& originalPage = controller->workspace()->addressSpaces[0];
+    const auto& copiedPage = controller->workspace()->addressSpaces[1];
+    QCOMPARE(QString::fromStdString(copiedPage.name), QStringLiteral("Main Copy"));
+    QVERIFY(copiedPage.id != originalPage.id);
+    QCOMPARE(copiedPage.blocks.size(), originalPage.blocks.size());
+    QVERIFY(!copiedPage.blocks.empty());
+    QVERIFY(copiedPage.blocks.front().id != originalPage.blocks.front().id);
+    QCOMPARE(copiedPage.blocks.front().registers.size(),
+             originalPage.blocks.front().registers.size());
+    QVERIFY(!copiedPage.blocks.front().registers.empty());
+    QVERIFY(copiedPage.blocks.front().registers.front().id !=
+            originalPage.blocks.front().registers.front().id);
+    QVERIFY(!copiedPage.blocks.front().registers.front().fields.empty());
+    QVERIFY(copiedPage.blocks.front().registers.front().fields.front().id !=
+            originalPage.blocks.front().registers.front().fields.front().id);
+    QVERIFY(copiedPage.source.empty());
+    QVERIFY(copiedPage.blocks.front().source.empty());
+    QVERIFY(copiedPage.blocks.front().registers.front().source.empty());
+    QVERIFY(hierarchy->currentIndex().data(Qt::UserRole + 1).toString() ==
+            QString::fromStdString(copiedPage.id));
+
+    controller->undo();
+    QTRY_COMPARE_WITH_TIMEOUT(controller->workspace()->addressSpaces.size(),
+                              std::size_t{1}, 2000);
+
+    QModelIndex blockIndex =
+        hierarchyIndexByObjectId(hierarchy->model(), blockId);
+    QVERIFY(blockIndex.isValid());
+    hierarchy->setCurrentIndex(blockIndex);
+    hierarchy->setFocus(Qt::OtherFocusReason);
+    QTest::keyClick(hierarchy, Qt::Key_C, Qt::ControlModifier);
+    QTest::keyClick(hierarchy, Qt::Key_V, Qt::ControlModifier);
+
+    QTRY_COMPARE_WITH_TIMEOUT(controller->workspace()->addressSpaces.front().blocks.size(),
+                              std::size_t{2}, 2000);
+    const auto& originalBlock =
+        controller->workspace()->addressSpaces.front().blocks.front();
+    const auto& copiedBlock =
+        controller->workspace()->addressSpaces.front().blocks.back();
+    QCOMPARE(QString::fromStdString(copiedBlock.name),
+             QStringLiteral("Control Copy"));
+    QVERIFY(copiedBlock.id != originalBlock.id);
+    QCOMPARE(copiedBlock.registers.size(), originalBlock.registers.size());
+    QVERIFY(!copiedBlock.registers.empty());
+    QVERIFY(copiedBlock.registers.front().id !=
+            originalBlock.registers.front().id);
+    QVERIFY(!copiedBlock.registers.front().fields.empty());
+    QVERIFY(copiedBlock.registers.front().fields.front().id !=
+            originalBlock.registers.front().fields.front().id);
+    QVERIFY(hierarchy->currentIndex().data(Qt::UserRole + 1).toString() ==
+            QString::fromStdString(copiedBlock.id));
+
+    controller->undo();
+    QTRY_COMPARE_WITH_TIMEOUT(controller->workspace()->addressSpaces.front().blocks.size(),
+                              std::size_t{1}, 2000);
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::movesHierarchyObjectsByDrag()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+
+    auto* hierarchy = window.findChild<QTreeView*>(QStringLiteral("hierarchyView"));
+    auto* controller = window.findChild<ProjectController*>();
+    QVERIFY(hierarchy != nullptr);
+    QVERIFY(controller != nullptr);
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Seed hierarchy move test"),
+        [](regmap::Workspace& workspace) {
+            regmap::AddressSpace page;
+            page.id = "space-secondary";
+            page.name = "Secondary";
+            page.baseAddress = 0x10000;
+            page.addressWidth = 32;
+            regmap::RegisterBlock block;
+            block.id = "block-secondary";
+            block.name = "Secondary Block";
+            block.baseAddress = 0;
+            block.size = 0x1000;
+            page.blocks.push_back(std::move(block));
+            workspace.addressSpaces.push_back(std::move(page));
+        }));
+    QTRY_COMPARE_WITH_TIMEOUT(controller->workspace()->addressSpaces.size(),
+                              std::size_t{2}, 2000);
+
+    QModelIndex mainPage =
+        hierarchyIndexByObjectId(hierarchy->model(), QStringLiteral("space-main"));
+    QModelIndex secondaryPage =
+        hierarchyIndexByObjectId(hierarchy->model(), QStringLiteral("space-secondary"));
+    QVERIFY(mainPage.isValid());
+    QVERIFY(secondaryPage.isValid());
+    QVERIFY(dropHierarchyObject(hierarchy, mainPage, secondaryPage));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        QString::fromStdString(controller->workspace()->addressSpaces.front().id),
+        QStringLiteral("space-secondary"), 2000);
+    QCOMPARE(QString::fromStdString(controller->workspace()->addressSpaces.back().id),
+             QStringLiteral("space-main"));
+
+    controller->undo();
+    QTRY_COMPARE_WITH_TIMEOUT(
+        QString::fromStdString(controller->workspace()->addressSpaces.front().id),
+        QStringLiteral("space-main"), 2000);
+
+    QModelIndex sourceBlock =
+        hierarchyIndexByObjectId(hierarchy->model(), QStringLiteral("block-control"));
+    secondaryPage =
+        hierarchyIndexByObjectId(hierarchy->model(), QStringLiteral("space-secondary"));
+    QVERIFY(sourceBlock.isValid());
+    QVERIFY(secondaryPage.isValid());
+    QVERIFY(dropHierarchyObject(hierarchy, sourceBlock, secondaryPage));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        std::ranges::any_of(
+            controller->workspace()->addressSpaces[1].blocks,
+            [](const regmap::RegisterBlock& block) {
+                return block.id == "block-control";
+            }),
+        2000);
+    QVERIFY(std::ranges::none_of(
+        controller->workspace()->addressSpaces[0].blocks,
+        [](const regmap::RegisterBlock& block) {
+            return block.id == "block-control";
+        }));
+    const auto* movedBlock =
+        regmap::findRegisterBlock(*controller->workspace(), "block-control");
+    QVERIFY(movedBlock != nullptr);
+    QVERIFY(!movedBlock->registers.empty());
+    QCOMPARE(movedBlock->registers.front().id, std::string{"reg-status"});
+
+    controller->undo();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        std::ranges::any_of(
+            controller->workspace()->addressSpaces[0].blocks,
+            [](const regmap::RegisterBlock& block) {
+                return block.id == "block-control";
+            }),
+        2000);
+    makeGeneratedFilesWritable(directory.path());
+}
+
 void GuiSmokeTests::copiesAndPastesEditableCells()
 {
     QTemporaryDir directory;
@@ -2764,6 +3012,75 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
                               QStringLiteral("CONTROL"), 2000);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 1).data().toString(),
                               QStringLiteral("0x4"), 2000);
+
+    const QModelIndex sourceTags = registers->model()->index(1, 10);
+    registers->scrollTo(sourceTags);
+    QCoreApplication::processEvents();
+    QTest::mouseClick(registers->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      registers->visualRect(sourceTags).center());
+    QVERIFY(QApplication::activePopupWidget() == nullptr);
+    QCOMPARE(registers->currentIndex(), sourceTags);
+    registers->setFocus(Qt::OtherFocusReason);
+    QTest::keyClick(registers, Qt::Key_C, Qt::ControlModifier);
+    QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("control"));
+
+    const QModelIndex firstTags = registers->model()->index(0, 10);
+    const QModelIndex lastTags = registers->model()->index(1, 10);
+    registers->scrollTo(firstTags);
+    QCoreApplication::processEvents();
+    const QPoint firstPosition = registers->visualRect(firstTags).center();
+    const QPoint lastPosition = registers->visualRect(lastTags).center();
+    QTest::mousePress(registers->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      firstPosition);
+    QTest::mouseMove(registers->viewport(), lastPosition, 20);
+    QTest::mouseRelease(registers->viewport(), Qt::LeftButton, Qt::NoModifier,
+                        lastPosition);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        registers->selectionModel()->isSelected(firstTags) &&
+            registers->selectionModel()->isSelected(lastTags),
+        2000);
+    QVERIFY(QApplication::activePopupWidget() == nullptr);
+    window.activateWindow();
+    registers->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
+    QTRY_VERIFY_WITH_TIMEOUT(registers->hasFocus(), 2000);
+    QTest::keyClick(registers, Qt::Key_V, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 10).data().toString(),
+                              QStringLiteral("control"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 10).data().toString(),
+                              QStringLiteral("control"), 2000);
+    const auto* status =
+        regmap::findRegister(*window.findChild<ProjectController*>()->workspace(),
+                             "reg-status");
+    QVERIFY(status != nullptr);
+    QCOMPARE(status->tags, std::vector<std::string>{"control"});
+
+    const QModelIndex sourceAccess = registers->model()->index(0, 9);
+    registers->scrollTo(sourceAccess);
+    QTest::mouseClick(registers->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      registers->visualRect(sourceAccess).center());
+    QVERIFY(QApplication::activePopupWidget() == nullptr);
+    registers->setFocus(Qt::OtherFocusReason);
+    QTest::keyClick(registers, Qt::Key_C, Qt::ControlModifier);
+    QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("RO"));
+
+    const QModelIndex firstAccess = registers->model()->index(0, 9);
+    const QModelIndex lastAccess = registers->model()->index(1, 9);
+    registers->setCurrentIndex(firstAccess);
+    registers->selectionModel()->select(
+        QItemSelection(firstAccess, lastAccess),
+        QItemSelectionModel::ClearAndSelect);
+    QVERIFY(registers->selectionModel()->isSelected(firstAccess));
+    QVERIFY(registers->selectionModel()->isSelected(lastAccess));
+    QApplication::clipboard()->setText(QStringLiteral("WO"));
+    QTest::keyClick(registers, Qt::Key_V, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 9).data().toString(),
+                              QStringLiteral("WO"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 9).data().toString(),
+                              QStringLiteral("WO"), 2000);
+    QCOMPARE(regmap::findRegister(*window.findChild<ProjectController*>()->workspace(),
+                                  "reg-status")->access,
+             regmap::AccessMode::writeOnly);
 
     makeGeneratedFilesWritable(directory.path());
 }

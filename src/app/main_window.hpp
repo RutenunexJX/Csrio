@@ -112,6 +112,8 @@ private:
     std::string selectedFieldId_;
     std::string openFieldsRegisterId_;
     std::string selectedTagFilter_;
+    std::optional<regmap::AddressSpace> copiedPage_;
+    std::optional<regmap::RegisterBlock> copiedBlock_;
     std::optional<regmap::SourceLocation> currentSource_;
     bool refreshing_{false};
     bool modelEditInProgress_{false};
@@ -179,6 +181,10 @@ private:
     void runSearch(bool reverse = false);
     void copySelection();
     void pasteSelection();
+    void copyHierarchySelection();
+    void pasteHierarchySelection();
+    void moveHierarchyObject(const std::string& sourceId, const std::string& targetId,
+                             int placement);
 
     void closeEvent(QCloseEvent* event) override;
 
