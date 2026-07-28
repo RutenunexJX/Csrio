@@ -1023,7 +1023,7 @@ void GuiSmokeTests::navigatesHierarchyAndOpensFieldsExplicitly()
     QCOMPARE(registers->currentIndex().data(Qt::UserRole + 1).toString(),
              secondRapidRegister);
     auto* latestRegisterEditor = visibleLineEdit(registers);
-    QCOMPARE(latestRegisterEditor->text(), QStringLiteral("NEW_REGISTER"));
+    QCOMPARE(latestRegisterEditor->text(), QStringLiteral("NEW_REGISTER_3"));
     QTest::keyClick(latestRegisterEditor, Qt::Key_Escape);
     QCoreApplication::processEvents();
 
@@ -1228,6 +1228,23 @@ void GuiSmokeTests::hierarchyContextActionsUseRightClickedTarget()
     QTest::keyClick(visibleEditor(hierarchy), Qt::Key_Escape);
     QCoreApplication::processEvents();
 
+    workspaceMenu = openHierarchyMenu(workspaceId);
+    QVERIFY(workspaceMenu != nullptr);
+    QVERIFY(clickMenuAction(workspaceMenu, QStringLiteral("newPageContextAction")));
+    QTRY_VERIFY_WITH_TIMEOUT(visibleEditor(hierarchy) != nullptr, 2000);
+    const QString pageCId =
+        hierarchy->currentIndex().data(Qt::UserRole + 1).toString();
+    QVERIFY(!pageCId.isEmpty());
+    QVERIFY(pageCId != pageAId);
+    QVERIFY(pageCId != pageBId);
+    QCOMPARE(visibleEditor(hierarchy)->text(), QStringLiteral("NEW_PAGE_2"));
+    QTest::keyClick(visibleEditor(hierarchy), Qt::Key_Escape);
+    QCoreApplication::processEvents();
+    QTRY_COMPARE_WITH_TIMEOUT(
+        hierarchy->model()->rowCount(
+            hierarchyIndexByObjectId(hierarchy->model(), workspaceId)),
+        originalPageCount + 2, 2000);
+
     pageAIndex = hierarchyIndexByObjectId(hierarchy->model(), pageAId);
     QModelIndex pageBIndex =
         hierarchyIndexByObjectId(hierarchy->model(), pageBId);
@@ -1301,6 +1318,23 @@ void GuiSmokeTests::hierarchyContextActionsUseRightClickedTarget()
                  .toString(),
              pageBId);
 
+    pageMenu = openHierarchyMenu(pageBId);
+    QVERIFY(pageMenu != nullptr);
+    QVERIFY(clickMenuAction(pageMenu, QStringLiteral("newBlockContextAction")));
+    QTRY_VERIFY_WITH_TIMEOUT(visibleEditor(hierarchy) != nullptr, 2000);
+    const QString blockCId =
+        hierarchy->currentIndex().data(Qt::UserRole + 1).toString();
+    QVERIFY(!blockCId.isEmpty());
+    QVERIFY(blockCId != blockAId);
+    QVERIFY(blockCId != blockBId);
+    QCOMPARE(visibleEditor(hierarchy)->text(), QStringLiteral("NEW_BLOCK_2"));
+    QTest::keyClick(visibleEditor(hierarchy), Qt::Key_Escape);
+    QCoreApplication::processEvents();
+    QTRY_COMPARE_WITH_TIMEOUT(
+        hierarchy->model()->rowCount(
+            hierarchyIndexByObjectId(hierarchy->model(), pageBId)),
+        pageBBlockCount + 2, 2000);
+
     blockAIndex = hierarchyIndexByObjectId(hierarchy->model(), blockAId);
     QModelIndex blockBIndex =
         hierarchyIndexByObjectId(hierarchy->model(), blockBId);
@@ -1341,6 +1375,22 @@ void GuiSmokeTests::hierarchyContextActionsUseRightClickedTarget()
     QVERIFY(registerExists(registerBId));
     QVERIFY(!registerExists(QStringLiteral("reg-status")));
 
+    blockMenu = openHierarchyMenu(blockBId);
+    QVERIFY(blockMenu != nullptr);
+    QVERIFY(clickMenuAction(blockMenu, QStringLiteral("newRegisterContextAction")));
+    QTRY_VERIFY_WITH_TIMEOUT(visibleEditor(registers) != nullptr, 2000);
+    const QString registerCId =
+        registers->currentIndex().data(Qt::UserRole + 1).toString();
+    QVERIFY(!registerCId.isEmpty());
+    QVERIFY(registerCId != registerBId);
+    QCOMPARE(visibleEditor(registers)->text(), QStringLiteral("NEW_REGISTER_2"));
+    QTest::keyClick(visibleEditor(registers), Qt::Key_Escape);
+    QCoreApplication::processEvents();
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->rowCount(),
+                              blockBRegisterRows + 2, 2000);
+    QVERIFY(registerExists(registerCId));
+    QVERIFY(registerExists(registerBId));
+
     blockAIndex = hierarchyIndexByObjectId(hierarchy->model(), blockAId);
     hierarchy->setCurrentIndex(blockAIndex);
     QCoreApplication::processEvents();
@@ -1380,8 +1430,8 @@ void GuiSmokeTests::hierarchyContextActionsUseRightClickedTarget()
         const QString text = dialog->text();
         confirmationDescribesTarget =
             text.contains(QStringLiteral("TARGET_PAGE")) &&
-            text.contains(QStringLiteral("1 block(s)")) &&
-            text.contains(QStringLiteral("1 register(s)"));
+            text.contains(QStringLiteral("2 block(s)")) &&
+            text.contains(QStringLiteral("2 register(s)"));
         if (auto* confirm = dialog->button(QMessageBox::Yes)) {
             QTest::mouseClick(confirm, Qt::LeftButton);
         } else {
@@ -2357,6 +2407,11 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
         }
         return -1;
     };
+    const int guardedMemberRow = fieldRowForId(guardedFieldId);
+    QVERIFY(guardedMemberRow >= 0);
+    QCOMPARE(fields->model()->index(guardedMemberRow, 0).data().toString(),
+             QStringLiteral("NEW_MEMBER_2"));
+
     int memberRow = fieldRowForId(memberFieldId);
     QVERIFY(memberRow >= 0);
     fields->setCurrentIndex(fields->model()->index(memberRow, 0));
@@ -2511,6 +2566,17 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
              QStringLiteral("none"));
     QCOMPARE(fields->model()->index(memberRow, 12).data().toString(),
              QStringLiteral("none"));
+
+    const int secondFieldAddRow = fields->model()->rowCount() - 1;
+    Q_EMIT fields->clicked(fields->model()->index(secondFieldAddRow, 0));
+    QTRY_VERIFY_WITH_TIMEOUT(visibleFieldEditor() != nullptr, 2000);
+    auto* secondFieldNameEditor = visibleFieldEditor();
+    QCOMPARE(secondFieldNameEditor->text(), QStringLiteral("NEW_FIELD_2"));
+    const QString secondFieldId =
+        fields->currentIndex().data(Qt::UserRole + 1).toString();
+    QVERIFY(!secondFieldId.isEmpty());
+    QTest::keyClick(secondFieldNameEditor, Qt::Key_Escape);
+    QCoreApplication::processEvents();
 
     makeGeneratedFilesWritable(directory.path());
 }
@@ -3107,6 +3173,26 @@ void GuiSmokeTests::insertsRegisterBetweenRows()
     QCOMPARE(registers->model()->index(2, 0).data().toString(), QStringLiteral("CONTROL"));
     QCOMPARE(registers->model()->index(2, 1).data().toString(), QStringLiteral("0x8"));
     QCOMPARE(registers->model()->index(3, 0).data().toString(), QStringLiteral("+"));
+
+    const QModelIndex shiftedControl = registers->model()->index(2, 0);
+    const QRect shiftedControlRectangle = registers->visualRect(shiftedControl);
+    QVERIFY(shiftedControlRectangle.isValid());
+    QTest::mouseMove(
+        registers->viewport(),
+        registers->visualRect(registers->model()->index(1, 0)).center());
+    const QPoint secondInsertionPoint(18, shiftedControlRectangle.top());
+    QTest::mouseMove(registers->viewport(), secondInsertionPoint);
+    QTest::qWait(20);
+    QTest::mouseClick(registers->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      secondInsertionPoint);
+
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->rowCount(), 5, 2000);
+    QCOMPARE(registers->model()->index(2, 0).data().toString(),
+             QStringLiteral("NEW_REGISTER_2"));
+    QCOMPARE(registers->model()->index(2, 1).data().toString(), QStringLiteral("0x8"));
+    QCOMPARE(registers->model()->index(3, 0).data().toString(), QStringLiteral("CONTROL"));
+    QCOMPARE(registers->model()->index(3, 1).data().toString(), QStringLiteral("0xC"));
+    QCOMPARE(registers->model()->index(4, 0).data().toString(), QStringLiteral("+"));
 
     makeGeneratedFilesWritable(directory.path());
 }

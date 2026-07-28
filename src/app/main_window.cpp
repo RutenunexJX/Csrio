@@ -1092,6 +1092,20 @@ template <typename Exists>
     }
 }
 
+template <typename Value>
+[[nodiscard]] std::string
+uniqueDefaultName(const std::vector<Value>& values, std::string_view base)
+{
+    std::string candidate(base);
+    for (std::size_t suffix = 2;
+         std::ranges::any_of(
+             values, [&](const Value& value) { return value.name == candidate; });
+         ++suffix) {
+        candidate = std::string(base) + '_' + std::to_string(suffix);
+    }
+    return candidate;
+}
+
 [[nodiscard]] std::optional<std::size_t>
 pagePosition(const regmap::Workspace& workspace, std::string_view pageId)
 {
@@ -3721,7 +3735,8 @@ void MainWindow::addAddressSpace()
     }
     regmap::AddressSpace addressSpace;
     addressSpace.id = regmap::makeStableObjectId(*workspace, "space");
-    addressSpace.name = "NEW_PAGE";
+    addressSpace.name =
+        uniqueDefaultName(workspace->addressSpaces, "NEW_PAGE");
     addressSpace.addressWidth = 32;
     const std::string newId = addressSpace.id;
     if (controller_.editWorkspace(
@@ -3761,14 +3776,17 @@ void MainWindow::addBlock(std::string parentId)
     }
     regmap::RegisterBlock block;
     block.id = regmap::makeStableObjectId(*workspace, "block");
-    block.name = "NEW_BLOCK";
     block.size = 0x1000;
     if (const auto* parent = regmap::findAddressSpace(*workspace, parentId)) {
+        block.name = uniqueDefaultName(parent->blocks, "NEW_BLOCK");
         for (const auto& existing : parent->blocks) {
             block.baseAddress =
                 std::max(block.baseAddress,
                          existing.baseAddress + existing.size.value_or(std::uint64_t{0x1000}));
         }
+    }
+    if (block.name.empty()) {
+        block.name = "NEW_BLOCK";
     }
     const std::string newId = block.id;
     if (controller_.editWorkspace(
@@ -3832,7 +3850,8 @@ void MainWindow::addRegister(std::string parentId)
 
     regmap::Register reg;
     reg.id = regmap::makeStableObjectId(*workspace, "reg");
-    reg.name = "NEW_REGISTER";
+    reg.name =
+        uniqueDefaultName(parent->registers, "NEW_REGISTER");
     reg.width = 32;
     reg.array.count = 1;
     reg.array.stride = 4;
@@ -3916,7 +3935,8 @@ void MainWindow::insertRegisterAt(int row)
 
     regmap::Register reg;
     reg.id = regmap::makeStableObjectId(*workspace, "reg");
-    reg.name = "NEW_REGISTER";
+    reg.name =
+        uniqueDefaultName(block->registers, "NEW_REGISTER");
     reg.offset = next->offset;
     reg.width = 32;
     reg.array.count = 1;
@@ -3992,7 +4012,7 @@ void MainWindow::addField()
 
     regmap::Field field;
     field.id = regmap::makeStableObjectId(*workspace, "field");
-    field.name = "NEW_FIELD";
+    field.name = uniqueDefaultName(reg->fields, "NEW_FIELD");
     field.msb = field.lsb = static_cast<std::uint32_t>(std::distance(used.begin(), freeBit));
     field.type = regmap::FieldType::bits;
     field.softwareAccess = reg->access;
@@ -4055,7 +4075,7 @@ void MainWindow::addSubfield()
 
     regmap::Field member;
     member.id = regmap::makeStableObjectId(*workspace, "field");
-    member.name = "NEW_MEMBER";
+    member.name = uniqueDefaultName(parent->members, "NEW_MEMBER");
     member.msb = member.lsb = static_cast<std::uint32_t>(std::distance(used.begin(), freeBit));
     member.type = regmap::FieldType::bits;
     member.softwareAccess = reg->access;
@@ -4115,19 +4135,9 @@ void MainWindow::addEnumValue()
         return;
     }
 
-    std::string name = "NEW_VALUE";
-    for (std::size_t suffix = 2;
-         std::ranges::any_of(
-             currentValues, [&](const regmap::EnumValue& item) {
-                 return item.name == name;
-             });
-         ++suffix) {
-        name = "NEW_VALUE_" + std::to_string(suffix);
-    }
-
     regmap::EnumValue enumValue;
     enumValue.id = regmap::makeStableObjectId(*workspace, "enum");
-    enumValue.name = std::move(name);
+    enumValue.name = uniqueDefaultName(currentValues, "NEW_VALUE");
     enumValue.value = regmap::UnsignedValue(value);
     const std::string newId = enumValue.id;
     const std::string ownerId = field != nullptr ? field->id : reg->id;
