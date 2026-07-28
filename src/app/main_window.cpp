@@ -18,6 +18,7 @@
 #include <QColor>
 #include <QComboBox>
 #include <QDrag>
+#include <QDir>
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
 #include <QFileDialog>
@@ -49,6 +50,7 @@
 #include <QScopedValueRollback>
 #include <QScreen>
 #include <QSignalBlocker>
+#include <QSettings>
 #include <QSizePolicy>
 #include <QStyle>
 #include <QSplitter>
@@ -102,6 +104,8 @@ constexpr auto hierarchyClipboardMimeType =
     "application/x-regmap-workbench-hierarchy-object";
 constexpr auto hierarchyDragMimeType =
     "application/x-regmap-workbench-hierarchy-drag";
+constexpr auto recentProjectsSettingsKey = "projects/recent";
+constexpr qsizetype maximumRecentProjectCount = 8;
 
 enum class HierarchyDropPlacement {
     onItem,
@@ -174,6 +178,21 @@ enum EnumColumn {
     }
     return QStandardPaths::writableLocation(
         QStandardPaths::DocumentsLocation);
+}
+
+[[nodiscard]] QString normalizedProjectPath(const QString& path)
+{
+    return QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+}
+
+[[nodiscard]] bool sameProjectPath(const QString& left,
+                                   const QString& right)
+{
+#ifdef Q_OS_WIN
+    return left.compare(right, Qt::CaseInsensitive) == 0;
+#else
+    return left == right;
+#endif
 }
 
 [[nodiscard]] QString hex(std::uint64_t value)
@@ -2306,7 +2325,9 @@ void MainWindow::buildActions()
                 : statusBar()->currentMessage();
             QMessageBox::critical(this, QStringLiteral("Create Project"),
                                   detail);
+            return;
         }
+        rememberRecentProject(fromPath(controller_.manifestPath()));
     });
 
     auto* openAction = new QAction(QStringLiteral("Open Project…"), this);
@@ -2324,14 +2345,10 @@ void MainWindow::buildActions()
         if (!path.isEmpty()) {
             if (confirmProjectReplacement()) {
                 if (!openProjectPath(path)) {
-                    const QString detail =
-                        statusBar()->currentMessage().isEmpty()
-                            ? QStringLiteral(
-                                  "The register-map project could not be opened.")
-                            : statusBar()->currentMessage();
-                    QMessageBox::critical(
-                        this, QStringLiteral("Open Project"), detail);
+                    reportProjectOpenFailure();
+                    return;
                 }
+                rememberRecentProject(path);
             }
         }
     });
@@ -2499,6 +2516,12 @@ void MainWindow::buildActions()
     QMenu* fileMenu = menuBar()->addMenu(QStringLiteral("File"));
     fileMenu->addAction(newAction);
     fileMenu->addAction(openAction);
+    recentProjectsMenu_ =
+        fileMenu->addMenu(QStringLiteral("Open Recent"));
+    recentProjectsMenu_->setObjectName(
+        QStringLiteral("recentProjectsMenu"));
+    rebuildRecentProjectsMenu();
+    fileMenu->addSeparator();
     fileMenu->addAction(saveAction_);
     fileMenu->addAction(reloadAction_);
     fileMenu->addSeparator();
@@ -3017,6 +3040,144 @@ bool MainWindow::confirmProjectReplacement()
 bool MainWindow::openProjectPath(const QString& path)
 {
     return controller_.openProject(path);
+}
+
+void MainWindow::reportProjectOpenFailure()
+{
+    const QString detail =
+        statusBar()->currentMessage().isEmpty()
+            ? QStringLiteral(
+                  "The register-map project could not be opened.")
+            : statusBar()->currentMessage();
+    QMessageBox::critical(
+        this, QStringLiteral("Open Project"), detail);
+}
+
+void MainWindow::rebuildRecentProjectsMenu()
+{
+    if (recentProjectsMenu_ == nullptr) {
+        return;
+    }
+    recentProjectsMenu_->clear();
+    QSettings settings;
+    const QStringList paths =
+        settings.value(
+                    QString::fromLatin1(recentProjectsSettingsKey))
+            .toStringList();
+    if (paths.isEmpty()) {
+        QAction* empty = recentProjectsMenu_->addAction(
+            QStringLiteral("(No recent projects)"));
+        empty->setEnabled(false);
+        return;
+    }
+
+    for (qsizetype index = 0; index < paths.size(); ++index) {
+        const QString path = paths[index];
+        const QFileInfo information(path);
+        const QString label =
+            QStringLiteral("&%1 %2 — %3")
+                .arg(index + 1)
+                .arg(information.fileName(),
+                     QDir::toNativeSeparators(
+                         information.absolutePath()));
+        QAction* action = recentProjectsMenu_->addAction(label);
+        action->setObjectName(QStringLiteral("recentProjectAction"));
+        action->setData(path);
+        action->setToolTip(QDir::toNativeSeparators(path));
+        connect(action, &QAction::triggered, this,
+                [this, path] { openRecentProject(path); });
+    }
+
+    recentProjectsMenu_->addSeparator();
+    QAction* clear = recentProjectsMenu_->addAction(
+        QStringLiteral("Clear Recent Projects"));
+    clear->setObjectName(QStringLiteral("clearRecentProjectsAction"));
+    connect(clear, &QAction::triggered, this, [this] {
+        QSettings settings;
+        settings.remove(
+            QString::fromLatin1(recentProjectsSettingsKey));
+        settings.sync();
+        QTimer::singleShot(0, this, [this] {
+            rebuildRecentProjectsMenu();
+        });
+        statusBar()->showMessage(
+            QStringLiteral("Recent projects cleared"), 4000);
+    });
+}
+
+void MainWindow::rememberRecentProject(const QString& path)
+{
+    const QString normalized = normalizedProjectPath(path);
+    if (normalized.isEmpty()) {
+        return;
+    }
+    QSettings settings;
+    QStringList paths =
+        settings.value(
+                    QString::fromLatin1(recentProjectsSettingsKey))
+            .toStringList();
+    paths.removeIf([&](const QString& candidate) {
+        return sameProjectPath(candidate, normalized);
+    });
+    paths.prepend(normalized);
+    while (paths.size() > maximumRecentProjectCount) {
+        paths.removeLast();
+    }
+    settings.setValue(
+        QString::fromLatin1(recentProjectsSettingsKey), paths);
+    settings.sync();
+    QTimer::singleShot(0, this, [this] {
+        rebuildRecentProjectsMenu();
+    });
+}
+
+void MainWindow::removeRecentProject(const QString& path)
+{
+    QSettings settings;
+    QStringList paths =
+        settings.value(
+                    QString::fromLatin1(recentProjectsSettingsKey))
+            .toStringList();
+    paths.removeIf([&](const QString& candidate) {
+        return sameProjectPath(candidate, path);
+    });
+    settings.setValue(
+        QString::fromLatin1(recentProjectsSettingsKey), paths);
+    settings.sync();
+}
+
+void MainWindow::openRecentProject(const QString& path)
+{
+    if (!commitActiveEditor()) {
+        return;
+    }
+    const QString normalized = normalizedProjectPath(path);
+    const QFileInfo information(normalized);
+    if (!information.exists() || !information.isFile()) {
+        removeRecentProject(normalized);
+        QMessageBox::warning(
+            this, QStringLiteral("Recent Project Missing"),
+            QStringLiteral(
+                "Could not find:\n%1\n\nThe entry was removed from "
+                "Open Recent. The current project is unchanged.")
+                .arg(QDir::toNativeSeparators(normalized)));
+        QTimer::singleShot(0, this, [this] {
+            rebuildRecentProjectsMenu();
+        });
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Recent project missing · entry removed · current project unchanged"),
+            7000);
+        return;
+    }
+    if (!confirmProjectReplacement()) {
+        return;
+    }
+    if (!openProjectPath(normalized)) {
+        reportProjectOpenFailure();
+        return;
+    }
+    rememberRecentProject(normalized);
 }
 
 void MainWindow::requestProjectRefresh()

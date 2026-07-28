@@ -18,6 +18,7 @@ class QCloseEvent;
 class QComboBox;
 class QLabel;
 class QLineEdit;
+class QMenu;
 class QPoint;
 class QModelIndex;
 class QPushButton;
@@ -104,6 +105,7 @@ private:
     QAction* copyAction_{nullptr};
     QAction* pasteAction_{nullptr};
     QAction* showAdvancedFieldsAction_{nullptr};
+    QMenu* recentProjectsMenu_{nullptr};
 
     std::string selectedAddressId_;
     std::string selectedBlockId_;
@@ -136,6 +138,11 @@ private:
     };
     [[nodiscard]] UnsavedChoice promptUnsavedChanges(bool closing);
     bool confirmProjectReplacement();
+    void reportProjectOpenFailure();
+    void rebuildRecentProjectsMenu();
+    void rememberRecentProject(const QString& path);
+    void removeRecentProject(const QString& path);
+    void openRecentProject(const QString& path);
     void requestProjectRefresh();
     void refreshProject();
     void updateContextBar();

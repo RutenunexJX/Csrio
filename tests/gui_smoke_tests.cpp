@@ -39,6 +39,7 @@
 #include <QMimeData>
 #include <QMessageBox>
 #include <QPalette>
+#include <QSettings>
 #include <QSplitter>
 #include <QStandardItemModel>
 #include <QSignalSpy>
@@ -94,6 +95,7 @@ private slots:
     void confirmsUnsavedChangesBeforeReplacingProject();
     void preflightsActiveEditorBeforeProjectChoosers();
     void startsProjectChoosersInUsefulDirectories();
+    void opensAndCleansRecentProjectsSafely();
     void navigatesFieldProblemsAndFallsBackForHiddenFields();
     void navigatesEnumValuesFromSearchAndProblems();
     void supportsTrailingRowsAndFieldMovement();
@@ -2952,6 +2954,236 @@ void GuiSmokeTests::startsProjectChoosersInUsefulDirectories()
         expectedDocuments);
 
     makeGeneratedFilesWritable(projectRoot.path());
+}
+
+void GuiSmokeTests::opensAndCleansRecentProjectsSafely()
+{
+    QApplication::setAttribute(Qt::AA_DontUseNativeDialogs, true);
+    constexpr auto settingsKey = "projects/recent";
+
+    struct SettingsScope {
+        QString organization =
+            QCoreApplication::organizationName();
+        QString application =
+            QCoreApplication::applicationName();
+        QString key;
+
+        explicit SettingsScope(QString settingsKey)
+            : key(settingsKey)
+        {
+            QCoreApplication::setOrganizationName(
+                QStringLiteral("RegMapWorkbenchTests"));
+            QCoreApplication::setApplicationName(
+                QStringLiteral("RecentProjectsTest"));
+            QSettings settings;
+            settings.remove(key);
+            settings.sync();
+        }
+
+        ~SettingsScope()
+        {
+            QSettings settings;
+            settings.remove(key);
+            settings.sync();
+            QCoreApplication::setOrganizationName(organization);
+            QCoreApplication::setApplicationName(application);
+        }
+    } settingsScope(QString::fromLatin1(settingsKey));
+
+    QSettings settings;
+
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    QDir root(directory.path());
+    QVERIFY(root.mkpath(QStringLiteral("current")));
+    QVERIFY(root.mkpath(QStringLiteral("recent")));
+    const QString currentManifest =
+        root.filePath(
+            QStringLiteral("current/current.regmap.yaml"));
+    const QString recentManifest =
+        root.filePath(
+            QStringLiteral("recent/recent.regmap.yaml"));
+    const QString missingManifest =
+        root.filePath(
+            QStringLiteral("missing/missing.regmap.yaml"));
+    createProject(currentManifest);
+    createProject(recentManifest, 8);
+    const QString normalizedRecent =
+        QDir::cleanPath(
+            QFileInfo(recentManifest).absoluteFilePath());
+    const QString normalizedMissing =
+        QDir::cleanPath(
+            QFileInfo(missingManifest).absoluteFilePath());
+    settings.setValue(
+        QString::fromLatin1(settingsKey),
+        QStringList{normalizedMissing});
+    settings.sync();
+
+    MainWindow window;
+    window.resize(1100, 720);
+    window.show();
+    QVERIFY(window.openProjectPath(currentManifest));
+    QTest::qWait(50);
+
+    auto* controller = window.findChild<ProjectController*>();
+    auto* openProject =
+        window.findChild<QAction*>(QStringLiteral("openProjectAction"));
+    auto* recentMenu =
+        window.findChild<QMenu*>(QStringLiteral("recentProjectsMenu"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(openProject != nullptr);
+    QVERIFY(recentMenu != nullptr);
+
+    const auto recentAction =
+        [&](const QString& path) -> QAction* {
+            const auto actions = recentMenu->actions();
+            const auto match = std::ranges::find_if(
+                actions, [&](const QAction* action) {
+                    return action->objectName() ==
+                               QStringLiteral("recentProjectAction") &&
+                        action->data().toString().compare(
+                            path, Qt::CaseInsensitive) == 0;
+                });
+            return match == actions.end() ? nullptr : *match;
+        };
+
+    bool pickerSeen = false;
+    QTimer::singleShot(0, &window, [&] {
+        auto* picker = qobject_cast<QFileDialog*>(
+            QApplication::activeModalWidget());
+        if (picker == nullptr) {
+            return;
+        }
+        pickerSeen = true;
+        picker->setDirectory(
+            QFileInfo(recentManifest).absolutePath());
+        picker->selectFile(recentManifest);
+        QVERIFY(QMetaObject::invokeMethod(
+            picker, "accept", Qt::DirectConnection));
+    });
+    openProject->trigger();
+    QVERIFY(pickerSeen);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        controller->manifestPath(),
+        std::filesystem::path(
+            recentManifest.toStdWString()), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        recentAction(normalizedRecent) != nullptr, 2000);
+    QAction* recordedRecent = recentAction(normalizedRecent);
+    QCOMPARE(
+        recentMenu->actions().front()->data().toString(),
+        normalizedRecent);
+
+    QVERIFY(window.openProjectPath(currentManifest));
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Unsaved recent-project edit"),
+        [](regmap::Workspace& workspace) {
+            workspace.name = "Unsaved Current Workspace";
+        }));
+    QVERIFY(controller->isDirty());
+    const std::size_t undoDepth = controller->undoDepth();
+
+    bool cancelSeen = false;
+    QTimer::singleShot(0, &window, [&] {
+        auto* dialog = qobject_cast<QMessageBox*>(
+            QApplication::activeModalWidget());
+        if (dialog == nullptr) {
+            return;
+        }
+        cancelSeen = true;
+        QTest::mouseClick(
+            dialog->button(QMessageBox::Cancel), Qt::LeftButton);
+    });
+    recordedRecent = recentAction(normalizedRecent);
+    QVERIFY(recordedRecent != nullptr);
+    recordedRecent->trigger();
+    QVERIFY(cancelSeen);
+    QCOMPARE(
+        controller->manifestPath(),
+        std::filesystem::path(
+            currentManifest.toStdWString()));
+    QVERIFY(controller->isDirty());
+    QCOMPARE(controller->undoDepth(), undoDepth);
+    QCOMPARE(controller->workspace()->name,
+             std::string("Unsaved Current Workspace"));
+
+    controller->undo();
+    QTRY_VERIFY_WITH_TIMEOUT(!controller->isDirty(), 2000);
+    recordedRecent = recentAction(normalizedRecent);
+    QVERIFY(recordedRecent != nullptr);
+    recordedRecent->trigger();
+    QTRY_COMPARE_WITH_TIMEOUT(
+        controller->manifestPath(),
+        std::filesystem::path(
+            recentManifest.toStdWString()), 3000);
+    QVERIFY(!controller->isDirty());
+
+    QAction* missing = recentAction(normalizedMissing);
+    QVERIFY(missing != nullptr);
+    bool missingDialogSeen = false;
+    bool missingRecoveryDescribed = false;
+    QTimer::singleShot(0, &window, [&] {
+        auto* dialog = qobject_cast<QMessageBox*>(
+            QApplication::activeModalWidget());
+        if (dialog == nullptr) {
+            return;
+        }
+        missingDialogSeen = true;
+        missingRecoveryDescribed =
+            dialog->windowTitle() ==
+                QStringLiteral("Recent Project Missing") &&
+            dialog->text().contains(
+                QStringLiteral("missing.regmap.yaml")) &&
+            dialog->text().contains(
+                QStringLiteral("removed from Open Recent")) &&
+            dialog->text().contains(
+                QStringLiteral("current project is unchanged"));
+        QTest::mouseClick(
+            dialog->button(QMessageBox::Ok), Qt::LeftButton);
+    });
+    const std::filesystem::path beforeMissing =
+        controller->manifestPath();
+    missing->trigger();
+    QVERIFY(missingDialogSeen);
+    QVERIFY(missingRecoveryDescribed);
+    QCOMPARE(controller->manifestPath(), beforeMissing);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        recentAction(normalizedMissing) == nullptr, 2000);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("entry removed")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("current project unchanged")));
+
+    settings.sync();
+    const QStringList stored =
+        settings.value(
+                    QString::fromLatin1(settingsKey))
+            .toStringList();
+    QCOMPARE(stored.size(), 1);
+    QCOMPARE(stored.front(), normalizedRecent);
+
+    auto* clearRecent = recentMenu->findChild<QAction*>(
+        QStringLiteral("clearRecentProjectsAction"));
+    QVERIFY(clearRecent != nullptr);
+    clearRecent->trigger();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        recentAction(normalizedRecent) == nullptr, 2000);
+    settings.sync();
+    QVERIFY(settings
+                .value(QString::fromLatin1(settingsKey))
+                .toStringList()
+                .isEmpty());
+    QCOMPARE(recentMenu->actions().size(), 1);
+    QVERIFY(!recentMenu->actions().front()->isEnabled());
+    QCOMPARE(recentMenu->actions().front()->text(),
+             QStringLiteral("(No recent projects)"));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Recent projects cleared")));
+
+    makeGeneratedFilesWritable(
+        root.filePath(QStringLiteral("current")));
+    makeGeneratedFilesWritable(
+        root.filePath(QStringLiteral("recent")));
 }
 
 void GuiSmokeTests::navigatesFieldProblemsAndFallsBackForHiddenFields()

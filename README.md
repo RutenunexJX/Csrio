@@ -102,8 +102,11 @@ status bar states the expected value. The file chooser starts in the current pro
 or the system Documents directory when no project is open, so switching projects does not begin
 in the application installation folder. If a selected project cannot be created or opened, the
 current project and its pending edits remain active; the failure identifies the target and the
-first available cause. An explicit **Open Project** failure also displays this recovery information
-in a modal error instead of relying on the status bar alone. If the project file is created
+first available cause. Successfully created or explicitly opened projects appear under
+**File > Open Recent**, newest first. Selecting a missing entry removes only that entry and
+confirms that the current project is unchanged; unsaved-edit protection runs before switching to
+a valid recent project. An explicit **Open Project** failure also displays recovery information in
+a modal error instead of relying on the status bar alone. If the project file is created
 successfully but a pre-existing managed RTL file is invalid, the new project still opens as a
 recoverable blocked state instead of being misreported as a creation failure; fix the RTL and
 invoke **Save & Sync**. An existing project can also be passed at startup:
