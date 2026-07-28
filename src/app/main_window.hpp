@@ -129,6 +129,12 @@ private:
     void buildActions();
     void connectSignals();
     [[nodiscard]] bool commitActiveEditor();
+    enum class UnsavedChoice {
+        save,
+        discard,
+        cancel,
+    };
+    [[nodiscard]] UnsavedChoice promptUnsavedChanges(bool closing);
     bool confirmProjectReplacement();
     void requestProjectRefresh();
     void refreshProject();

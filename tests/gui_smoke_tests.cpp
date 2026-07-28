@@ -27,6 +27,7 @@
 #include <QEvent>
 #include <QFile>
 #include <QFileDevice>
+#include <QFileDialog>
 #include <QFileInfo>
 #include <QFont>
 #include <QFrame>
@@ -85,6 +86,8 @@ private slots:
     void retainsCurrentProjectWhenReplacementCannotLoad();
     void reloadsProjectWithoutLosingFieldWorkspaceContext();
     void confirmsDiscardBeforeReloadingDirtyProject();
+    void protectsUnsavedChangesWhenClosing();
+    void confirmsUnsavedChangesBeforeReplacingProject();
     void navigatesFieldProblemsAndFallsBackForHiddenFields();
     void navigatesEnumValuesFromSearchAndProblems();
     void supportsTrailingRowsAndFieldMovement();
@@ -2232,6 +2235,286 @@ void GuiSmokeTests::confirmsDiscardBeforeReloadingDirtyProject()
              std::string("GUI Workspace"));
 
     makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::protectsUnsavedChangesWhenClosing()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest =
+        directory.filePath(QStringLiteral("close-protection.regmap.yaml"));
+    const QString rtlPath =
+        directory.filePath(QStringLiteral("rtl/gui_registers.sv"));
+    createProject(manifest);
+
+    MainWindow window;
+    window.resize(1100, 720);
+    window.show();
+    window.openProjectPath(manifest);
+    QTest::qWait(50);
+
+    auto* controller = window.findChild<ProjectController*>();
+    auto* state =
+        window.findChild<QLabel*>(QStringLiteral("syncStateBadge"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(state != nullptr);
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Unsaved close edit"),
+        [](regmap::Workspace& workspace) {
+            regmap::findRegister(workspace, "reg-status")->description =
+                "Unsaved close description";
+        }));
+    QVERIFY(controller->isDirty());
+    QCOMPARE(controller->changes().size(), std::size_t{1});
+    const std::size_t undoDepth = controller->undoDepth();
+
+    struct CloseInvocation {
+        bool dialogSeen{false};
+        bool impactDescribed{false};
+        bool closed{false};
+    };
+    const auto invokeClose =
+        [&](QMessageBox::StandardButton response) {
+            CloseInvocation result;
+            QTimer::singleShot(0, &window, [&] {
+                auto* dialog =
+                    qobject_cast<QMessageBox*>(
+                        QApplication::activeModalWidget());
+                if (dialog == nullptr) {
+                    return;
+                }
+                result.dialogSeen = true;
+                auto* save = dialog->findChild<QPushButton*>(
+                    QStringLiteral("saveUnsavedChangesButton"));
+                auto* discard = dialog->findChild<QPushButton*>(
+                    QStringLiteral("discardUnsavedChangesButton"));
+                auto* cancel = dialog->findChild<QPushButton*>(
+                    QStringLiteral("cancelUnsavedChangesButton"));
+                result.impactDescribed =
+                    dialog->windowTitle() ==
+                        QStringLiteral("Unsaved Register Map") &&
+                    dialog->text().contains(
+                        QStringLiteral("1 unsaved Workbench change")) &&
+                    dialog->text().contains(
+                        QStringLiteral("close-protection.regmap.yaml")) &&
+                    dialog->text().contains(QStringLiteral("before closing")) &&
+                    dialog->informativeText().contains(
+                        QStringLiteral("Save & Sync")) &&
+                    dialog->informativeText().contains(
+                        QStringLiteral("Undo history")) &&
+                    dialog->informativeText().contains(
+                        QStringLiteral("cannot be recovered")) &&
+                    save != nullptr && discard != nullptr &&
+                    cancel != nullptr &&
+                    dialog->defaultButton() == save &&
+                    dialog->escapeButton() == cancel;
+                if (auto* button = dialog->button(response)) {
+                    QTest::mouseClick(button, Qt::LeftButton);
+                } else {
+                    dialog->reject();
+                }
+            });
+            result.closed = window.close();
+            return result;
+        };
+
+    const CloseInvocation cancelled =
+        invokeClose(QMessageBox::Cancel);
+    QVERIFY(cancelled.dialogSeen);
+    QVERIFY(cancelled.impactDescribed);
+    QVERIFY(!cancelled.closed);
+    QVERIFY(window.isVisible());
+    QVERIFY(controller->isDirty());
+    QCOMPARE(controller->undoDepth(), undoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Close cancelled")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("1 unsaved Workbench change kept")));
+
+    editManagedRtlValue(
+        rtlPath, QStringLiteral("reg-status"),
+        QStringLiteral("offset"), QStringLiteral("64'hx"));
+    const CloseInvocation blockedSave =
+        invokeClose(QMessageBox::Save);
+    QVERIFY(blockedSave.dialogSeen);
+    QVERIFY(blockedSave.impactDescribed);
+    QVERIFY(!blockedSave.closed);
+    QVERIFY(window.isVisible());
+    QVERIFY(controller->isDirty());
+    QTRY_VERIFY_WITH_TIMEOUT(controller->hasProjectErrors(), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        state->text().startsWith(QStringLiteral("Blocked")), 2000);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Workbench edits remain unsaved")));
+
+    const auto unchanged =
+        regmap::openProject(
+            std::filesystem::path(manifest.toStdWString()));
+    QVERIFY(unchanged.workspace.has_value());
+    QCOMPARE(regmap::findRegister(*unchanged.workspace, "reg-status")
+                 ->description,
+             std::string{});
+
+    const CloseInvocation discarded =
+        invokeClose(QMessageBox::Discard);
+    QVERIFY(discarded.dialogSeen);
+    QVERIFY(discarded.impactDescribed);
+    QVERIFY(discarded.closed);
+    QVERIFY(!window.isVisible());
+    QVERIFY(controller->isDirty());
+    QCOMPARE(regmap::findRegister(*controller->workspace(), "reg-status")
+                 ->description,
+             std::string("Unsaved close description"));
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::confirmsUnsavedChangesBeforeReplacingProject()
+{
+    QApplication::setAttribute(Qt::AA_DontUseNativeDialogs, true);
+
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    QDir root(directory.path());
+    QVERIFY(root.mkpath(QStringLiteral("current")));
+    QVERIFY(root.mkpath(QStringLiteral("replacement")));
+    const QString currentManifest =
+        root.filePath(
+            QStringLiteral("current/current-project.regmap.yaml"));
+    const QString replacementManifest =
+        root.filePath(
+            QStringLiteral("replacement/replacement-project.regmap.yaml"));
+    createProject(currentManifest);
+    createProject(replacementManifest, 8);
+
+    MainWindow window;
+    window.resize(1100, 720);
+    window.show();
+    window.openProjectPath(currentManifest);
+    QTest::qWait(50);
+
+    auto* controller = window.findChild<ProjectController*>();
+    QVERIFY(controller != nullptr);
+    QAction* openProject = nullptr;
+    for (auto* action : window.findChildren<QAction*>()) {
+        if (action->text().startsWith(QStringLiteral("Open Project"))) {
+            openProject = action;
+            break;
+        }
+    }
+    QVERIFY(openProject != nullptr);
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Unsaved replacement edit"),
+        [](regmap::Workspace& workspace) {
+            workspace.name = "Unsaved Current Workspace";
+        }));
+    QVERIFY(controller->isDirty());
+    QCOMPARE(controller->changes().size(), std::size_t{1});
+    const std::size_t undoDepth = controller->undoDepth();
+
+    struct ReplacementInvocation {
+        bool pickerSeen{false};
+        bool dialogSeen{false};
+        bool impactDescribed{false};
+    };
+    const auto invokeOpen =
+        [&](QMessageBox::StandardButton response) {
+            ReplacementInvocation result;
+            QTimer::singleShot(0, &window, [&] {
+                auto* picker =
+                    qobject_cast<QFileDialog*>(
+                        QApplication::activeModalWidget());
+                if (picker == nullptr) {
+                    return;
+                }
+                result.pickerSeen = true;
+                picker->setDirectory(
+                    QFileInfo(replacementManifest).absolutePath());
+                picker->selectFile(replacementManifest);
+                QTimer::singleShot(0, &window, [&] {
+                    auto* dialog =
+                        qobject_cast<QMessageBox*>(
+                            QApplication::activeModalWidget());
+                    if (dialog == nullptr) {
+                        return;
+                    }
+                    result.dialogSeen = true;
+                    auto* save = dialog->findChild<QPushButton*>(
+                        QStringLiteral("saveUnsavedChangesButton"));
+                    auto* discard = dialog->findChild<QPushButton*>(
+                        QStringLiteral("discardUnsavedChangesButton"));
+                    auto* cancel = dialog->findChild<QPushButton*>(
+                        QStringLiteral("cancelUnsavedChangesButton"));
+                    result.impactDescribed =
+                        dialog->windowTitle() ==
+                            QStringLiteral("Unsaved Register Map") &&
+                        dialog->text().contains(
+                            QStringLiteral("1 unsaved Workbench change")) &&
+                        dialog->text().contains(
+                            QStringLiteral("current-project.regmap.yaml")) &&
+                        dialog->text().contains(
+                            QStringLiteral("opening another project")) &&
+                        dialog->informativeText().contains(
+                            QStringLiteral("Save & Sync")) &&
+                        dialog->informativeText().contains(
+                            QStringLiteral("Undo history")) &&
+                        dialog->informativeText().contains(
+                            QStringLiteral("cannot be recovered")) &&
+                        save != nullptr && discard != nullptr &&
+                        cancel != nullptr &&
+                        dialog->defaultButton() == save &&
+                        dialog->escapeButton() == cancel;
+                    if (auto* button = dialog->button(response)) {
+                        QTest::mouseClick(button, Qt::LeftButton);
+                    } else {
+                        dialog->reject();
+                    }
+                });
+                QVERIFY(QMetaObject::invokeMethod(
+                    picker, "accept", Qt::DirectConnection));
+            });
+            openProject->trigger();
+            return result;
+        };
+
+    const ReplacementInvocation cancelled =
+        invokeOpen(QMessageBox::Cancel);
+    QVERIFY(cancelled.pickerSeen);
+    QVERIFY(cancelled.dialogSeen);
+    QVERIFY(cancelled.impactDescribed);
+    QCOMPARE(controller->manifestPath(),
+             std::filesystem::path(currentManifest.toStdWString()));
+    QVERIFY(controller->isDirty());
+    QCOMPARE(controller->undoDepth(), undoDepth);
+    QCOMPARE(controller->workspace()->name,
+             std::string("Unsaved Current Workspace"));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Project change cancelled")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("1 unsaved Workbench change kept")));
+
+    const ReplacementInvocation discarded =
+        invokeOpen(QMessageBox::Discard);
+    QVERIFY(discarded.pickerSeen);
+    QVERIFY(discarded.dialogSeen);
+    QVERIFY(discarded.impactDescribed);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        controller->manifestPath(),
+        std::filesystem::path(replacementManifest.toStdWString()), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(!controller->isDirty(), 3000);
+    QCOMPARE(controller->workspace()->name,
+             std::string("GUI Workspace"));
+    QCOMPARE(controller->undoDepth(), std::size_t{0});
+
+    const auto currentDisk =
+        regmap::openProject(
+            std::filesystem::path(currentManifest.toStdWString()));
+    QVERIFY(currentDisk.workspace.has_value());
+    QCOMPARE(currentDisk.workspace->name, std::string("GUI Workspace"));
+
+    makeGeneratedFilesWritable(root.filePath(QStringLiteral("current")));
+    makeGeneratedFilesWritable(
+        root.filePath(QStringLiteral("replacement")));
 }
 
 void GuiSmokeTests::navigatesFieldProblemsAndFallsBackForHiddenFields()

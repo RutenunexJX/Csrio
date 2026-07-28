@@ -147,6 +147,14 @@ enum EnumColumn {
     enumDescriptionColumn,
 };
 
+[[nodiscard]] QString unsavedChangeSummary(std::size_t count)
+{
+    if (count == 1) {
+        return QStringLiteral("1 unsaved Workbench change");
+    }
+    return QStringLiteral("%1 unsaved Workbench changes").arg(count);
+}
+
 [[nodiscard]] QString fromUtf8(std::string_view value)
 {
     return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size()));
@@ -2888,6 +2896,63 @@ bool MainWindow::commitActiveEditor()
     return !activeEditorCommitRejected_;
 }
 
+MainWindow::UnsavedChoice MainWindow::promptUnsavedChanges(bool closing)
+{
+    const QString changeSummary =
+        unsavedChangeSummary(controller_.changes().size());
+
+    QString projectName =
+        QFileInfo(fromPath(controller_.manifestPath())).fileName();
+    if (projectName.isEmpty() && controller_.workspace() != nullptr) {
+        projectName = fromUtf8(controller_.workspace()->name);
+    }
+    if (projectName.isEmpty()) {
+        projectName = QStringLiteral("the current project");
+    }
+
+    QMessageBox dialog(this);
+    dialog.setIcon(QMessageBox::Warning);
+    dialog.setWindowTitle(QStringLiteral("Unsaved Register Map"));
+    dialog.setText(
+        QStringLiteral("Save %1 in %2 before %3?")
+            .arg(changeSummary, projectName,
+                 closing ? QStringLiteral("closing")
+                         : QStringLiteral("opening another project")));
+    dialog.setInformativeText(
+        closing
+            ? QStringLiteral(
+                  "Save & Sync writes the current Workbench model, "
+                  "synchronizes managed RTL, and updates the read-only "
+                  "outputs.\n\nDiscard closes the application without "
+                  "saving these local edits. Their Undo history is cleared, "
+                  "and the edits cannot be recovered after the application "
+                  "closes.")
+            : QStringLiteral(
+                  "Save & Sync writes the current Workbench model before "
+                  "the project changes.\n\nDiscard lets the selected project "
+                  "replace this one without saving these local edits. If "
+                  "replacement succeeds, their Undo history is cleared and "
+                  "the edits cannot be recovered."));
+
+    auto* save = dialog.addButton(QMessageBox::Save);
+    save->setObjectName(QStringLiteral("saveUnsavedChangesButton"));
+    auto* discard = dialog.addButton(QMessageBox::Discard);
+    discard->setObjectName(QStringLiteral("discardUnsavedChangesButton"));
+    auto* cancel = dialog.addButton(QMessageBox::Cancel);
+    cancel->setObjectName(QStringLiteral("cancelUnsavedChangesButton"));
+    dialog.setDefaultButton(save);
+    dialog.setEscapeButton(cancel);
+    dialog.exec();
+
+    if (dialog.clickedButton() == save) {
+        return UnsavedChoice::save;
+    }
+    if (dialog.clickedButton() == discard) {
+        return UnsavedChoice::discard;
+    }
+    return UnsavedChoice::cancel;
+}
+
 bool MainWindow::confirmProjectReplacement()
 {
     if (!commitActiveEditor()) {
@@ -2896,17 +2961,21 @@ bool MainWindow::confirmProjectReplacement()
     if (!controller_.isDirty()) {
         return true;
     }
-    const auto answer = QMessageBox::warning(
-        this, QStringLiteral("Unsaved Register Map"),
-        QStringLiteral("Save Workbench edits before opening another project?"),
-        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
-    if (answer == QMessageBox::Cancel) {
+
+    const UnsavedChoice choice = promptUnsavedChanges(false);
+    if (choice == UnsavedChoice::cancel) {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Project change cancelled · %1 kept")
+                .arg(unsavedChangeSummary(controller_.changes().size())),
+            7000);
         return false;
     }
-    if (answer == QMessageBox::Save) {
+    if (choice == UnsavedChoice::save) {
         controller_.save();
         return !controller_.isDirty();
     }
+
     return true;
 }
 
@@ -7901,21 +7970,25 @@ void MainWindow::closeEvent(QCloseEvent* event)
         event->accept();
         return;
     }
-    const auto answer = QMessageBox::warning(
-        this, QStringLiteral("Unsaved Register Map"),
-        QStringLiteral("Save Workbench edits before closing?"),
-        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
-    if (answer == QMessageBox::Cancel) {
+
+    const UnsavedChoice choice = promptUnsavedChanges(true);
+    if (choice == UnsavedChoice::cancel) {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Close cancelled · %1 kept")
+                .arg(unsavedChangeSummary(controller_.changes().size())),
+            7000);
         event->ignore();
         return;
     }
-    if (answer == QMessageBox::Save) {
+    if (choice == UnsavedChoice::save) {
         controller_.save();
         if (controller_.isDirty()) {
             event->ignore();
             return;
         }
     }
+
     event->accept();
 }
 

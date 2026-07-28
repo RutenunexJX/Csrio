@@ -62,7 +62,11 @@ Workspace -> Page (Address Space) -> Register Block -> Register -> Field -> Enum
   A pre-existing invalid layout can be repaired incrementally, but each accepted edit must leave
   only diagnostics that already existed before that edit; reducing the count by replacing old
   Problems with a different Problem is rejected.
-- Undo, redo, dirty-state tracking, atomic project save, and close-time save protection.
+- Undo, redo, dirty-state tracking, atomic project save, and unsaved-edit protection when closing
+  the application or replacing the current project. The prompt identifies the project and pending
+  change count, explains the effect on local edits and Undo history, defaults to Save, and treats
+  Escape or closing the prompt as Cancel. A cancelled operation explicitly reports that the edits
+  were kept; a blocked save keeps the current project open with its pending edits intact.
 - One visible **Save & Sync** action and a persistent state badge for unsaved, synchronizing,
   synchronized, blocked, partial-output-failure, and conflict states.
 - Per-output status and update time for XLSX, C header, and Markdown, with a direct retry action.
@@ -98,6 +102,12 @@ An existing project can also be passed at startup:
 reports how many changes will be discarded, identifies the project file, and explains that the
 local Undo history will be cleared. **Cancel** is the default and explicitly reports that the
 unsaved edits were kept; disk reload occurs only after choosing **Discard and Reload**.
+
+Closing the application or opening another project while Workbench has local edits shows the
+pending change count and current project name. **Save** is the default, **Cancel** keeps the
+current project and its Undo history, and **Discard** explains that the edits cannot be recovered
+after the close or successful replacement. If Save & Sync is blocked, the application remains
+open and the same edits remain pending.
 
 ```powershell
 build\dev-debug\src\app\RegMapWorkbench.exe examples\minimal\.regmap.yaml
