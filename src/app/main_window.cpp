@@ -4927,12 +4927,18 @@ void MainWindow::copySelection()
             break;
         }
     }
-    if (view == nullptr || !view->currentIndex().isValid()) {
+    if (view == nullptr) {
         return;
     }
     QModelIndexList indexes = view->selectionModel()->selectedIndexes();
     if (indexes.empty()) {
-        indexes.push_back(view->currentIndex());
+        if (view->currentIndex().isValid()) {
+            indexes.push_back(view->currentIndex());
+        } else {
+            statusBar()->showMessage(QStringLiteral("Copy skipped: select at least one cell"),
+                                     4000);
+            return;
+        }
     }
     int firstRow = indexes.front().row();
     int lastRow = firstRow;
@@ -4989,7 +4995,17 @@ void MainWindow::pasteSelection()
             break;
         }
     }
-    if (view == nullptr || !view->currentIndex().isValid()) {
+    if (view == nullptr) {
+        return;
+    }
+    QModelIndexList selected = view->selectionModel()->selectedIndexes();
+    if (view->currentIndex().isValid() &&
+        !view->selectionModel()->isSelected(view->currentIndex())) {
+        selected.clear();
+    }
+    if (selected.empty() && !view->currentIndex().isValid()) {
+        statusBar()->showMessage(QStringLiteral("Paste skipped: select at least one cell"),
+                                 4000);
         return;
     }
 
@@ -5047,8 +5063,10 @@ void MainWindow::pasteSelection()
     };
 
     const QStringList firstCells = rows.front().split('\t', Qt::KeepEmptyParts);
-    QModelIndexList selected = view->selectionModel()->selectedIndexes();
-    QModelIndex pasteStart = view->currentIndex();
+    const bool scalarClipboard = rows.size() == 1 && firstCells.size() == 1;
+    QModelIndex pasteStart =
+        selected.empty() ? view->currentIndex() : selected.front();
+    bool contiguousSelection = true;
     if (selected.size() > 1) {
         int firstRow = selected.front().row();
         int lastRow = firstRow;
@@ -5063,11 +5081,20 @@ void MainWindow::pasteSelection()
         const qsizetype selectedArea =
             static_cast<qsizetype>(lastRow - firstRow + 1) *
             static_cast<qsizetype>(lastColumn - firstColumn + 1);
-        if (selected.size() == selectedArea) {
+        contiguousSelection = selected.size() == selectedArea;
+        if (contiguousSelection) {
             pasteStart = view->model()->index(firstRow, firstColumn);
         }
     }
-    if (rows.size() == 1 && firstCells.size() == 1 && selected.size() > 1) {
+    if (!scalarClipboard && selected.size() > 1 && !contiguousSelection) {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Paste skipped: multi-cell data requires one cell or a contiguous "
+                "rectangular target"),
+            5000);
+        return;
+    }
+    if (scalarClipboard && selected.size() > 1) {
         std::ranges::sort(selected, [](const QModelIndex& left, const QModelIndex& right) {
             return left.row() == right.row() ? left.column() < right.column()
                                             : left.row() < right.row();

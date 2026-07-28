@@ -3547,9 +3547,38 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
     QVERIFY(controller != nullptr);
 
     const QModelIndex statusName = registers->model()->index(0, 0);
-    registers->setCurrentIndex(statusName);
     registers->selectionModel()->select(
         statusName, QItemSelectionModel::ClearAndSelect);
+    registers->selectionModel()->setCurrentIndex(
+        QModelIndex{}, QItemSelectionModel::NoUpdate);
+    QVERIFY(registers->selectionModel()->isSelected(statusName));
+    QVERIFY(!registers->currentIndex().isValid());
+    QApplication::clipboard()->setText(QStringLiteral("UNCHANGED_SENTINEL"));
+    registers->setFocus();
+    QTest::keyClick(registers, Qt::Key_C, Qt::ControlModifier);
+    QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("STATUS"));
+
+    const QModelIndex statusDescription = registers->model()->index(0, 11);
+    registers->selectionModel()->select(
+        statusDescription, QItemSelectionModel::ClearAndSelect);
+    registers->selectionModel()->setCurrentIndex(
+        QModelIndex{}, QItemSelectionModel::NoUpdate);
+    QVERIFY(registers->selectionModel()->isSelected(statusDescription));
+    QVERIFY(!registers->currentIndex().isValid());
+    QApplication::clipboard()->setText(QStringLiteral("selected without current"));
+    QTest::keyClick(registers, Qt::Key_V, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()->index(0, 11).data().toString(),
+        QStringLiteral("selected without current"), 2000);
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("1 changed")));
+    QTest::keyClick(&window, Qt::Key_Z, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()->index(0, 11).data().toString(), QString{}, 2000);
+
+    const QModelIndex refreshedStatusName = registers->model()->index(0, 0);
+    registers->setCurrentIndex(refreshedStatusName);
+    registers->selectionModel()->select(
+        refreshedStatusName, QItemSelectionModel::ClearAndSelect);
     registers->setFocus();
     QTest::keyClick(registers, Qt::Key_C, Qt::ControlModifier);
     QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("STATUS"));
@@ -3567,6 +3596,22 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
              QStringLiteral("KEEP_EXISTING_CLIPBOARD"));
     QVERIFY(window.statusBar()->currentMessage().contains(
         QStringLiteral("contiguous rectangular range")));
+    QVERIFY(registers->selectionModel()->isSelected(sparseFirst));
+    QVERIFY(registers->selectionModel()->isSelected(sparseSecond));
+
+    registers->selectionModel()->setCurrentIndex(
+        sparseFirst, QItemSelectionModel::NoUpdate);
+    const std::size_t sparsePasteUndoDepth = controller->undoDepth();
+    QApplication::clipboard()->setText(QStringLiteral("STATUS_BAD\t0x8"));
+    QTest::keyClick(registers, Qt::Key_V, Qt::ControlModifier);
+    QCoreApplication::processEvents();
+    QCOMPARE(registers->model()->index(0, 0).data().toString(),
+             QStringLiteral("STATUS"));
+    QCOMPARE(registers->model()->index(0, 1).data().toString(),
+             QStringLiteral("0x0"));
+    QCOMPARE(controller->undoDepth(), sparsePasteUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("contiguous rectangular target")));
     QVERIFY(registers->selectionModel()->isSelected(sparseFirst));
     QVERIFY(registers->selectionModel()->isSelected(sparseSecond));
 
@@ -3613,7 +3658,10 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
     const std::size_t mixedPasteUndoDepth = controller->undoDepth();
     QApplication::clipboard()->setText(
         QStringLiteral("STATUS_MIXED\t0x0\tignored\tinvalid-width"));
-    registers->setCurrentIndex(registers->model()->index(0, 0));
+    const QModelIndex mixedPasteStart = registers->model()->index(0, 0);
+    registers->setCurrentIndex(mixedPasteStart);
+    registers->selectionModel()->select(
+        mixedPasteStart, QItemSelectionModel::ClearAndSelect);
     registers->setFocus(Qt::OtherFocusReason);
     QTest::keyClick(registers, Qt::Key_V, Qt::ControlModifier);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 0).data().toString(),
