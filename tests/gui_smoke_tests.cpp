@@ -77,6 +77,7 @@ private slots:
     void opensProjectAndPopulatesEditableViews();
     void navigatesHierarchyAndOpensFieldsExplicitly();
     void hierarchyContextActionsUseRightClickedTarget();
+    void placesNewHierarchyObjectsWithoutAddressErrors();
     void copiesAndPastesHierarchyObjects();
     void movesHierarchyObjectsByDrag();
     void switchesProjectsWithoutReusingFieldWorkspaceState();
@@ -1500,6 +1501,182 @@ void GuiSmokeTests::hierarchyContextActionsUseRightClickedTarget()
     QCOMPARE(registers->model()->index(registerBRow, 0).data().toString(),
              QStringLiteral("NEW_REGISTER"));
     QVERIFY(!registerExists(QStringLiteral("reg-status")));
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::placesNewHierarchyObjectsWithoutAddressErrors()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest =
+        directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+
+    auto* controller = window.findChild<ProjectController*>();
+    auto* hierarchy =
+        window.findChild<QTreeView*>(QStringLiteral("hierarchyView"));
+    auto* registers =
+        window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* add =
+        window.findChild<QPushButton*>(QStringLiteral("hierarchyAddButton"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(hierarchy != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(add != nullptr);
+
+    const auto visibleEditor = [](QWidget* parent) -> QLineEdit* {
+        const auto editors = parent->findChildren<QLineEdit*>();
+        const auto visible = std::ranges::find_if(
+            editors, [](const QLineEdit* editor) {
+                return editor->isVisible();
+            });
+        return visible == editors.end() ? nullptr : *visible;
+    };
+    const auto selectHierarchyObject =
+        [hierarchy](const QString& objectId) {
+            const QModelIndex index =
+                hierarchyIndexByObjectId(hierarchy->model(), objectId);
+            if (!index.isValid()) {
+                return false;
+            }
+            hierarchy->setCurrentIndex(index);
+            hierarchy->scrollTo(index);
+            hierarchy->setFocus(Qt::OtherFocusReason);
+            QCoreApplication::processEvents();
+            return true;
+        };
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Configure a Page gap"),
+        [](regmap::Workspace& workspace) {
+            auto* page =
+                regmap::findAddressSpace(workspace, "space-main");
+            auto* block =
+                regmap::findRegisterBlock(workspace, "block-control");
+            QVERIFY(page != nullptr);
+            QVERIFY(block != nullptr);
+            page->baseAddress = 0;
+            page->addressWidth = 13;
+            block->baseAddress = 0x1000;
+            block->size = 0x1000;
+        }));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        selectHierarchyObject(QStringLiteral("space-main")), 2000);
+    QCOMPARE(add->text(), QStringLiteral("+ Block"));
+    add->click();
+    QTRY_VERIFY_WITH_TIMEOUT(visibleEditor(hierarchy) != nullptr, 2000);
+    QTest::keyClick(visibleEditor(hierarchy), Qt::Key_Escape);
+    QCoreApplication::processEvents();
+
+    const auto* pageAfterGap =
+        regmap::findAddressSpace(
+            *controller->workspace(), "space-main");
+    QVERIFY(pageAfterGap != nullptr);
+    QCOMPARE(pageAfterGap->blocks.size(), std::size_t{2});
+    const auto gapBlock = std::ranges::find_if(
+        pageAfterGap->blocks, [](const regmap::RegisterBlock& block) {
+            return block.id != "block-control";
+        });
+    QVERIFY(gapBlock != pageAfterGap->blocks.end());
+    QCOMPARE(gapBlock->baseAddress, std::uint64_t{0});
+    QVERIFY(gapBlock->size.has_value());
+    QCOMPARE(*gapBlock->size, std::uint64_t{0x1000});
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Configure a small empty Page"),
+        [](regmap::Workspace& workspace) {
+            auto* page =
+                regmap::findAddressSpace(workspace, "space-main");
+            QVERIFY(page != nullptr);
+            page->baseAddress = 0;
+            page->addressWidth = 8;
+            page->blocks.clear();
+        }));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        selectHierarchyObject(QStringLiteral("space-main")), 2000);
+    QCOMPARE(add->text(), QStringLiteral("+ Block"));
+    add->click();
+    QTRY_VERIFY_WITH_TIMEOUT(visibleEditor(hierarchy) != nullptr, 2000);
+    const QString smallBlockId =
+        hierarchy->currentIndex().data(Qt::UserRole + 1).toString();
+    QVERIFY(!smallBlockId.isEmpty());
+    QTest::keyClick(visibleEditor(hierarchy), Qt::Key_Escape);
+    QCoreApplication::processEvents();
+
+    const auto* smallBlock =
+        regmap::findRegisterBlock(
+            *controller->workspace(),
+            smallBlockId.toUtf8().toStdString());
+    QVERIFY(smallBlock != nullptr);
+    QCOMPARE(smallBlock->baseAddress, std::uint64_t{0});
+    QVERIFY(smallBlock->size.has_value());
+    QCOMPARE(*smallBlock->size, std::uint64_t{0x100});
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+
+    QVERIFY(selectHierarchyObject(QStringLiteral("space-main")));
+    const std::size_t fullPageUndoDepth = controller->undoDepth();
+    window.statusBar()->clearMessage();
+    add->click();
+    QCoreApplication::processEvents();
+    const auto* fullPage =
+        regmap::findAddressSpace(
+            *controller->workspace(), "space-main");
+    QVERIFY(fullPage != nullptr);
+    QCOMPARE(fullPage->blocks.size(), std::size_t{1});
+    QCOMPARE(controller->undoDepth(), fullPageUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("no free address range")));
+
+    QVERIFY(selectHierarchyObject(smallBlockId));
+    QCOMPARE(add->text(), QStringLiteral("+ Register"));
+    add->click();
+    QTRY_VERIFY_WITH_TIMEOUT(visibleEditor(registers) != nullptr, 2000);
+    QTest::keyClick(visibleEditor(registers), Qt::Key_Escape);
+    QCoreApplication::processEvents();
+    smallBlock =
+        regmap::findRegisterBlock(
+            *controller->workspace(),
+            smallBlockId.toUtf8().toStdString());
+    QVERIFY(smallBlock != nullptr);
+    QCOMPARE(smallBlock->registers.size(), std::size_t{1});
+    QCOMPARE(smallBlock->registers.front().offset, std::uint64_t{0});
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Fill the small Block"),
+        [smallBlockId](regmap::Workspace& workspace) {
+            if (auto* block = regmap::findRegisterBlock(
+                    workspace,
+                    smallBlockId.toUtf8().toStdString())) {
+                block->size = 4;
+            }
+        }));
+    QCoreApplication::processEvents();
+    QVERIFY(selectHierarchyObject(smallBlockId));
+    const std::size_t fullBlockUndoDepth = controller->undoDepth();
+    window.statusBar()->clearMessage();
+    add->click();
+    QCoreApplication::processEvents();
+    smallBlock =
+        regmap::findRegisterBlock(
+            *controller->workspace(),
+            smallBlockId.toUtf8().toStdString());
+    QVERIFY(smallBlock != nullptr);
+    QCOMPARE(smallBlock->registers.size(), std::size_t{1});
+    QCOMPARE(controller->undoDepth(), fullBlockUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Cannot add a 32-bit Register")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Block Size")));
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
 
     makeGeneratedFilesWritable(directory.path());
 }

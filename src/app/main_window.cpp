@@ -4971,19 +4971,37 @@ void MainWindow::addBlock(std::string parentId)
     }
     regmap::RegisterBlock block;
     block.id = regmap::makeStableObjectId(*workspace, "block");
-    block.size = 0x1000;
-    if (const auto* parent = regmap::findAddressSpace(*workspace, parentId)) {
-        block.name = uniqueDefaultName(parent->blocks, "NEW_BLOCK");
-        for (const auto& existing : parent->blocks) {
-            block.baseAddress =
-                std::max(block.baseAddress,
-                         existing.baseAddress + existing.size.value_or(std::uint64_t{0x1000}));
+    const auto* parent = regmap::findAddressSpace(*workspace, parentId);
+    if (parent == nullptr) {
+        statusBar()->showMessage(
+            QStringLiteral("The target Page no longer exists; reopen the menu and try again"),
+            5000);
+        return;
+    }
+    block.name = uniqueDefaultName(parent->blocks, "NEW_BLOCK");
+
+    constexpr std::uint64_t preferredBlockSize = 0x1000;
+    std::optional<std::uint64_t> placement;
+    for (std::uint64_t size = preferredBlockSize;; size /= 2) {
+        block.size = size;
+        placement = availableBlockBase(*parent, block);
+        if (placement || size == 1) {
+            break;
         }
     }
-    if (block.name.empty()) {
-        block.name = "NEW_BLOCK";
+    if (!placement) {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Cannot add a Register Block to Page %1: no free address range "
+                "remains. Resize or move an existing Block, or increase Address Width.")
+                .arg(fromUtf8(parent->name)),
+            8000);
+        return;
     }
+    block.baseAddress = *placement;
     const std::string newId = block.id;
+    const std::uint64_t addedBase = block.baseAddress;
+    const std::uint64_t addedSize = block.size.value_or(1);
     if (controller_.editWorkspace(
             QStringLiteral("Add register block"),
             [parentId, block = std::move(block)](regmap::Workspace& candidate) mutable {
@@ -4997,6 +5015,11 @@ void MainWindow::addBlock(std::string parentId)
         selectedFieldId_.clear();
         openFieldsRegisterId_.clear();
         refreshProject();
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Added Register Block at Base %1, Size %2; Ctrl+Z to restore")
+                .arg(hex(addedBase), hex(addedSize)),
+            5000);
         beginHierarchyRename(newId);
     }
 }
@@ -5043,6 +5066,7 @@ void MainWindow::addRegister(std::string parentId)
         return;
     }
 
+    constexpr std::uint64_t registerAlignment = 4;
     regmap::Register reg;
     reg.id = regmap::makeStableObjectId(*workspace, "reg");
     reg.name =
@@ -5054,17 +5078,54 @@ void MainWindow::addRegister(std::string parentId)
     reg.initialValue = regmap::UnsignedValue(0);
     reg.resetValue = regmap::UnsignedValue(0);
     reg.access = regmap::AccessMode::readWrite;
+
+    std::uint64_t appendOffset = 0;
     for (const auto& existing : parent->registers) {
-        const std::uint64_t byteWidth = (static_cast<std::uint64_t>(existing.width) + 7) / 8;
-        const std::uint64_t extent =
-            existing.array.count > 1
-                ? static_cast<std::uint64_t>(existing.array.count - 1) * existing.array.stride +
-                      byteWidth
-                : byteWidth;
-        reg.offset = std::max(reg.offset, existing.offset + extent);
+        const auto extent = checkedRegisterExtent(existing);
+        std::uint64_t end = 0;
+        if (!extent || addOverflow(existing.offset, *extent, end)) {
+            statusBar()->showMessage(
+                QStringLiteral(
+                    "Cannot add a Register to Block %1: an existing Register extent "
+                    "overflows. Repair its Offset or Width first.")
+                    .arg(fromUtf8(parent->name)),
+                8000);
+            return;
+        }
+        appendOffset = std::max(appendOffset, end);
     }
-    reg.offset = (reg.offset + 3U) & ~std::uint64_t{3};
+    if (appendOffset >
+        std::numeric_limits<std::uint64_t>::max() -
+            (registerAlignment - 1)) {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Cannot add a Register to Block %1: no aligned Offset remains.")
+                .arg(fromUtf8(parent->name)),
+            8000);
+        return;
+    }
+    reg.offset =
+        (appendOffset + (registerAlignment - 1)) &
+        ~(registerAlignment - 1);
+
+    regmap::Workspace candidate = *workspace;
+    if (auto* candidateBlock =
+            regmap::findRegisterBlock(candidate, parentId)) {
+        candidateBlock->registers.push_back(reg);
+    }
+    if (!addressEditDoesNotWorsen(*workspace, candidate, parentId)) {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Cannot add a 32-bit Register at Offset %1 in Block %2: the aligned "
+                "slot does not fit its Size or the Page address range. Increase Block "
+                "Size or Address Width, or adjust existing Offsets.")
+                .arg(hex(reg.offset), fromUtf8(parent->name)),
+            9000);
+        return;
+    }
+
     const std::string newId = reg.id;
+    const std::uint64_t addedOffset = reg.offset;
     if (controller_.editWorkspace(
             QStringLiteral("Add register"),
             [parentId, reg = std::move(reg)](regmap::Workspace& candidate) mutable {
@@ -5079,6 +5140,9 @@ void MainWindow::addRegister(std::string parentId)
         openFieldsRegisterId_.clear();
         refreshProject();
         selectRegister(newId);
+        statusBar()->showMessage(
+            QStringLiteral("Added Register at Offset %1; Ctrl+Z to restore")
+                .arg(hex(addedOffset)), 5000);
         beginRegisterRename(newId);
     }
 }

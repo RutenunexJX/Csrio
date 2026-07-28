@@ -28,6 +28,10 @@ Workspace -> Page (Address Space) -> Register Block -> Register -> Field -> Enum
 - Structure-register rows expose a dedicated **Open (N)** Fields button.
 - Trailing `+` rows for register/field creation; page and block base addresses appear once in
   the context bar above the register table and remain directly editable.
+- New Blocks choose the first free Base for the preferred 4 KiB allocation, or the largest
+  smaller power-of-two allocation that fits the Page. New 32-bit Registers use the next
+  four-byte-aligned Offset. If no valid address range remains, Workbench leaves the model and
+  Undo history unchanged and reports which capacity must be adjusted.
 - Page and Register Block copy/paste and drag movement stay in the hierarchy. A pasted Block
   keeps its Base when free and otherwise uses the first non-overlapping Base that fits the
   destination Page. A cross-Page Block move preserves its Base and is rejected before changing
