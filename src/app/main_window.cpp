@@ -1529,8 +1529,13 @@ void MainWindow::buildActions()
 
 void MainWindow::connectSignals()
 {
-    connect(&controller_, &ProjectController::projectChanged, this,
-            &MainWindow::requestProjectRefresh);
+    connect(&controller_, &ProjectController::projectChanged, this, [this] {
+        searchQuery_.clear();
+        searchResults_.clear();
+        searchResultIndex_ = -1;
+        searchResultLabel_->clear();
+        requestProjectRefresh();
+    });
     connect(&controller_, &ProjectController::diagnosticsChanged, this, [this] {
         if (modelEditInProgress_) {
             QTimer::singleShot(0, this, &MainWindow::refreshDiagnostics);

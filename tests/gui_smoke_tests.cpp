@@ -90,6 +90,7 @@ private slots:
     void insertsRegisterBetweenRows();
     void showsUnifiedSyncStateAndGeneratedResults();
     void searchesAndNavigatesProblems();
+    void refreshesSearchResultsAfterModelChanges();
     void copiesAndPastesEditableCells();
     void keepsUndoRedoInsideActiveEditor();
     void savesActiveEditorWithShortcut();
@@ -3266,6 +3267,76 @@ void GuiSmokeTests::movesHierarchyObjectsByDrag()
                 return block.id == "block-control";
             }),
         2000);
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::refreshesSearchResultsAfterModelChanges()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createTwoRegisterProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+
+    auto* search = window.findChild<QLineEdit*>(QStringLiteral("globalSearchEdit"));
+    auto* searchResult = window.findChild<QLabel*>(QStringLiteral("searchResultLabel"));
+    auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    QVERIFY(search != nullptr);
+    QVERIFY(searchResult != nullptr);
+    QVERIFY(registers != nullptr);
+
+    const auto rowForId = [registers](const QString& id) {
+        for (int row = 0; row < registers->model()->rowCount(); ++row) {
+            if (registers->model()->index(row, 0).data(Qt::UserRole + 1).toString() == id) {
+                return row;
+            }
+        }
+        return -1;
+    };
+
+    const QString token = QStringLiteral("SEARCH_CACHE_TARGET_7D3A");
+    int controlRow = rowForId(QStringLiteral("reg-control"));
+    QVERIFY(controlRow >= 0);
+    QVERIFY(registers->model()->setData(
+        registers->model()->index(controlRow, 11), token));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        rowForId(QStringLiteral("reg-control")) >= 0, 2000);
+
+    search->setText(token);
+    Q_EMIT search->returnPressed();
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->currentIndex().data(Qt::UserRole + 1).toString(),
+        QStringLiteral("reg-control"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(searchResult->text(), QStringLiteral("1/1"), 2000);
+
+    controlRow = rowForId(QStringLiteral("reg-control"));
+    QVERIFY(controlRow >= 0);
+    QVERIFY(registers->model()->setData(
+        registers->model()->index(controlRow, 11),
+        QStringLiteral("Description no longer matches the active search.")));
+    QTRY_VERIFY_WITH_TIMEOUT(searchResult->text().isEmpty(), 2000);
+
+    Q_EMIT search->returnPressed();
+    QTRY_COMPARE_WITH_TIMEOUT(searchResult->text(), QStringLiteral("0/0"), 2000);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("No matching register-map object")));
+
+    controlRow = rowForId(QStringLiteral("reg-control"));
+    QVERIFY(controlRow >= 0);
+    QVERIFY(registers->model()->setData(
+        registers->model()->index(controlRow, 11), token));
+    QTRY_VERIFY_WITH_TIMEOUT(searchResult->text().isEmpty(), 2000);
+    Q_EMIT search->returnPressed();
+    QTRY_COMPARE_WITH_TIMEOUT(searchResult->text(), QStringLiteral("1/1"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->currentIndex().data(Qt::UserRole + 1).toString(),
+        QStringLiteral("reg-control"), 2000);
+
     makeGeneratedFilesWritable(directory.path());
 }
 
