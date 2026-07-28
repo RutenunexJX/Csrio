@@ -93,6 +93,7 @@ private slots:
     void keepsCompoundFieldsUsableDuringConversionAndDeletion();
     void dragsFieldsAndResolvesOverlaps();
     void rejectsFieldMoveThatInvalidatesValueContracts();
+    void confirmsDeletionOfFullyCoveredFieldsDuringDrag();
     void cancelsInterruptedFieldDrag();
     void editsTagsAndAccessFromDoubleClick();
     void editsFieldAccessFromConstrainedChoices();
@@ -4014,6 +4015,142 @@ void GuiSmokeTests::rejectsFieldMoveThatInvalidatesValueContracts()
         QStringLiteral("Cannot move Field READY")));
     QVERIFY(window.statusBar()->currentMessage().contains(
         QStringLiteral("Enum value")));
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::confirmsDeletionOfFullyCoveredFieldsDuringDrag()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest =
+        directory.filePath(QStringLiteral("field-delete-drag.regmap.yaml"));
+    createBitfieldDragProject(manifest);
+
+    MainWindow window;
+    window.resize(1200, 760);
+    window.show();
+    window.openProjectPath(manifest);
+    QTest::qWait(50);
+
+    auto* controller = window.findChild<ProjectController*>();
+    auto* registers =
+        window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* fields =
+        window.findChild<QTableView*>(QStringLiteral("fieldView"));
+    auto* bitfield =
+        window.findChild<BitfieldView*>(QStringLiteral("bitfieldView"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+    QVERIFY(bitfield != nullptr);
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Configure full-overlap Fields"),
+        [](regmap::Workspace& workspace) {
+            auto* ready =
+                regmap::findField(workspace, "field-ready");
+            auto* obstacle =
+                regmap::findField(workspace, "field-obstacle");
+            QVERIFY(ready != nullptr);
+            QVERIFY(obstacle != nullptr);
+            ready->type = regmap::FieldType::bits;
+            ready->enumValues.clear();
+            obstacle->lsb = 4;
+            obstacle->msb = 7;
+            obstacle->type = regmap::FieldType::bits;
+            obstacle->enumValues.clear();
+        }));
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+
+    const QModelIndex openFields =
+        registers->model()->index(0, 5);
+    registers->scrollTo(openFields);
+    QCoreApplication::processEvents();
+    QTest::mouseClick(
+        registers->viewport(), Qt::LeftButton, Qt::NoModifier,
+        registers->visualRect(openFields).center());
+    QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(bitfield->isVisible(), 2000);
+
+    bool dialogHandled = false;
+    bool deletionExplained = false;
+    bool cancelIsDefault = false;
+    QString dialogFailure;
+    QTimer::singleShot(0, &window, [&] {
+        auto* dialog =
+            qobject_cast<QMessageBox*>(
+                QApplication::activeModalWidget());
+        if (dialog == nullptr) {
+            dialogFailure =
+                QStringLiteral("Field overlap dialog did not become modal");
+            return;
+        }
+        deletionExplained =
+            dialog->informativeText().contains(
+                QStringLiteral("delete 1 fully covered Field")) &&
+            dialog->informativeText().contains(
+                QStringLiteral("OBSTACLE"));
+        cancelIsDefault =
+            dialog->defaultButton() != nullptr &&
+            dialog->buttonRole(dialog->defaultButton()) ==
+                QMessageBox::RejectRole;
+
+        QAbstractButton* destructive = nullptr;
+        for (auto* button : dialog->buttons()) {
+            if (dialog->buttonRole(button) ==
+                QMessageBox::DestructiveRole) {
+                destructive = button;
+                break;
+            }
+        }
+        if (destructive == nullptr ||
+            !destructive->text().contains(
+                QStringLiteral("delete"), Qt::CaseInsensitive)) {
+            dialogFailure =
+                QStringLiteral("Explicit delete choice is unavailable");
+            dialog->reject();
+            return;
+        }
+        dialogHandled = true;
+        QTest::mouseClick(destructive, Qt::LeftButton);
+    });
+
+    const std::size_t undoDepth = controller->undoDepth();
+    Q_EMIT bitfield->fieldMoveRequested(
+        QStringLiteral("field-ready"), 4, 7);
+    QCoreApplication::processEvents();
+
+    QVERIFY2(dialogFailure.isEmpty(), qPrintable(dialogFailure));
+    QVERIFY(dialogHandled);
+    QVERIFY(deletionExplained);
+    QVERIFY(cancelIsDefault);
+    const auto* ready =
+        regmap::findField(*controller->workspace(), "field-ready");
+    QVERIFY(ready != nullptr);
+    QCOMPARE(ready->lsb, std::uint32_t{4});
+    QCOMPARE(ready->msb, std::uint32_t{7});
+    QVERIFY(regmap::findField(
+                *controller->workspace(),
+                "field-obstacle") == nullptr);
+    QCOMPARE(controller->undoDepth(), undoDepth + 1);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Ctrl+Z")));
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+
+    controller->undo();
+    ready = regmap::findField(
+        *controller->workspace(), "field-ready");
+    const auto* restoredObstacle =
+        regmap::findField(
+            *controller->workspace(), "field-obstacle");
+    QVERIFY(ready != nullptr);
+    QVERIFY(restoredObstacle != nullptr);
+    QCOMPARE(ready->lsb, std::uint32_t{0});
+    QCOMPARE(ready->msb, std::uint32_t{3});
+    QCOMPARE(restoredObstacle->lsb, std::uint32_t{4});
+    QCOMPARE(restoredObstacle->msb, std::uint32_t{7});
     QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
 
     makeGeneratedFilesWritable(directory.path());

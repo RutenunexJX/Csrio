@@ -114,7 +114,9 @@ its MSB/LSB update continuously. On overlap, Workbench asks whether to trim the 
 the overlapping fields. The complete trimmed result is validated before it is committed; a move
 that would invalidate an existing Reset, Enum value, numeric Range, access rule, or Member Field
 is rejected without changing the model or Undo history. Field types may be selected from the
-field context menu;
+field context menu. If trimming the overlapping side would completely remove a Field, the dialog
+lists every Field that will be deleted, labels the destructive choice explicitly, and keeps
+Cancel as the default. The confirmed move remains one undoable edit.
 `int8`, `uint32`, and the other `intN`/`uintN` forms set signedness and width together. Numeric
 ranges use **Minimum/Maximum**. Changing a scalar Field to `field` creates the first
 `NEW_MEMBER` in the same undoable edit, so the compound Field is immediately valid. Further

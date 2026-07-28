@@ -6398,9 +6398,13 @@ void MainWindow::moveField(const std::string& fieldId, std::uint32_t lsb, std::u
         return;
     }
     std::vector<std::pair<std::uint32_t, std::uint32_t>> obstacles;
+    QStringList fullyCoveredFields;
     for (const auto& field : reg->fields) {
         if (field.id != fieldId && field.msb >= field.lsb && lsb <= field.msb && field.lsb <= msb) {
             obstacles.emplace_back(field.lsb, field.msb);
+            if (lsb <= field.lsb && msb >= field.msb) {
+                fullyCoveredFields.push_back(fromUtf8(field.name));
+            }
         }
     }
 
@@ -6414,9 +6418,23 @@ void MainWindow::moveField(const std::string& fieldId, std::uint32_t lsb, std::u
                                       "which side may adapt its width."));
         auto* trimMoving =
             dialog.addButton(QStringLiteral("Trim moving field"), QMessageBox::AcceptRole);
-        auto* trimOthers = dialog.addButton(QStringLiteral("Trim overlapping fields"),
-                                            QMessageBox::DestructiveRole);
-        dialog.addButton(QMessageBox::Cancel);
+        auto* trimOthers = dialog.addButton(
+            fullyCoveredFields.empty()
+                ? QStringLiteral("Trim overlapping fields")
+                : QStringLiteral("Trim/delete overlapping fields"),
+            QMessageBox::DestructiveRole);
+        if (!fullyCoveredFields.empty()) {
+            dialog.setInformativeText(
+                QStringLiteral(
+                    "Choosing the destructive option will delete %1 fully covered "
+                    "Field(s): %2. Partially covered Fields will be narrowed. "
+                    "Ctrl+Z restores the entire operation.")
+                    .arg(fullyCoveredFields.size())
+                    .arg(fullyCoveredFields.join(QStringLiteral(", "))));
+        }
+        auto* cancel = dialog.addButton(QMessageBox::Cancel);
+        dialog.setDefaultButton(cancel);
+        dialog.setEscapeButton(cancel);
         dialog.exec();
         if (dialog.clickedButton() == trimMoving) {
             resolution = Resolution::trimMoving;
@@ -6515,8 +6533,10 @@ void MainWindow::moveField(const std::string& fieldId, std::uint32_t lsb, std::u
         refreshProject();
         selectRegister(registerId);
         selectField(fieldId);
-        statusBar()->showMessage(QStringLiteral("Field moved: MSB %1 · LSB %2").arg(msb).arg(lsb),
-                                 5000);
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Field moved: MSB %1 · LSB %2 · Ctrl+Z to restore")
+                .arg(msb).arg(lsb), 5000);
     }
 }
 
