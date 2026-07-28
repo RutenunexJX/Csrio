@@ -99,6 +99,7 @@ private slots:
     void synchronizesFieldResetEdits();
     void protectsEnumContractsDuringEditing();
     void rejectsRegisterResetsOutsideFieldEnums();
+    void rejectsDuplicateObjectNamesDuringEditing();
     void requiresExplicitCellEditing();
     void keepsUndoRedoInsideActiveEditor();
     void savesActiveEditorWithShortcut();
@@ -4367,6 +4368,195 @@ void GuiSmokeTests::rejectsRegisterResetsOutsideFieldEnums()
     QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(memberRow, 10).data().toString(),
                               QStringLiteral("0x0"), 2000);
     QCOMPARE(controller->undoDepth(), undoDepth);
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::rejectsDuplicateObjectNamesDuringEditing()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+
+    auto* controller = window.findChild<ProjectController*>();
+    auto* hierarchy = window.findChild<QTreeView*>(QStringLiteral("hierarchyView"));
+    auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* fields = window.findChild<QTableView*>(QStringLiteral("fieldView"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(hierarchy != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Configure duplicate-name fixture"),
+        [](regmap::Workspace& workspace) {
+            auto* page = regmap::findAddressSpace(workspace, "space-main");
+            auto* block = regmap::findRegisterBlock(workspace, "block-control");
+            auto* reg = regmap::findRegister(workspace, "reg-status");
+            if (page == nullptr || block == nullptr || reg == nullptr) {
+                return;
+            }
+
+            regmap::Field secondField;
+            secondField.id = "field-secondary";
+            secondField.name = "SECOND_FIELD";
+            secondField.msb = 31;
+            secondField.lsb = 31;
+            secondField.type = regmap::FieldType::bits;
+            secondField.softwareAccess = reg->access;
+            secondField.hardwareAccess = regmap::AccessMode::none;
+            secondField.resetValue =
+                reg->resetValue
+                    ? std::optional{reg->resetValue->slice(31, 1)}
+                    : std::nullopt;
+            secondField.writeSideEffect = regmap::WriteSideEffect::none;
+            reg->fields.push_back(std::move(secondField));
+
+            regmap::Register secondRegister;
+            secondRegister.id = "reg-secondary";
+            secondRegister.name = "SECOND_REGISTER";
+            secondRegister.offset = 0x100;
+            secondRegister.width = 32;
+            secondRegister.array.count = 1;
+            secondRegister.array.stride = 4;
+            secondRegister.type = regmap::FieldType::unsignedInteger;
+            secondRegister.initialValue = regmap::UnsignedValue(0);
+            secondRegister.resetValue = regmap::UnsignedValue(0);
+            secondRegister.access = regmap::AccessMode::readWrite;
+            block->registers.push_back(std::move(secondRegister));
+
+            regmap::RegisterBlock secondBlock;
+            secondBlock.id = "block-secondary";
+            secondBlock.name = "SECOND_BLOCK";
+            secondBlock.baseAddress = 0x2000;
+            secondBlock.size = 0x1000;
+            page->blocks.push_back(std::move(secondBlock));
+
+            regmap::AddressSpace secondPage;
+            secondPage.id = "space-secondary";
+            secondPage.name = "SECOND_PAGE";
+            secondPage.baseAddress = 0x100000;
+            secondPage.addressWidth = 32;
+            workspace.addressSpaces.push_back(std::move(secondPage));
+        }));
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+    const std::size_t undoDepth = controller->undoDepth();
+
+    const QString primaryPageName =
+        hierarchyIndexByObjectId(hierarchy->model(), QStringLiteral("space-main"))
+            .data()
+            .toString();
+    const QString primaryBlockName =
+        hierarchyIndexByObjectId(hierarchy->model(), QStringLiteral("block-control"))
+            .data()
+            .toString();
+    QVERIFY(!primaryPageName.isEmpty());
+    QVERIFY(!primaryBlockName.isEmpty());
+
+    QModelIndex secondaryPage =
+        hierarchyIndexByObjectId(hierarchy->model(), QStringLiteral("space-secondary"));
+    QVERIFY(secondaryPage.isValid());
+    QVERIFY(hierarchy->model()->setData(secondaryPage, primaryPageName));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        hierarchyIndexByObjectId(hierarchy->model(), QStringLiteral("space-secondary"))
+            .data()
+            .toString(),
+        QStringLiteral("SECOND_PAGE"), 2000);
+    QCOMPARE(controller->undoDepth(), undoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("unique Page name")));
+
+    QModelIndex secondaryBlock =
+        hierarchyIndexByObjectId(hierarchy->model(), QStringLiteral("block-secondary"));
+    QVERIFY(secondaryBlock.isValid());
+    QVERIFY(hierarchy->model()->setData(secondaryBlock, primaryBlockName));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        hierarchyIndexByObjectId(hierarchy->model(), QStringLiteral("block-secondary"))
+            .data()
+            .toString(),
+        QStringLiteral("SECOND_BLOCK"), 2000);
+    QCOMPARE(controller->undoDepth(), undoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("unique Block name")));
+
+    hierarchy->setCurrentIndex(
+        hierarchyIndexByObjectId(hierarchy->model(), QStringLiteral("block-control")));
+    QCoreApplication::processEvents();
+    const auto registerRow = [registers](const QString& id) {
+        for (int row = 0; row < registers->model()->rowCount(); ++row) {
+            if (registers->model()->index(row, 0).data(Qt::UserRole + 1).toString() == id) {
+                return row;
+            }
+        }
+        return -1;
+    };
+    int primaryRegisterRow = registerRow(QStringLiteral("reg-status"));
+    int secondaryRegisterRow = registerRow(QStringLiteral("reg-secondary"));
+    QVERIFY(primaryRegisterRow >= 0);
+    QVERIFY(secondaryRegisterRow >= 0);
+    const QString primaryRegisterName =
+        registers->model()->index(primaryRegisterRow, 0).data().toString();
+    QVERIFY(registers->model()->setData(
+        registers->model()->index(secondaryRegisterRow, 0),
+        primaryRegisterName));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()
+            ->index(registerRow(QStringLiteral("reg-secondary")), 0)
+            .data()
+            .toString(),
+        QStringLiteral("SECOND_REGISTER"), 2000);
+    QCOMPARE(controller->undoDepth(), undoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("unique Register name")));
+
+    secondaryRegisterRow = registerRow(QStringLiteral("reg-secondary"));
+    QVERIFY(registers->model()->setData(
+        registers->model()->index(secondaryRegisterRow, 0), QString{}));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()
+            ->index(registerRow(QStringLiteral("reg-secondary")), 0)
+            .data()
+            .toString(),
+        QStringLiteral("SECOND_REGISTER"), 2000);
+    QCOMPARE(controller->undoDepth(), undoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("non-empty unique Register name")));
+
+    primaryRegisterRow = registerRow(QStringLiteral("reg-status"));
+    Q_EMIT registers->clicked(registers->model()->index(primaryRegisterRow, 5));
+    QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
+    const auto fieldRow = [fields](const QString& id) {
+        for (int row = 0; row < fields->model()->rowCount(); ++row) {
+            if (fields->model()->index(row, 0).data(Qt::UserRole + 1).toString() == id) {
+                return row;
+            }
+        }
+        return -1;
+    };
+    const int primaryFieldRow = fieldRow(QStringLiteral("field-ready"));
+    const int secondaryFieldRow = fieldRow(QStringLiteral("field-secondary"));
+    QVERIFY(primaryFieldRow >= 0);
+    QVERIFY(secondaryFieldRow >= 0);
+    const QString primaryFieldName =
+        fields->model()->index(primaryFieldRow, 0).data().toString();
+    QVERIFY(fields->model()->setData(
+        fields->model()->index(secondaryFieldRow, 0), primaryFieldName));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fields->model()
+            ->index(fieldRow(QStringLiteral("field-secondary")), 0)
+            .data()
+            .toString(),
+        QStringLiteral("SECOND_FIELD"), 2000);
+    QCOMPARE(controller->undoDepth(), undoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("unique Field name")));
 
     makeGeneratedFilesWritable(directory.path());
 }

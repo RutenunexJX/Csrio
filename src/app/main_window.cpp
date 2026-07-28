@@ -1106,6 +1106,75 @@ uniqueDefaultName(const std::vector<Value>& values, std::string_view base)
     return candidate;
 }
 
+template <typename Value>
+[[nodiscard]] bool
+isUniqueSiblingName(const std::vector<Value>& values, std::string_view objectId,
+                    std::string_view name)
+{
+    return !name.empty() &&
+           std::ranges::none_of(values, [&](const Value& value) {
+               return value.id != objectId && value.name == name;
+           });
+}
+
+[[nodiscard]] const std::vector<regmap::Field>*
+fieldSiblings(const std::vector<regmap::Field>& fields, std::string_view fieldId)
+{
+    if (std::ranges::any_of(
+            fields, [&](const regmap::Field& field) { return field.id == fieldId; })) {
+        return &fields;
+    }
+    for (const auto& field : fields) {
+        if (const auto* siblings = fieldSiblings(field.members, fieldId)) {
+            return siblings;
+        }
+    }
+    return nullptr;
+}
+
+[[nodiscard]] const std::vector<regmap::Field>*
+fieldSiblings(const regmap::Workspace& workspace, std::string_view fieldId)
+{
+    for (const auto& page : workspace.addressSpaces) {
+        for (const auto& block : page.blocks) {
+            for (const auto& reg : block.registers) {
+                if (const auto* siblings = fieldSiblings(reg.fields, fieldId)) {
+                    return siblings;
+                }
+            }
+        }
+    }
+    return nullptr;
+}
+
+[[nodiscard]] const std::vector<regmap::Register>*
+registerSiblings(const regmap::Workspace& workspace, std::string_view registerId)
+{
+    for (const auto& page : workspace.addressSpaces) {
+        for (const auto& block : page.blocks) {
+            if (std::ranges::any_of(
+                    block.registers,
+                    [&](const regmap::Register& reg) { return reg.id == registerId; })) {
+                return &block.registers;
+            }
+        }
+    }
+    return nullptr;
+}
+
+[[nodiscard]] const std::vector<regmap::RegisterBlock>*
+blockSiblings(const regmap::Workspace& workspace, std::string_view blockId)
+{
+    for (const auto& page : workspace.addressSpaces) {
+        if (std::ranges::any_of(
+                page.blocks,
+                [&](const regmap::RegisterBlock& block) { return block.id == blockId; })) {
+            return &page.blocks;
+        }
+    }
+    return nullptr;
+}
+
 [[nodiscard]] std::optional<std::size_t>
 pagePosition(const regmap::Workspace& workspace, std::string_view pageId)
 {
@@ -3160,14 +3229,23 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
     }
 
     if (regmap::findField(*workspace, objectId) != nullptr) {
-        if (property == "name" || property == "description") {
+        if (property == "name") {
+            const auto* siblings = fieldSiblings(*workspace, objectId);
+            if (siblings == nullptr ||
+                !isUniqueSiblingName(*siblings, objectId, textValue)) {
+                return reject(
+                    QStringLiteral("a non-empty unique Field name within its parent"));
+            }
             return commit([=](regmap::Workspace& candidate) {
                 if (auto* field = regmap::findField(candidate, objectId)) {
-                    if (property == "name") {
-                        field->name = textValue;
-                    } else {
-                        field->description = textValue;
-                    }
+                    field->name = textValue;
+                }
+            });
+        }
+        if (property == "description") {
+            return commit([=](regmap::Workspace& candidate) {
+                if (auto* field = regmap::findField(candidate, objectId)) {
+                    field->description = textValue;
                 }
             });
         }
@@ -3416,10 +3494,23 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
     }
 
     if (regmap::findRegister(*workspace, objectId) != nullptr) {
-        if (property == "name" || property == "description") {
+        if (property == "name") {
+            const auto* siblings = registerSiblings(*workspace, objectId);
+            if (siblings == nullptr ||
+                !isUniqueSiblingName(*siblings, objectId, textValue)) {
+                return reject(
+                    QStringLiteral("a non-empty unique Register name within its Block"));
+            }
             return commit([=](regmap::Workspace& candidate) {
                 if (auto* reg = regmap::findRegister(candidate, objectId)) {
-                    (property == "name" ? reg->name : reg->description) = textValue;
+                    reg->name = textValue;
+                }
+            });
+        }
+        if (property == "description") {
+            return commit([=](regmap::Workspace& candidate) {
+                if (auto* reg = regmap::findRegister(candidate, objectId)) {
+                    reg->description = textValue;
                 }
             });
         }
@@ -3659,10 +3750,23 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
     }
 
     if (regmap::findRegisterBlock(*workspace, objectId) != nullptr) {
-        if (property == "name" || property == "description") {
+        if (property == "name") {
+            const auto* siblings = blockSiblings(*workspace, objectId);
+            if (siblings == nullptr ||
+                !isUniqueSiblingName(*siblings, objectId, textValue)) {
+                return reject(
+                    QStringLiteral("a non-empty unique Block name within its Page"));
+            }
             return commit([=](regmap::Workspace& candidate) {
                 if (auto* block = regmap::findRegisterBlock(candidate, objectId)) {
-                    (property == "name" ? block->name : block->description) = textValue;
+                    block->name = textValue;
+                }
+            });
+        }
+        if (property == "description") {
+            return commit([=](regmap::Workspace& candidate) {
+                if (auto* block = regmap::findRegisterBlock(candidate, objectId)) {
+                    block->description = textValue;
                 }
             });
         }
@@ -3692,10 +3796,22 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
     }
 
     if (regmap::findAddressSpace(*workspace, objectId) != nullptr) {
-        if (property == "name" || property == "description") {
+        if (property == "name") {
+            if (!isUniqueSiblingName(
+                    workspace->addressSpaces, objectId, textValue)) {
+                return reject(
+                    QStringLiteral("a non-empty unique Page name within the Workspace"));
+            }
             return commit([=](regmap::Workspace& candidate) {
                 if (auto* space = regmap::findAddressSpace(candidate, objectId)) {
-                    (property == "name" ? space->name : space->description) = textValue;
+                    space->name = textValue;
+                }
+            });
+        }
+        if (property == "description") {
+            return commit([=](regmap::Workspace& candidate) {
+                if (auto* space = regmap::findAddressSpace(candidate, objectId)) {
+                    space->description = textValue;
                 }
             });
         }
