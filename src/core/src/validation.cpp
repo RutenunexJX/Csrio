@@ -561,6 +561,10 @@ void Validator::validateRegister(const Register& reg)
         if (first == tag.end()) {
             addDiagnostic(diagnostics_, tagCode, "Register tag must not be empty.", reg.id,
                           propertySource(reg, "tags"));
+        } else if (tag.find(',') != std::string::npos) {
+            addDiagnostic(diagnostics_, tagCode,
+                          "Register tag '" + tag + "' must not contain a comma.", reg.id,
+                          propertySource(reg, "tags"));
         } else if (!tags.insert(tag).second) {
             addDiagnostic(diagnostics_, tagCode, "Register tag '" + tag + "' is duplicated.",
                           reg.id, propertySource(reg, "tags"));

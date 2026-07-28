@@ -3764,12 +3764,22 @@ void MainWindow::editRegisterTags(const QModelIndex& index)
     };
     const auto updateFilter = [list, add, containsTag](const QString& text) {
         const QString filter = text.trimmed();
+        const bool containsSeparator = filter.contains(',');
+        const bool duplicate = !filter.isEmpty() && containsTag(filter);
         for (int itemIndex = 0; itemIndex < list->count(); ++itemIndex) {
             list->item(itemIndex)->setHidden(
                 !filter.isEmpty() &&
                 !list->item(itemIndex)->text().contains(filter, Qt::CaseInsensitive));
         }
-        add->setEnabled(!filter.isEmpty() && !containsTag(filter));
+        add->setEnabled(!filter.isEmpty() && !containsSeparator && !duplicate);
+        if (containsSeparator) {
+            add->setToolTip(QStringLiteral("Tag names cannot contain commas; commas separate tags"));
+        } else if (duplicate) {
+            add->setToolTip(
+                QStringLiteral("Press Enter to select or clear this existing tag"));
+        } else {
+            add->setToolTip(QStringLiteral("Create and select this tag"));
+        }
     };
     connect(search, &QLineEdit::textChanged, popup, updateFilter);
     const auto toggleTag = [list, commit](QListWidgetItem* current) {
@@ -3783,7 +3793,8 @@ void MainWindow::editRegisterTags(const QModelIndex& index)
     connect(list, &QListWidget::itemClicked, popup, toggleTag);
     connect(add, &QToolButton::clicked, popup, [=] {
         const QString candidate = search->text().trimmed();
-        if (candidate.isEmpty() || containsTag(candidate)) {
+        if (candidate.isEmpty() || candidate.contains(',') ||
+            containsTag(candidate)) {
             return;
         }
         auto* current = new QListWidgetItem(candidate, list);
@@ -3795,13 +3806,18 @@ void MainWindow::editRegisterTags(const QModelIndex& index)
         commit();
     });
     connect(search, &QLineEdit::returnPressed, popup,
-            [search, add, list, toggleTag] {
+            [this, search, add, list, toggleTag] {
                 if (add->isEnabled()) {
                     add->click();
                     return;
                 }
                 const QString candidate = search->text().trimmed();
                 if (candidate.isEmpty()) {
+                    return;
+                }
+                if (candidate.contains(',')) {
+                    statusBar()->showMessage(
+                        QStringLiteral("Tag was not created: commas separate tags"), 5000);
                     return;
                 }
                 for (int itemIndex = 0; itemIndex < list->count(); ++itemIndex) {

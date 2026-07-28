@@ -445,6 +445,14 @@ void CoreTests::roundTripsExtendedModel()
     QVERIFY(std::ranges::any_of(diagnostics, [](const regmap::Diagnostic& diagnostic) {
         return diagnostic.code == "RM3052";
     }));
+
+    auto invalidTag = workspace;
+    regmap::findRegister(invalidTag, "reg-active")->tags.push_back("bad,tag");
+    const auto tagDiagnostics = regmap::validateWorkspace(invalidTag);
+    QVERIFY(std::ranges::any_of(tagDiagnostics, [](const regmap::Diagnostic& diagnostic) {
+        return diagnostic.code == "RM3051" &&
+               diagnostic.message.find("must not contain a comma") != std::string::npos;
+    }));
 }
 
 void CoreTests::tracksTransactionsAndStableIds()

@@ -2607,6 +2607,15 @@ void GuiSmokeTests::editsTagsAndAccessFromDoubleClick()
     QTest::keyClick(search, Qt::Key_Return);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 10).data().toString(),
                               QStringLiteral("control, keyboardtag, newtag"), 2000);
+
+    search->setText(QStringLiteral("bad,tag"));
+    QVERIFY(!add->isEnabled());
+    QTest::keyClick(search, Qt::Key_Return);
+    QCOMPARE(registers->model()->index(0, 10).data().toString(),
+             QStringLiteral("control, keyboardtag, newtag"));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("commas separate tags")));
+
     tagPopup->close();
     QTRY_VERIFY_WITH_TIMEOUT(QApplication::activePopupWidget() == nullptr, 2000);
 
