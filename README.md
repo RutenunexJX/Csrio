@@ -100,7 +100,10 @@ New/Open validates and commits the active table editor before displaying a file 
 cell value is invalid, the chooser is not opened, the current project remains active, and the
 status bar states the expected value. If a selected project cannot be created or opened, the
 current project and its pending edits remain active; the failure identifies the target and the
-first available cause. An existing project can also be passed at startup:
+first available cause. If the project file is created successfully but a pre-existing managed
+RTL file is invalid, the new project still opens as a recoverable blocked state instead of being
+misreported as a creation failure; fix the RTL and invoke **Save & Sync**. An existing project can
+also be passed at startup:
 
 **File > Reload from Disk** reloads a clean project directly. If Workbench has local edits, it
 reports how many changes will be discarded, identifies the project file, and explains that the

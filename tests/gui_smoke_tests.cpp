@@ -70,6 +70,7 @@ class GuiSmokeTests final : public QObject {
 private slots:
     void appliesWorkbookTheme();
     void createsWorkbenchFirstProject();
+    void treatsInvalidInitialRtlAsRecoverableAfterCreation();
     void establishesMissingBaselineForIdenticalSources();
     void blocksDivergentSourcesWithoutBaseline();
     void resolvesMissingBaselineWithExplicitChoice();
@@ -447,6 +448,63 @@ void GuiSmokeTests::createsWorkbenchFirstProject()
     QVERIFY(!controller.hasProjectErrors());
     QVERIFY(!controller.hasConflicts());
     QVERIFY(!controller.isDirty());
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::treatsInvalidInitialRtlAsRecoverableAfterCreation()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    QDir root(directory.path());
+    QVERIFY(root.mkpath(QStringLiteral("rtl")));
+    const QString manifestPath =
+        directory.filePath(QStringLiteral("created.regmap.yaml"));
+    const QString rtlPath =
+        directory.filePath(QStringLiteral("rtl/created_registers.sv"));
+    const QString baselinePath =
+        manifestPath + QStringLiteral(".sync.json");
+
+    QFile rtlFile(rtlPath);
+    QVERIFY(rtlFile.open(
+        QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate));
+    const QByteArray invalidRtl(
+        "module created_registers;\n"
+        "// RMW:BEGIN\n"
+        "localparam logic [63:0] INVALID = 64'hx;\n");
+    QCOMPARE(rtlFile.write(invalidRtl), invalidRtl.size());
+    rtlFile.close();
+
+    ProjectController controller;
+    QSignalSpy statusChanged(
+        &controller, &ProjectController::syncStatusChanged);
+    QVERIFY(controller.createProject(manifestPath));
+    QVERIFY(controller.workspace() != nullptr);
+    QVERIFY(controller.manifest() != nullptr);
+    QCOMPARE(controller.manifestPath(),
+             std::filesystem::path(manifestPath.toStdWString()));
+    QCOMPARE(controller.workspace()->name, std::string("created"));
+    QVERIFY(controller.hasProjectErrors());
+    QVERIFY(!controller.isDirty());
+    QVERIFY(!QFileInfo::exists(baselinePath));
+    QVERIFY(std::ranges::any_of(
+        controller.diagnostics(),
+        [](const regmap::Diagnostic& diagnostic) {
+            return diagnostic.severity ==
+                regmap::DiagnosticSeverity::error;
+        }));
+    QVERIFY(!statusChanged.isEmpty());
+    QVERIFY(statusChanged.last().at(0).toString().contains(
+        QStringLiteral("Managed RTL is invalid")));
+    QVERIFY(statusChanged.last().at(0).toString().contains(
+        QStringLiteral("synchronization is blocked")));
+
+    QVERIFY(QFile::remove(rtlPath));
+    controller.synchronizeNow();
+    QVERIFY(!controller.hasProjectErrors());
+    QVERIFY(!controller.isDirty());
+    QVERIFY(QFileInfo::exists(rtlPath));
+    QVERIFY(QFileInfo::exists(baselinePath));
 
     makeGeneratedFilesWritable(directory.path());
 }

@@ -156,7 +156,9 @@ bool ProjectController::createProject(const QString& manifestPath)
         return false;
     }
     openProject(fromPath(path));
-    return store_.workspace() != nullptr && !hasProjectErrors();
+    return manifestPath_ == path && manifest_.has_value() &&
+        store_.workspace() != nullptr &&
+        store_.workspace()->id == workspace.id;
 }
 
 const regmap::ProjectManifest* ProjectController::manifest() const noexcept
