@@ -90,6 +90,9 @@ constexpr std::string_view addressRangeDiagnosticCode = "RM3011";
 constexpr std::string_view strideDiagnosticCode = "RM3022";
 constexpr std::string_view registerRangeDiagnosticCode = "RM3023";
 constexpr std::string_view addressOverlapDiagnosticCode = "RM3024";
+constexpr std::string_view fieldRangeDiagnosticCode = "RM3030";
+constexpr std::string_view fieldOverlapDiagnosticCode = "RM3031";
+constexpr std::string_view fieldTypeDiagnosticCode = "RM3036";
 constexpr std::string_view numericRangeDiagnosticCode = "RM3052";
 constexpr auto tableClipboardMimeType =
     "application/x-regmap-workbench-table-cells";
@@ -1279,6 +1282,60 @@ addressLayoutIssues(const regmap::Workspace& workspace,
 {
     const auto beforeIssues = addressLayoutIssues(before, targetId);
     const auto afterIssues = addressLayoutIssues(after, targetId);
+    return afterIssues.size() < beforeIssues.size() ||
+           std::includes(
+               beforeIssues.begin(), beforeIssues.end(),
+               afterIssues.begin(), afterIssues.end());
+}
+
+[[nodiscard]] bool isFieldGeometryDiagnostic(std::string_view code) noexcept
+{
+    return code == fieldRangeDiagnosticCode ||
+           code == fieldOverlapDiagnosticCode ||
+           code == fieldTypeDiagnosticCode;
+}
+
+void collectFieldObjectIds(
+    const std::vector<regmap::Field>& fields,
+    std::set<std::string, std::less<>>& objectIds)
+{
+    for (const auto& field : fields) {
+        objectIds.insert(field.id);
+        collectFieldObjectIds(field.members, objectIds);
+    }
+}
+
+[[nodiscard]] std::vector<std::string>
+fieldGeometryIssues(const regmap::Workspace& workspace,
+                    std::string_view fieldId)
+{
+    const auto* reg = findRegisterContainingField(workspace, fieldId);
+    if (reg == nullptr) {
+        return {std::string{"missing-field-owner:"} + std::string{fieldId}};
+    }
+
+    std::set<std::string, std::less<>> objectIds;
+    collectFieldObjectIds(reg->fields, objectIds);
+    std::vector<std::string> issues;
+    for (const auto& diagnostic : regmap::validateWorkspace(workspace)) {
+        if (!isFieldGeometryDiagnostic(diagnostic.code) ||
+            !objectIds.contains(diagnostic.objectId)) {
+            continue;
+        }
+        issues.push_back(
+            diagnostic.code + '\n' + diagnostic.objectId + '\n' +
+            diagnostic.message);
+    }
+    std::ranges::sort(issues);
+    return issues;
+}
+
+[[nodiscard]] bool fieldGeometryEditDoesNotWorsen(
+    const regmap::Workspace& before, const regmap::Workspace& after,
+    std::string_view fieldId)
+{
+    const auto beforeIssues = fieldGeometryIssues(before, fieldId);
+    const auto afterIssues = fieldGeometryIssues(after, fieldId);
     return afterIssues.size() < beforeIssues.size() ||
            std::includes(
                beforeIssues.begin(), beforeIssues.end(),
@@ -3267,6 +3324,14 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
             mutation(candidate);
             return addressEditDoesNotWorsen(*workspace, candidate, targetId);
         };
+    const auto acceptsFieldGeometryEdit =
+        [workspace](std::string_view fieldId,
+                    const regmap::WorkspaceStore::Mutation& mutation) {
+            regmap::Workspace candidate = *workspace;
+            mutation(candidate);
+            return fieldGeometryEditDoesNotWorsen(
+                *workspace, candidate, fieldId);
+        };
 
     if (workspace->id == objectId && property == "name") {
         if (textValue.empty()) {
@@ -3439,14 +3504,21 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                         "an MSB between the field LSB and register width that preserves "
                         "Reset, Enum, and member Field values"));
             }
-            return commit([=](regmap::Workspace& candidate) {
+            const regmap::WorkspaceStore::Mutation mutation =
+                [=](regmap::Workspace& candidate) {
                 if (auto* field = regmap::findField(candidate, objectId)) {
                     field->msb = *parsed;
                     if (auto* reg = findRegisterContainingField(candidate, objectId)) {
                         refreshRegisterFieldResets(*reg);
                     }
                 }
-            });
+            };
+            if (!acceptsFieldGeometryEdit(objectId, mutation)) {
+                return reject(
+                    QStringLiteral(
+                        "an MSB that preserves a valid, non-overlapping Field layout"));
+            }
+            return commit(mutation);
         }
         if (property == "field_width") {
             const auto parsed = parseUInt32();
@@ -3461,14 +3533,21 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                         "a positive field width that fits in the register and preserves "
                         "Reset, Enum, and member Field values"));
             }
-            return commit([=](regmap::Workspace& candidate) {
+            const regmap::WorkspaceStore::Mutation mutation =
+                [=](regmap::Workspace& candidate) {
                 if (auto* field = regmap::findField(candidate, objectId)) {
                     field->msb = field->lsb + *parsed - 1;
                     if (auto* reg = findRegisterContainingField(candidate, objectId)) {
                         refreshRegisterFieldResets(*reg);
                     }
                 }
-            });
+            };
+            if (!acceptsFieldGeometryEdit(objectId, mutation)) {
+                return reject(
+                    QStringLiteral(
+                        "a Width that preserves a valid, non-overlapping Field layout"));
+            }
+            return commit(mutation);
         }
         if (property == "reset") {
             std::optional<regmap::UnsignedValue> parsed;
@@ -3585,8 +3664,8 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                 currentField != nullptr && !enumerationLike && !currentField->enumValues.empty();
             const bool clearsRange = currentField != nullptr && !numeric &&
                                      (currentField->minimumValue || currentField->maximumValue);
-            const PropertyEditResult result =
-                commit([=](regmap::Workspace& candidate) {
+            const regmap::WorkspaceStore::Mutation mutation =
+                [=](regmap::Workspace& candidate) {
                 if (auto* field = regmap::findField(candidate, objectId)) {
                     field->type = *parsed;
                     if (numericWidth) {
@@ -3611,7 +3690,13 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                         refreshRegisterFieldResets(*reg);
                     }
                 }
-            });
+            };
+            if (!acceptsFieldGeometryEdit(objectId, mutation)) {
+                return reject(
+                    QStringLiteral(
+                        "a Type whose width preserves a valid, non-overlapping Field layout"));
+            }
+            const PropertyEditResult result = commit(mutation);
             if (result.status == PropertyEditStatus::changed &&
                 (clearsEnumValues || clearsRange) && reportFeedback) {
                 statusBar()->showMessage(
@@ -3860,8 +3945,8 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                 (current->access != regmap::AccessMode::none ||
                  (current->initialValue && !current->initialValue->isZero()) ||
                  (current->resetValue && !current->resetValue->isZero()));
-            const PropertyEditResult result =
-                commit([=](regmap::Workspace& candidate) {
+            const regmap::WorkspaceStore::Mutation mutation =
+                [=](regmap::Workspace& candidate) {
                 if (auto* reg = regmap::findRegister(candidate, objectId)) {
                     reg->type = *parsed;
                     reg->reserved = *parsed == regmap::FieldType::reserved;
@@ -3885,7 +3970,13 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                         reg->maximumValue.reset();
                     }
                 }
-            });
+            };
+            if (!acceptsAddressEdit(objectId, mutation)) {
+                return reject(
+                    QStringLiteral(
+                        "a Register Type whose width preserves the address layout"));
+            }
+            const PropertyEditResult result = commit(mutation);
             if (result.status == PropertyEditStatus::changed &&
                 (clearsEnumValues || clearsRange || normalizesReserved) && reportFeedback) {
                 statusBar()->showMessage(

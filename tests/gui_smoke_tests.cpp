@@ -99,6 +99,7 @@ private slots:
     void rejectsOutOfRangeNumericEdits();
     void rejectsInvalidNumericRangesDuringEditing();
     void rejectsAddressEditsThatIntroduceConflicts();
+    void rejectsGeometryConflictsFromWidthAndTypeEdits();
     void synchronizesFieldResetEdits();
     void protectsEnumContractsDuringEditing();
     void rejectsRegisterResetsOutsideFieldEnums();
@@ -4322,6 +4323,213 @@ void GuiSmokeTests::rejectsAddressEditsThatIntroduceConflicts()
             .data()
             .toString(),
         QStringLiteral("0x4"), 2000);
+    QCOMPARE(controller->undoDepth(), recoveryUndoDepth + 1);
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::rejectsGeometryConflictsFromWidthAndTypeEdits()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createTwoRegisterProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+
+    auto* controller = window.findChild<ProjectController*>();
+    auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* fields = window.findChild<QTableView*>(QStringLiteral("fieldView"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Configure geometry conflict fixture"),
+        [](regmap::Workspace& workspace) {
+            auto* block = regmap::findRegisterBlock(workspace, "block-control");
+            auto* reg = regmap::findRegister(workspace, "reg-status");
+            auto* ready = regmap::findField(workspace, "field-ready");
+            if (block == nullptr || reg == nullptr || ready == nullptr) {
+                return;
+            }
+            block->size = 8;
+            ready->type = regmap::FieldType::bits;
+            ready->msb = 0;
+            ready->lsb = 0;
+            ready->enumValues.clear();
+
+            regmap::Field second;
+            second.id = "field-second";
+            second.name = "SECOND";
+            second.msb = 4;
+            second.lsb = 4;
+            second.type = regmap::FieldType::bits;
+            second.softwareAccess = regmap::AccessMode::readOnly;
+            second.hardwareAccess = regmap::AccessMode::writeOnly;
+            second.resetValue = regmap::UnsignedValue(0);
+            second.readSideEffect = regmap::ReadSideEffect::none;
+            second.writeSideEffect = regmap::WriteSideEffect::none;
+            reg->fields.push_back(std::move(second));
+
+            regmap::Field member;
+            member.id = "field-member";
+            member.name = "MEMBER";
+            member.msb = 0;
+            member.lsb = 0;
+            member.type = regmap::FieldType::bits;
+            member.softwareAccess = regmap::AccessMode::readOnly;
+            member.hardwareAccess = regmap::AccessMode::writeOnly;
+            member.resetValue = regmap::UnsignedValue(0);
+            member.readSideEffect = regmap::ReadSideEffect::none;
+            member.writeSideEffect = regmap::WriteSideEffect::none;
+
+            regmap::Field parent;
+            parent.id = "field-parent";
+            parent.name = "PARENT";
+            parent.msb = 15;
+            parent.lsb = 8;
+            parent.type = regmap::FieldType::structure;
+            parent.softwareAccess = regmap::AccessMode::none;
+            parent.hardwareAccess = regmap::AccessMode::none;
+            parent.resetValue = regmap::UnsignedValue(0);
+            parent.readSideEffect = regmap::ReadSideEffect::none;
+            parent.writeSideEffect = regmap::WriteSideEffect::none;
+            parent.members.push_back(std::move(member));
+            reg->fields.push_back(std::move(parent));
+        }));
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+
+    const auto registerRow = [registers](const QString& id) {
+        for (int row = 0; row < registers->model()->rowCount(); ++row) {
+            if (registers->model()->index(row, 0).data(Qt::UserRole + 1).toString() == id) {
+                return row;
+            }
+        }
+        return -1;
+    };
+    int controlRow = registerRow(QStringLiteral("reg-control"));
+    QVERIFY(controlRow >= 0);
+    const std::size_t initialUndoDepth = controller->undoDepth();
+
+    QVERIFY(registers->model()->setData(
+        registers->model()->index(controlRow, 4), QStringLiteral("uint64")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()
+            ->index(registerRow(QStringLiteral("reg-control")), 4)
+            .data()
+            .toString(),
+        QStringLiteral("uint32"), 2000);
+    QCOMPARE(regmap::findRegister(*controller->workspace(), "reg-control")->width,
+             std::uint32_t{32});
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("address layout")));
+
+    const int statusRow = registerRow(QStringLiteral("reg-status"));
+    QVERIFY(statusRow >= 0);
+    Q_EMIT registers->clicked(registers->model()->index(statusRow, 5));
+    QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
+    const auto fieldRow = [fields](const QString& id) {
+        for (int row = 0; row < fields->model()->rowCount(); ++row) {
+            if (fields->model()->index(row, 0).data(Qt::UserRole + 1).toString() == id) {
+                return row;
+            }
+        }
+        return -1;
+    };
+    int readyRow = fieldRow(QStringLiteral("field-ready"));
+    QVERIFY(readyRow >= 0);
+
+    QVERIFY(fields->model()->setData(
+        fields->model()->index(readyRow, 2), QStringLiteral("4")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fields->model()
+            ->index(fieldRow(QStringLiteral("field-ready")), 2)
+            .data()
+            .toString(),
+        QStringLiteral("0"), 2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("non-overlapping Field layout")));
+
+    readyRow = fieldRow(QStringLiteral("field-ready"));
+    QVERIFY(fields->model()->setData(
+        fields->model()->index(readyRow, 4), QStringLiteral("5")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fields->model()
+            ->index(fieldRow(QStringLiteral("field-ready")), 4)
+            .data()
+            .toString(),
+        QStringLiteral("1"), 2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+
+    readyRow = fieldRow(QStringLiteral("field-ready"));
+    QVERIFY(fields->model()->setData(
+        fields->model()->index(readyRow, 5), QStringLiteral("uint5")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fields->model()
+            ->index(fieldRow(QStringLiteral("field-ready")), 5)
+            .data()
+            .toString(),
+        QStringLiteral("bits"), 2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+
+    int memberRow = fieldRow(QStringLiteral("field-member"));
+    QVERIFY(memberRow >= 0);
+    QVERIFY(fields->model()->setData(
+        fields->model()->index(memberRow, 4), QStringLiteral("9")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fields->model()
+            ->index(fieldRow(QStringLiteral("field-member")), 4)
+            .data()
+            .toString(),
+        QStringLiteral("1"), 2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("non-overlapping Field layout")));
+
+    readyRow = fieldRow(QStringLiteral("field-ready"));
+    QVERIFY(fields->model()->setData(
+        fields->model()->index(readyRow, 4), QStringLiteral("4")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fields->model()
+            ->index(fieldRow(QStringLiteral("field-ready")), 4)
+            .data()
+            .toString(),
+        QStringLiteral("4"), 2000);
+    QCOMPARE(regmap::findField(*controller->workspace(), "field-ready")->msb,
+             std::uint32_t{3});
+    QCOMPARE(controller->undoDepth(), initialUndoDepth + 1);
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Configure Field overlap recovery fixture"),
+        [](regmap::Workspace& workspace) {
+            if (auto* field = regmap::findField(workspace, "field-ready")) {
+                field->msb = 4;
+            }
+        }));
+    QVERIFY(!regmap::validateWorkspace(*controller->workspace()).empty());
+    readyRow = fieldRow(QStringLiteral("field-ready"));
+    QVERIFY(readyRow >= 0);
+    const std::size_t recoveryUndoDepth = controller->undoDepth();
+
+    QVERIFY(fields->model()->setData(
+        fields->model()->index(readyRow, 4), QStringLiteral("4")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fields->model()
+            ->index(fieldRow(QStringLiteral("field-ready")), 4)
+            .data()
+            .toString(),
+        QStringLiteral("4"), 2000);
+    QCOMPARE(regmap::findField(*controller->workspace(), "field-ready")->msb,
+             std::uint32_t{3});
     QCOMPARE(controller->undoDepth(), recoveryUndoDepth + 1);
     QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
 
