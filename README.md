@@ -28,6 +28,10 @@ Workspace -> Page (Address Space) -> Register Block -> Register -> Field -> Enum
 - Structure-register rows expose a dedicated **Open (N)** Fields button.
 - Trailing `+` rows for register/field creation; page and block base addresses appear once in
   the context bar above the register table and remain directly editable.
+- Page and Register Block copy/paste and drag movement stay in the hierarchy. A pasted Block
+  keeps its Base when free and otherwise uses the first non-overlapping Base that fits the
+  destination Page. A cross-Page Block move preserves its Base and is rejected before changing
+  the model when that Base, Page width, or Block name conflicts at the destination.
 - Reserved address slots and delete-with-offset-shift operations from the register context menu.
   Converting a populated Register to Reserved first reports the Fields, Enum values, Range
   bounds, non-zero Initial/Reset values, and Description that will be removed or replaced; the

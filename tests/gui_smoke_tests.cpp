@@ -4570,6 +4570,7 @@ void GuiSmokeTests::copiesAndPastesHierarchyObjects()
         controller->workspace()->addressSpaces.front().blocks.back();
     QCOMPARE(QString::fromStdString(copiedBlock.name),
              QStringLiteral("Control Copy"));
+    QCOMPARE(copiedBlock.baseAddress, std::uint64_t{0x1000});
     QVERIFY(copiedBlock.id != originalBlock.id);
     QCOMPARE(copiedBlock.registers.size(), originalBlock.registers.size());
     QVERIFY(!copiedBlock.registers.empty());
@@ -4580,10 +4581,104 @@ void GuiSmokeTests::copiesAndPastesHierarchyObjects()
             originalBlock.registers.front().fields.front().id);
     QVERIFY(hierarchy->currentIndex().data(Qt::UserRole + 1).toString() ==
             QString::fromStdString(copiedBlock.id));
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Base 0x1000")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("adjusted from 0x0")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Ctrl+Z")));
 
     controller->undo();
     QTRY_COMPARE_WITH_TIMEOUT(controller->workspace()->addressSpaces.front().blocks.size(),
                               std::size_t{1}, 2000);
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Constrain Page capacity"),
+        [](regmap::Workspace& workspace) {
+            workspace.addressSpaces.front().addressWidth = 12;
+        }));
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+    blockIndex =
+        hierarchyIndexByObjectId(hierarchy->model(), blockId);
+    QVERIFY(blockIndex.isValid());
+    hierarchy->setCurrentIndex(blockIndex);
+    hierarchy->setFocus(Qt::OtherFocusReason);
+    QTest::keyClick(hierarchy, Qt::Key_C, Qt::ControlModifier);
+    const std::size_t constrainedUndoDepth = controller->undoDepth();
+    window.statusBar()->clearMessage();
+    QTest::keyClick(hierarchy, Qt::Key_V, Qt::ControlModifier);
+    QCoreApplication::processEvents();
+    QCOMPARE(controller->workspace()->addressSpaces.front().blocks.size(),
+             std::size_t{1});
+    QCOMPARE(controller->undoDepth(), constrainedUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Cannot paste Register Block")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("no non-overlapping Block Base fits")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Main")));
+    controller->undo();
+    QTRY_COMPARE_WITH_TIMEOUT(
+        controller->workspace()->addressSpaces.front().addressWidth,
+        std::uint32_t{32}, 2000);
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Seed lower-address destination Page"),
+        [](regmap::Workspace& workspace) {
+            workspace.addressSpaces.front().blocks.front().baseAddress =
+                0x2000;
+            regmap::AddressSpace destination;
+            destination.id = "space-small";
+            destination.name = "Small";
+            destination.addressWidth = 12;
+            workspace.addressSpaces.push_back(std::move(destination));
+        }));
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+    blockIndex =
+        hierarchyIndexByObjectId(hierarchy->model(), blockId);
+    QModelIndex smallPage =
+        hierarchyIndexByObjectId(hierarchy->model(),
+                                 QStringLiteral("space-small"));
+    QVERIFY(blockIndex.isValid());
+    QVERIFY(smallPage.isValid());
+    hierarchy->setCurrentIndex(blockIndex);
+    hierarchy->setFocus(Qt::OtherFocusReason);
+    QTest::keyClick(hierarchy, Qt::Key_C, Qt::ControlModifier);
+    hierarchy->setCurrentIndex(smallPage);
+    window.statusBar()->clearMessage();
+    QTest::keyClick(hierarchy, Qt::Key_V, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        controller->workspace()->addressSpaces[1].blocks.size(),
+        std::size_t{1}, 2000);
+    const auto& crossPageCopy =
+        controller->workspace()->addressSpaces[1].blocks.front();
+    QCOMPARE(crossPageCopy.baseAddress, std::uint64_t{0});
+    QCOMPARE(crossPageCopy.name, std::string("Control Copy"));
+    QVERIFY(crossPageCopy.id !=
+            controller->workspace()
+                ->addressSpaces.front()
+                .blocks.front()
+                .id);
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Base 0x0")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("adjusted from 0x2000")));
+
+    controller->undo();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        controller->workspace()->addressSpaces[1].blocks.empty(), 2000);
+    controller->undo();
+    QTRY_COMPARE_WITH_TIMEOUT(controller->workspace()->addressSpaces.size(),
+                              std::size_t{1}, 2000);
+    QCOMPARE(
+        controller->workspace()
+            ->addressSpaces.front()
+            .blocks.front()
+            .baseAddress,
+        std::uint64_t{0});
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
     makeGeneratedFilesWritable(directory.path());
 }
 
@@ -4615,7 +4710,7 @@ void GuiSmokeTests::movesHierarchyObjectsByDrag()
             regmap::RegisterBlock block;
             block.id = "block-secondary";
             block.name = "Secondary Block";
-            block.baseAddress = 0;
+            block.baseAddress = 0x1000;
             block.size = 0x1000;
             page.blocks.push_back(std::move(block));
             workspace.addressSpaces.push_back(std::move(page));
@@ -4665,6 +4760,7 @@ void GuiSmokeTests::movesHierarchyObjectsByDrag()
     QVERIFY(movedBlock != nullptr);
     QVERIFY(!movedBlock->registers.empty());
     QCOMPARE(movedBlock->registers.front().id, std::string{"reg-status"});
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
 
     controller->undo();
     QTRY_VERIFY_WITH_TIMEOUT(
@@ -4674,6 +4770,76 @@ void GuiSmokeTests::movesHierarchyObjectsByDrag()
                 return block.id == "block-control";
             }),
         2000);
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Create destination Base conflict"),
+        [](regmap::Workspace& workspace) {
+            auto* block =
+                regmap::findRegisterBlock(workspace, "block-secondary");
+            QVERIFY(block != nullptr);
+            block->baseAddress = 0;
+        }));
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+    sourceBlock =
+        hierarchyIndexByObjectId(hierarchy->model(),
+                                 QStringLiteral("block-control"));
+    secondaryPage =
+        hierarchyIndexByObjectId(hierarchy->model(),
+                                 QStringLiteral("space-secondary"));
+    QVERIFY(sourceBlock.isValid());
+    QVERIFY(secondaryPage.isValid());
+    const std::size_t baseConflictUndoDepth = controller->undoDepth();
+    window.statusBar()->clearMessage();
+    QVERIFY(dropHierarchyObject(hierarchy, sourceBlock, secondaryPage));
+    QVERIFY(std::ranges::any_of(
+        controller->workspace()->addressSpaces[0].blocks,
+        [](const regmap::RegisterBlock& block) {
+            return block.id == "block-control";
+        }));
+    QVERIFY(std::ranges::none_of(
+        controller->workspace()->addressSpaces[1].blocks,
+        [](const regmap::RegisterBlock& block) {
+            return block.id == "block-control";
+        }));
+    QCOMPARE(controller->undoDepth(), baseConflictUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Cannot move Register Block Control")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Base 0x0 overlaps")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Edit Block Base")));
+    controller->undo();
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Create destination Block name conflict"),
+        [](regmap::Workspace& workspace) {
+            auto* block =
+                regmap::findRegisterBlock(workspace, "block-secondary");
+            QVERIFY(block != nullptr);
+            block->name = "Control";
+        }));
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+    sourceBlock =
+        hierarchyIndexByObjectId(hierarchy->model(),
+                                 QStringLiteral("block-control"));
+    secondaryPage =
+        hierarchyIndexByObjectId(hierarchy->model(),
+                                 QStringLiteral("space-secondary"));
+    QVERIFY(sourceBlock.isValid());
+    QVERIFY(secondaryPage.isValid());
+    const std::size_t nameConflictUndoDepth = controller->undoDepth();
+    window.statusBar()->clearMessage();
+    QVERIFY(dropHierarchyObject(hierarchy, sourceBlock, secondaryPage));
+    QVERIFY(std::ranges::any_of(
+        controller->workspace()->addressSpaces[0].blocks,
+        [](const regmap::RegisterBlock& block) {
+            return block.id == "block-control";
+        }));
+    QCOMPARE(controller->undoDepth(), nameConflictUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("already contains a Block with that name")));
+    controller->undo();
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
     makeGeneratedFilesWritable(directory.path());
 }
 

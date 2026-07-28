@@ -997,6 +997,156 @@ void configureTable(QTableView* view)
     return false;
 }
 
+struct BlockAddressInterval {
+    std::uint64_t first{0};
+    std::uint64_t last{0};
+};
+
+[[nodiscard]] std::optional<std::uint64_t>
+checkedRegisterExtent(const regmap::Register& reg)
+{
+    const std::uint64_t byteWidth =
+        (static_cast<std::uint64_t>(reg.width) + 7U) / 8U;
+    if (reg.width == 0 || reg.array.count == 0) {
+        return std::nullopt;
+    }
+    if (reg.array.count == 1) {
+        return byteWidth;
+    }
+    const std::uint64_t instances =
+        static_cast<std::uint64_t>(reg.array.count - 1);
+    if (reg.array.stride != 0 &&
+        instances >
+            std::numeric_limits<std::uint64_t>::max() /
+                reg.array.stride) {
+        return std::nullopt;
+    }
+    const std::uint64_t lastOffset = instances * reg.array.stride;
+    std::uint64_t extent = 0;
+    return addOverflow(lastOffset, byteWidth, extent)
+               ? std::nullopt
+               : std::optional{extent};
+}
+
+[[nodiscard]] std::optional<std::uint64_t>
+blockAllocationSize(const regmap::RegisterBlock& block)
+{
+    std::uint64_t allocation = block.size.value_or(0);
+    if (block.size.has_value() && *block.size == 0) {
+        return std::nullopt;
+    }
+    for (const auto& reg : block.registers) {
+        const auto extent = checkedRegisterExtent(reg);
+        std::uint64_t end = 0;
+        if (!extent || addOverflow(reg.offset, *extent, end)) {
+            return std::nullopt;
+        }
+        allocation = std::max(allocation, end);
+    }
+    return allocation == 0 ? std::optional<std::uint64_t>{1}
+                           : std::optional{allocation};
+}
+
+[[nodiscard]] std::optional<BlockAddressInterval>
+blockAddressInterval(const regmap::RegisterBlock& block)
+{
+    const auto allocation = blockAllocationSize(block);
+    std::uint64_t last = 0;
+    if (!allocation ||
+        addOverflow(block.baseAddress, *allocation - 1, last)) {
+        return std::nullopt;
+    }
+    return BlockAddressInterval{block.baseAddress, last};
+}
+
+[[nodiscard]] bool blockFitsPage(const regmap::AddressSpace& page,
+                                 const regmap::RegisterBlock& block)
+{
+    const auto interval = blockAddressInterval(block);
+    std::uint64_t absoluteFirst = 0;
+    std::uint64_t absoluteLast = 0;
+    if (!interval || page.addressWidth == 0 || page.addressWidth > 64 ||
+        addOverflow(page.baseAddress, interval->first, absoluteFirst) ||
+        addOverflow(page.baseAddress, interval->last, absoluteLast)) {
+        return false;
+    }
+    if (page.addressWidth == 64) {
+        return true;
+    }
+    return absoluteLast < (std::uint64_t{1} << page.addressWidth);
+}
+
+[[nodiscard]] bool intervalsOverlap(const BlockAddressInterval& left,
+                                    const BlockAddressInterval& right) noexcept
+{
+    return left.first <= right.last && right.first <= left.last;
+}
+
+[[nodiscard]] bool blockPlacementAvailable(
+    const regmap::AddressSpace& page, const regmap::RegisterBlock& block,
+    std::string_view ignoredBlockId = {})
+{
+    const auto candidate = blockAddressInterval(block);
+    if (!candidate || !blockFitsPage(page, block)) {
+        return false;
+    }
+    for (const auto& existing : page.blocks) {
+        if (!ignoredBlockId.empty() && existing.id == ignoredBlockId) {
+            continue;
+        }
+        const auto occupied = blockAddressInterval(existing);
+        if (!occupied || intervalsOverlap(*candidate, *occupied)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] std::optional<std::uint64_t>
+availableBlockBase(const regmap::AddressSpace& page,
+                   const regmap::RegisterBlock& block)
+{
+    const auto searchFrom =
+        [&](std::uint64_t startingBase) -> std::optional<std::uint64_t> {
+        regmap::RegisterBlock candidate = block;
+        candidate.baseAddress = startingBase;
+        for (std::size_t attempt = 0; attempt <= page.blocks.size(); ++attempt) {
+            if (blockPlacementAvailable(page, candidate)) {
+                return candidate.baseAddress;
+            }
+            const auto candidateInterval = blockAddressInterval(candidate);
+            if (!candidateInterval) {
+                return std::nullopt;
+            }
+            std::optional<std::uint64_t> nextBase;
+            for (const auto& existing : page.blocks) {
+                const auto occupied = blockAddressInterval(existing);
+                if (!occupied) {
+                    return std::nullopt;
+                }
+                if (intervalsOverlap(*candidateInterval, *occupied)) {
+                    if (occupied->last ==
+                        std::numeric_limits<std::uint64_t>::max()) {
+                        return std::nullopt;
+                    }
+                    nextBase = std::max(
+                        nextBase.value_or(0), occupied->last + 1);
+                }
+            }
+            if (!nextBase || *nextBase <= candidate.baseAddress) {
+                return std::nullopt;
+            }
+            candidate.baseAddress = *nextBase;
+        }
+        return std::nullopt;
+    };
+
+    if (const auto retainedBase = searchFrom(block.baseAddress)) {
+        return retainedBase;
+    }
+    return block.baseAddress == 0 ? std::nullopt : searchFrom(0);
+}
+
 [[nodiscard]] std::optional<std::uint64_t>
 fieldAbsoluteLsb(const std::vector<regmap::Field>& fields, std::string_view fieldId,
                  std::uint64_t parentLsb = 0)
@@ -6991,8 +7141,27 @@ void MainWindow::pasteHierarchySelection()
             });
         std::set<regmap::ObjectId, std::less<>> generatedIds;
         prepareCopiedBlock(*workspace, copy, generatedIds);
+        const std::uint64_t originalBase = copy.baseAddress;
+        const auto pasteBase =
+            availableBlockBase(workspace->addressSpaces[pageIndex], copy);
+        if (!pasteBase) {
+            statusBar()->showMessage(
+                QStringLiteral(
+                    "Cannot paste Register Block %1: no non-overlapping Block Base "
+                    "fits Page %2")
+                    .arg(fromUtf8(copy.name),
+                         fromUtf8(workspace->addressSpaces[pageIndex].name)),
+                7000);
+            return;
+        }
+        copy.baseAddress = *pasteBase;
         const std::string newId = copy.id;
         const QString label = fromUtf8(copy.name);
+        const QString baseFeedback =
+            originalBase == *pasteBase
+                ? QStringLiteral(" at Base %1").arg(hex(*pasteBase))
+                : QStringLiteral(" at Base %1 (adjusted from %2)")
+                      .arg(hex(*pasteBase), hex(originalBase));
         if (controller_.editWorkspace(
                 QStringLiteral("Paste register block %1").arg(label),
                 [destinationPageId, insertion,
@@ -7012,8 +7181,9 @@ void MainWindow::pasteHierarchySelection()
             openFieldsRegisterId_.clear();
             refreshProject();
             statusBar()->showMessage(
-                QStringLiteral("Pasted Register Block %1; Ctrl+Z to restore").arg(label),
-                5000);
+                QStringLiteral("Pasted Register Block %1%2; Ctrl+Z to restore")
+                    .arg(label, baseFeedback),
+                6000);
         }
         return;
     }
@@ -7118,10 +7288,37 @@ void MainWindow::moveHierarchyObject(const std::string& sourceId,
 
     const std::string destinationPageId =
         workspace->addressSpaces[destinationPage].id;
-    const QString label =
-        fromUtf8(workspace->addressSpaces[sourceBlock->page]
-                     .blocks[sourceBlock->block]
-                     .name);
+    const auto& movingBlock =
+        workspace->addressSpaces[sourceBlock->page]
+            .blocks[sourceBlock->block];
+    const QString label = fromUtf8(movingBlock.name);
+    const auto& destinationAddressSpace =
+        workspace->addressSpaces[destinationPage];
+    if (sourceBlock->page != destinationPage) {
+        const auto duplicateName = std::ranges::find(
+            destinationAddressSpace.blocks, movingBlock.name,
+            &regmap::RegisterBlock::name);
+        if (duplicateName != destinationAddressSpace.blocks.end()) {
+            statusBar()->showMessage(
+                QStringLiteral(
+                    "Cannot move Register Block %1: Page %2 already contains "
+                    "a Block with that name")
+                    .arg(label, fromUtf8(destinationAddressSpace.name)),
+                7000);
+            return;
+        }
+        if (!blockPlacementAvailable(destinationAddressSpace, movingBlock)) {
+            statusBar()->showMessage(
+                QStringLiteral(
+                    "Cannot move Register Block %1: Base %2 overlaps another "
+                    "Block or does not fit Page %3. Edit Block Base or free the "
+                    "destination range, then retry.")
+                    .arg(label, hex(movingBlock.baseAddress),
+                         fromUtf8(destinationAddressSpace.name)),
+                8000);
+            return;
+        }
+    }
     if (controller_.editWorkspace(
             QStringLiteral("Move register block %1").arg(label),
             [sourceId, destinationPageId, insertion](regmap::Workspace& candidate) {
