@@ -4746,15 +4746,22 @@ void MainWindow::copySelection()
         firstColumn = std::min(firstColumn, index.column());
         lastColumn = std::max(lastColumn, index.column());
     }
+    const qsizetype selectedArea =
+        static_cast<qsizetype>(lastRow - firstRow + 1) *
+        static_cast<qsizetype>(lastColumn - firstColumn + 1);
+    if (indexes.size() != selectedArea) {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Copy skipped: select one cell or a contiguous rectangular range"),
+            5000);
+        return;
+    }
     QStringList lines;
     for (int row = firstRow; row <= lastRow; ++row) {
         QStringList values;
         for (int column = firstColumn; column <= lastColumn; ++column) {
             const QModelIndex index = view->model()->index(row, column);
-            values << (view->selectionModel()->isSelected(index) ||
-                               (indexes.size() == 1 && index == indexes.front())
-                           ? index.data().toString()
-                           : QString{});
+            values << index.data().toString();
         }
         lines << values.join('\t');
     }

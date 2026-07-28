@@ -3001,6 +3001,22 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
     QTest::keyClick(registers, Qt::Key_C, Qt::ControlModifier);
     QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("STATUS"));
 
+    const QModelIndex sparseFirst = registers->model()->index(0, 0);
+    const QModelIndex sparseSecond = registers->model()->index(1, 1);
+    registers->setCurrentIndex(sparseSecond);
+    registers->selectionModel()->select(
+        sparseFirst, QItemSelectionModel::ClearAndSelect);
+    registers->selectionModel()->select(
+        sparseSecond, QItemSelectionModel::Select);
+    QApplication::clipboard()->setText(QStringLiteral("KEEP_EXISTING_CLIPBOARD"));
+    QTest::keyClick(registers, Qt::Key_C, Qt::ControlModifier);
+    QCOMPARE(QApplication::clipboard()->text(),
+             QStringLiteral("KEEP_EXISTING_CLIPBOARD"));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("contiguous rectangular range")));
+    QVERIFY(registers->selectionModel()->isSelected(sparseFirst));
+    QVERIFY(registers->selectionModel()->isSelected(sparseSecond));
+
     QApplication::clipboard()->setText(QStringLiteral("CONTROL_RENAMED\t0x8"));
     const QModelIndex matrixPasteStart = registers->model()->index(1, 0);
     const QModelIndex matrixPasteEnd = registers->model()->index(1, 1);
