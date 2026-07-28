@@ -1463,6 +1463,36 @@ fieldGeometryIssues(const regmap::Workspace& workspace,
                afterIssues.begin(), afterIssues.end());
 }
 
+[[nodiscard]] std::vector<std::string>
+numericRangeIssues(const regmap::Workspace& workspace,
+                   std::string_view objectId)
+{
+    std::vector<std::string> issues;
+    for (const auto& diagnostic : regmap::validateWorkspace(workspace)) {
+        if (diagnostic.code != numericRangeDiagnosticCode ||
+            diagnostic.objectId != objectId) {
+            continue;
+        }
+        issues.push_back(
+            diagnostic.code + '\n' + diagnostic.objectId + '\n' +
+            diagnostic.message);
+    }
+    std::ranges::sort(issues);
+    return issues;
+}
+
+[[nodiscard]] bool numericRangeEditDoesNotWorsen(
+    const regmap::Workspace& before, const regmap::Workspace& after,
+    std::string_view objectId)
+{
+    const auto beforeIssues = numericRangeIssues(before, objectId);
+    const auto afterIssues = numericRangeIssues(after, objectId);
+    return afterIssues.size() < beforeIssues.size() ||
+           std::includes(
+               beforeIssues.begin(), beforeIssues.end(),
+               afterIssues.begin(), afterIssues.end());
+}
+
 [[nodiscard]] std::optional<std::size_t>
 pagePosition(const regmap::Workspace& workspace, std::string_view pageId)
 {
@@ -3478,6 +3508,14 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
             return fieldGeometryEditDoesNotWorsen(
                 *workspace, candidate, fieldId);
         };
+    const auto acceptsNumericRangeEdit =
+        [workspace](std::string_view targetId,
+                    const regmap::WorkspaceStore::Mutation& mutation) {
+            regmap::Workspace candidate = *workspace;
+            mutation(candidate);
+            return numericRangeEditDoesNotWorsen(
+                *workspace, candidate, targetId);
+        };
 
     if (workspace->id == objectId && property == "name") {
         if (textValue.empty()) {
@@ -3664,6 +3702,12 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                     QStringLiteral(
                         "an MSB that preserves a valid, non-overlapping Field layout"));
             }
+            if (!acceptsNumericRangeEdit(objectId, mutation)) {
+                return reject(
+                    QStringLiteral(
+                        "an MSB whose resulting width preserves the existing "
+                        "numeric Range"));
+            }
             return commit(mutation);
         }
         if (property == "field_width") {
@@ -3692,6 +3736,11 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                 return reject(
                     QStringLiteral(
                         "a Width that preserves a valid, non-overlapping Field layout"));
+            }
+            if (!acceptsNumericRangeEdit(objectId, mutation)) {
+                return reject(
+                    QStringLiteral(
+                        "a Width that preserves the existing numeric Range"));
             }
             return commit(mutation);
         }
@@ -3819,6 +3868,11 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                 clearsEnumValues ? currentField->enumValues.size() : 0;
             const bool clearsRange = currentField != nullptr && !numeric &&
                                      (currentField->minimumValue || currentField->maximumValue);
+            const std::size_t removedRangeBoundCount =
+                clearsRange ? static_cast<std::size_t>(
+                                  currentField->minimumValue.has_value()) +
+                                  currentField->maximumValue.has_value()
+                            : 0;
             const std::vector<regmap::EnumValue> defaultEnumValues =
                 *parsed == regmap::FieldType::enumeration &&
                         currentField != nullptr &&
@@ -3909,6 +3963,12 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                     QStringLiteral(
                         "a Type whose width preserves a valid, non-overlapping Field layout"));
             }
+            if (!acceptsNumericRangeEdit(objectId, mutation)) {
+                return reject(
+                    QStringLiteral(
+                        "a numeric Type whose width and signedness preserve the "
+                        "existing Range"));
+            }
             if (removesMembers) {
                 const QString memberLabel =
                     removedMemberCount == 1
@@ -3966,6 +4026,35 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                             .arg(enumLabel));
                 }
             }
+            if (clearsRange) {
+                const QString rangeLabel =
+                    removedRangeBoundCount == 1
+                        ? QStringLiteral("1 Range bound")
+                        : QStringLiteral("%1 Range bounds")
+                              .arg(removedRangeBoundCount);
+                const QString expectation =
+                    QStringLiteral(
+                        "an individually confirmed Type change before removing %1")
+                        .arg(rangeLabel);
+                if (!reportFeedback) {
+                    return reject(expectation);
+                }
+                const auto answer = QMessageBox::warning(
+                    this, QStringLiteral("Change Numeric Field Type"),
+                    QStringLiteral(
+                        "Change Field %1 to %2?\n\n"
+                        "This removes %3.\n\n"
+                        "Ctrl+Z can restore the complete numeric Range.")
+                        .arg(fromUtf8(currentField->name),
+                             value.trimmed(), rangeLabel),
+                    QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+                if (answer != QMessageBox::Yes) {
+                    return cancelEdit(
+                        expectation,
+                        QStringLiteral("Type change cancelled · %1 kept")
+                            .arg(rangeLabel));
+                }
+            }
             const PropertyEditResult result = commit(mutation);
             if (result.status == PropertyEditStatus::changed && reportFeedback) {
                 QStringList changes;
@@ -3990,8 +4079,11 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                                   .arg(removedEnumValueCount));
                 }
                 if (clearsRange) {
-                    changes << QStringLiteral(
-                        "incompatible Range data cleared");
+                    changes << (
+                        removedRangeBoundCount == 1
+                            ? QStringLiteral("1 Range bound removed")
+                            : QStringLiteral("%1 Range bounds removed")
+                                  .arg(removedRangeBoundCount));
                 }
                 if (!changes.empty()) {
                     statusBar()->showMessage(
@@ -4239,6 +4331,11 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                 clearsEnumValues ? current->enumValues.size() : 0;
             const bool clearsRange =
                 !numeric && (current->minimumValue || current->maximumValue);
+            const std::size_t removedRangeBoundCount =
+                clearsRange ? static_cast<std::size_t>(
+                                  current->minimumValue.has_value()) +
+                                  current->maximumValue.has_value()
+                            : 0;
             const std::vector<regmap::EnumValue> defaultEnumValues =
                 *parsed == regmap::FieldType::enumeration &&
                         current->enumValues.empty()
@@ -4297,6 +4394,12 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                     QStringLiteral(
                         "a Register Type whose width preserves the address layout"));
             }
+            if (!acceptsNumericRangeEdit(objectId, mutation)) {
+                return reject(
+                    QStringLiteral(
+                        "a numeric Type whose width and signedness preserve the "
+                        "existing Range"));
+            }
             if (removesFields) {
                 const QString fieldLabel =
                     removedFieldCount == 1
@@ -4353,6 +4456,35 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                             .arg(enumLabel));
                 }
             }
+            if (clearsRange) {
+                const QString rangeLabel =
+                    removedRangeBoundCount == 1
+                        ? QStringLiteral("1 Range bound")
+                        : QStringLiteral("%1 Range bounds")
+                              .arg(removedRangeBoundCount);
+                const QString expectation =
+                    QStringLiteral(
+                        "an individually confirmed Type change before removing %1")
+                        .arg(rangeLabel);
+                if (!reportFeedback) {
+                    return reject(expectation);
+                }
+                const auto answer = QMessageBox::warning(
+                    this, QStringLiteral("Change Numeric Register Type"),
+                    QStringLiteral(
+                        "Change Register %1 to %2?\n\n"
+                        "This removes %3.\n\n"
+                        "Ctrl+Z can restore the complete numeric Range.")
+                        .arg(fromUtf8(current->name),
+                             value.trimmed(), rangeLabel),
+                    QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+                if (answer != QMessageBox::Yes) {
+                    return cancelEdit(
+                        expectation,
+                        QStringLiteral("Type change cancelled · %1 kept")
+                            .arg(rangeLabel));
+                }
+            }
             const PropertyEditResult result = commit(mutation);
             if (result.status == PropertyEditStatus::changed && reportFeedback) {
                 QStringList changes;
@@ -4376,7 +4508,14 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                             : QStringLiteral("%1 Enum values removed")
                                   .arg(removedEnumValueCount));
                 }
-                if (clearsRange || normalizesReserved) {
+                if (clearsRange) {
+                    changes << (
+                        removedRangeBoundCount == 1
+                            ? QStringLiteral("1 Range bound removed")
+                            : QStringLiteral("%1 Range bounds removed")
+                                  .arg(removedRangeBoundCount));
+                }
+                if (normalizesReserved) {
                     changes << QStringLiteral(
                         "incompatible data cleared or normalized");
                 }
@@ -4442,6 +4581,12 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                     QStringLiteral(
                         "a Register extent that preserves a non-overlapping "
                         "in-block address layout"));
+            }
+            if (property == "width" &&
+                !acceptsNumericRangeEdit(objectId, mutation)) {
+                return reject(
+                    QStringLiteral(
+                        "a register width that preserves the existing numeric Range"));
             }
             return commit(mutation);
         }
@@ -5039,6 +5184,25 @@ void MainWindow::addEnumValue()
         statusBar()->showMessage(
             QStringLiteral(
                 "Change Type from reserved before adding Enum values"),
+            6000);
+        return;
+    }
+
+    const regmap::FieldType ownerType =
+        field != nullptr ? field->type : reg->type;
+    const bool changesType =
+        ownerType != regmap::FieldType::enumeration &&
+        ownerType != regmap::FieldType::boolean;
+    const bool hasRange =
+        field != nullptr
+            ? field->minimumValue.has_value() ||
+                  field->maximumValue.has_value()
+            : reg->minimumValue.has_value() ||
+                  reg->maximumValue.has_value();
+    if (changesType && hasRange) {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Change Type to enum first to review removal of the existing Range"),
             6000);
         return;
     }

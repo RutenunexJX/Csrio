@@ -114,6 +114,12 @@ created. Type conversion and all required Enum values are one undoable edit, so 
 valid and immediately editable instead of first producing an empty-enumeration Problem.
 **Add Enum Value** applies the same rule when an Enum list is empty. Structure and reserved
 objects must first use the Type cell so destructive cleanup cannot bypass its confirmation.
+Numeric Range bounds remain valid across Register Width, Field Width/MSB, and numeric Type
+changes; an edit that would make a bound exceed the new width or signedness is rejected without
+changing the model. Moving from a numeric Type to a non-numeric Type reports the number of Range
+bounds that would be removed and defaults to cancel. A confirmed cleanup is one undoable
+transaction, while multi-cell paste rejects the destructive Type cell. **Add Enum Value** also
+requires the Type cell when conversion would remove a Range.
 
 `Ctrl+S` validates and saves the project, synchronizes managed RTL, advances the merge baseline,
 and regenerates all three read-only outputs. The persistent badge confirms whether the operation

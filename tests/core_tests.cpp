@@ -60,6 +60,7 @@ private slots:
     void roundTripsSynchronizationBaseline();
     void rejectsCorruptSynchronizationBaseline();
     void validatesModelConflicts();
+    void validatesNumericRangeBoundaries();
     void generatesReadOnlyArtifacts();
     void reportsGeneratedIdentifierCollisions();
     void sanitizesXlsxWorksheetNames();
@@ -882,6 +883,72 @@ void CoreTests::validatesModelConflicts()
     QVERIFY(hasCode("RM3031"));
     QVERIFY(hasCode("RM3035"));
     QVERIFY(hasCode("RM3043"));
+}
+
+void CoreTests::validatesNumericRangeBoundaries()
+{
+    regmap::Workspace workspace;
+    workspace.id = "workspace";
+    workspace.name = "Workspace";
+
+    regmap::AddressSpace addressSpace;
+    addressSpace.id = "space";
+    addressSpace.name = "Main";
+    addressSpace.addressWidth = 16;
+
+    regmap::RegisterBlock block;
+    block.id = "block";
+    block.name = "Control";
+    block.size = 1;
+
+    regmap::Register value;
+    value.id = "reg-value";
+    value.name = "VALUE";
+    value.width = 7;
+    value.type = regmap::FieldType::unsignedInteger;
+    value.minimumValue = "0";
+    value.maximumValue = "127";
+    block.registers.push_back(value);
+    addressSpace.blocks.push_back(block);
+    workspace.addressSpaces.push_back(addressSpace);
+
+    const auto hasRangeDiagnostic = [](const regmap::Workspace& candidate) {
+        const auto diagnostics = regmap::validateWorkspace(candidate);
+        return std::ranges::any_of(
+            diagnostics, [](const regmap::Diagnostic& diagnostic) {
+                return diagnostic.code == "RM3052" &&
+                       diagnostic.objectId == "reg-value";
+            });
+    };
+
+    QVERIFY(!hasRangeDiagnostic(workspace));
+    workspace.addressSpaces[0].blocks[0].registers[0].maximumValue = "128";
+    QVERIFY(hasRangeDiagnostic(workspace));
+    workspace.addressSpaces[0].blocks[0].registers[0].maximumValue = "127";
+    workspace.addressSpaces[0].blocks[0].registers[0].minimumValue = "-1";
+    QVERIFY(hasRangeDiagnostic(workspace));
+
+    auto& numeric = workspace.addressSpaces[0].blocks[0].registers[0];
+    numeric.width = 8;
+    numeric.type = regmap::FieldType::signedInteger;
+    numeric.minimumValue = "-128";
+    numeric.maximumValue = "127";
+    QVERIFY(!hasRangeDiagnostic(workspace));
+    numeric.minimumValue = "-129";
+    QVERIFY(hasRangeDiagnostic(workspace));
+    numeric.minimumValue = "-128";
+    numeric.maximumValue = "128";
+    QVERIFY(hasRangeDiagnostic(workspace));
+
+    numeric.width = 1;
+    numeric.minimumValue = "-1";
+    numeric.maximumValue = "0";
+    QVERIFY(!hasRangeDiagnostic(workspace));
+    numeric.minimumValue = "-2";
+    QVERIFY(hasRangeDiagnostic(workspace));
+    numeric.minimumValue = "-1";
+    numeric.maximumValue = "1";
+    QVERIFY(hasRangeDiagnostic(workspace));
 }
 
 void CoreTests::generatesReadOnlyArtifacts()

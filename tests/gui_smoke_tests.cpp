@@ -103,6 +103,7 @@ private slots:
     void copiesAndPastesEditableCells();
     void rejectsOutOfRangeNumericEdits();
     void rejectsInvalidNumericRangesDuringEditing();
+    void protectsNumericRangesDuringShapeChanges();
     void rejectsAddressEditsThatIntroduceConflicts();
     void rejectsGeometryConflictsFromWidthAndTypeEdits();
     void synchronizesFieldResetEdits();
@@ -1922,7 +1923,7 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
         });
         return undo == actions.end() ? nullptr : *undo;
     };
-    const auto acceptEnumRemoval = [&window] {
+    const auto acceptTypeCleanup = [&window] {
         QTimer::singleShot(0, &window, [] {
             auto* dialog =
                 qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
@@ -1964,10 +1965,12 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 3).data().toString(),
                               QStringLiteral("16"), 2000);
     window.statusBar()->clearMessage();
+    acceptTypeCleanup();
     QVERIFY(registers->model()->setData(registers->model()->index(1, 4), QStringLiteral("enum")));
     QTRY_VERIFY_WITH_TIMEOUT(enums->isVisible(), 2000);
     QTRY_VERIFY_WITH_TIMEOUT(registers->model()->index(1, 6).data().toString().isEmpty(), 2000);
-    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("incompatible data")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Range bounds removed")));
     QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("Ctrl+Z")));
     auto* registerUndo = findUndoAction();
     QVERIFY(registerUndo != nullptr);
@@ -1980,6 +1983,7 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 6).data().toString(),
                               QStringLiteral("0 .. 255"), 2000);
     QTRY_VERIFY_WITH_TIMEOUT(!enums->isVisible(), 2000);
+    acceptTypeCleanup();
     QVERIFY(registers->model()->setData(registers->model()->index(1, 4),
                                         QStringLiteral("enum")));
     QTRY_VERIFY_WITH_TIMEOUT(enums->isVisible(), 2000);
@@ -2053,7 +2057,7 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     QCOMPARE(registers->model()->index(1, 4).data().toString(), QStringLiteral("enum"));
 
     window.statusBar()->clearMessage();
-    acceptEnumRemoval();
+    acceptTypeCleanup();
     QVERIFY(registers->model()->setData(registers->model()->index(1, 4),
                                         QStringLiteral("field")));
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 4).data().toString(),
@@ -2097,7 +2101,7 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
                               QStringLiteral("0x3"), 2000);
 
     window.statusBar()->clearMessage();
-    acceptEnumRemoval();
+    acceptTypeCleanup();
     QVERIFY(registers->model()->setData(registers->model()->index(1, 4),
                                         QStringLiteral("reserved")));
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 4).data().toString(),
@@ -2246,7 +2250,7 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     QCOMPARE(registers->currentIndex().data(Qt::UserRole + 1).toString(),
              enumOwnerRegisterId);
 
-    acceptEnumRemoval();
+    acceptTypeCleanup();
     QVERIFY(registers->model()->setData(registers->model()->index(1, 4),
                                         QStringLiteral("field")));
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 4).data().toString(),
@@ -2298,6 +2302,7 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     QCOMPARE(fields->model()->index(0, 5).data().toString(), QStringLiteral("uint8"));
     QVERIFY(fields->model()->setData(fields->model()->index(0, 7), QStringLiteral("255")));
 
+    acceptTypeCleanup();
     QVERIFY(fields->model()->setData(fields->model()->index(0, 5),
                                      QStringLiteral("field")));
     QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(0, 5).data().toString(),
@@ -2474,7 +2479,7 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
 
     memberRow = fieldRowForId(memberFieldId);
     QVERIFY(memberRow >= 0);
-    acceptEnumRemoval();
+    acceptTypeCleanup();
     QVERIFY(fields->model()->setData(fields->model()->index(memberRow, 5),
                                      QStringLiteral("bits")));
     QTRY_VERIFY_WITH_TIMEOUT(!enums->isVisible(), 2000);
@@ -2504,7 +2509,7 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     }
     QVERIFY(restoredGuardedFieldEnum);
     QVERIFY(restoredNewFieldEnum);
-    acceptEnumRemoval();
+    acceptTypeCleanup();
     QVERIFY(fields->model()->setData(fields->model()->index(memberRow, 5),
                                      QStringLiteral("bits")));
     QTRY_VERIFY_WITH_TIMEOUT(!enums->isVisible(), 2000);
@@ -2522,7 +2527,7 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
 
     memberRow = fieldRowForId(memberFieldId);
     QVERIFY(memberRow >= 0);
-    acceptEnumRemoval();
+    acceptTypeCleanup();
     QVERIFY(fields->model()->setData(fields->model()->index(memberRow, 5),
                                      QStringLiteral("uint2")));
     QTRY_VERIFY_WITH_TIMEOUT(!enums->isVisible(), 2000);
@@ -2536,6 +2541,7 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
                                      QStringLiteral("3")));
     memberRow = fieldRowForId(memberFieldId);
     QVERIFY(memberRow >= 0);
+    acceptTypeCleanup();
     QVERIFY(fields->model()->setData(fields->model()->index(memberRow, 5),
                                      QStringLiteral("bits")));
     QTRY_VERIFY_WITH_TIMEOUT(fieldRowForId(memberFieldId) >= 0, 2000);
@@ -5130,6 +5136,404 @@ void GuiSmokeTests::rejectsInvalidNumericRangesDuringEditing()
             .toString(),
         QString{}, 2000);
     QCOMPARE(controller->undoDepth(), recoveryUndoDepth + 2);
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::protectsNumericRangesDuringShapeChanges()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createTwoRegisterProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+
+    auto* controller = window.findChild<ProjectController*>();
+    auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* fields = window.findChild<QTableView*>(QStringLiteral("fieldView"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Configure Range lifecycle fixture"),
+        [](regmap::Workspace& workspace) {
+            auto* control =
+                regmap::findRegister(workspace, "reg-control");
+            auto* ready =
+                regmap::findField(workspace, "field-ready");
+            QVERIFY(control != nullptr);
+            QVERIFY(ready != nullptr);
+            control->type = regmap::FieldType::unsignedInteger;
+            control->width = 32;
+            control->minimumValue = "0";
+            control->maximumValue = "300";
+            control->enumValues.clear();
+            ready->msb = 7;
+            ready->lsb = 0;
+            ready->type = regmap::FieldType::unsignedInteger;
+            ready->minimumValue = "0";
+            ready->maximumValue = "200";
+            ready->enumValues.clear();
+        }));
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+
+    const auto registerRowForId = [registers](const QString& id) {
+        for (int row = 0; row < registers->model()->rowCount(); ++row) {
+            if (registers->model()
+                    ->index(row, 0)
+                    .data(Qt::UserRole + 1)
+                    .toString() == id) {
+                return row;
+            }
+        }
+        return -1;
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(
+        registerRowForId(QStringLiteral("reg-control")) >= 0, 2000);
+    int controlRow = registerRowForId(QStringLiteral("reg-control"));
+    registers->setCurrentIndex(registers->model()->index(controlRow, 0));
+    registers->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
+    const std::size_t registerUndoDepth = controller->undoDepth();
+
+    QVERIFY(registers->model()->setData(
+        registers->model()->index(controlRow, 4),
+        QStringLiteral("uint8")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()
+            ->index(registerRowForId(QStringLiteral("reg-control")), 4)
+            .data()
+            .toString(),
+        QStringLiteral("uint32"), 2000);
+    QCOMPARE(controller->undoDepth(), registerUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("existing Range")));
+
+    controlRow = registerRowForId(QStringLiteral("reg-control"));
+    QVERIFY(registers->model()->setData(
+        registers->model()->index(controlRow, 3),
+        QStringLiteral("8")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()
+            ->index(registerRowForId(QStringLiteral("reg-control")), 3)
+            .data()
+            .toString(),
+        QStringLiteral("32"), 2000);
+    QCOMPARE(controller->undoDepth(), registerUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("numeric Range")));
+
+    controlRow = registerRowForId(QStringLiteral("reg-control"));
+    QVERIFY(registers->model()->setData(
+        registers->model()->index(controlRow, 4),
+        QStringLiteral("int8")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()
+            ->index(registerRowForId(QStringLiteral("reg-control")), 4)
+            .data()
+            .toString(),
+        QStringLiteral("uint32"), 2000);
+    QCOMPARE(controller->undoDepth(), registerUndoDepth);
+
+    const auto actions = window.findChildren<QAction*>();
+    const auto addEnum = std::ranges::find_if(
+        actions, [](const QAction* action) {
+            return action->text() == QStringLiteral("Add Enum Value");
+        });
+    QVERIFY(addEnum != actions.end());
+    window.statusBar()->clearMessage();
+    (*addEnum)->trigger();
+    QCOMPARE(
+        regmap::findRegister(*controller->workspace(), "reg-control")->type,
+        regmap::FieldType::unsignedInteger);
+    QCOMPARE(
+        regmap::findRegister(*controller->workspace(), "reg-control")
+            ->maximumValue,
+        std::optional<std::string>{"300"});
+    QCOMPARE(controller->undoDepth(), registerUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Change Type to enum first")));
+
+    bool registerCancelSeen = false;
+    QString registerCancelFailure;
+    QTimer::singleShot(0, &window, [&] {
+        auto* dialog =
+            qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (dialog == nullptr) {
+            registerCancelFailure =
+                QStringLiteral("Register Range confirmation did not open");
+            return;
+        }
+        registerCancelSeen = true;
+        if (dialog->windowTitle() !=
+                QStringLiteral("Change Numeric Register Type") ||
+            !dialog->text().contains(QStringLiteral("CONTROL")) ||
+            !dialog->text().contains(QStringLiteral("2 Range bounds")) ||
+            !dialog->text().contains(QStringLiteral("Ctrl+Z")) ||
+            dialog->defaultButton() != dialog->button(QMessageBox::No)) {
+            registerCancelFailure =
+                QStringLiteral("Register Range confirmation lacks impact details");
+        }
+        if (auto* cancel = dialog->button(QMessageBox::No)) {
+            QTest::mouseClick(cancel, Qt::LeftButton);
+        } else {
+            dialog->reject();
+        }
+    });
+    controlRow = registerRowForId(QStringLiteral("reg-control"));
+    QVERIFY(registers->model()->setData(
+        registers->model()->index(controlRow, 4),
+        QStringLiteral("enum")));
+    QCoreApplication::processEvents();
+    QVERIFY2(registerCancelFailure.isEmpty(),
+             qPrintable(registerCancelFailure));
+    QVERIFY(registerCancelSeen);
+    const auto* retainedRegister =
+        regmap::findRegister(*controller->workspace(), "reg-control");
+    QVERIFY(retainedRegister != nullptr);
+    QCOMPARE(retainedRegister->type,
+             regmap::FieldType::unsignedInteger);
+    QCOMPARE(retainedRegister->minimumValue,
+             std::optional<std::string>{"0"});
+    QCOMPARE(retainedRegister->maximumValue,
+             std::optional<std::string>{"300"});
+    QVERIFY(retainedRegister->enumValues.empty());
+    QCOMPARE(controller->undoDepth(), registerUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("cancelled")));
+
+    auto* clipboardData = new QMimeData;
+    clipboardData->setText(QStringLiteral("enum"));
+    QApplication::clipboard()->setMimeData(clipboardData);
+    controlRow = registerRowForId(QStringLiteral("reg-control"));
+    const QModelIndex registerType =
+        registers->model()->index(controlRow, 4);
+    registers->setCurrentIndex(registerType);
+    registers->selectionModel()->select(
+        registerType, QItemSelectionModel::ClearAndSelect);
+    window.activateWindow();
+    registers->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
+    const auto paste = std::ranges::find_if(
+        actions, [](const QAction* action) {
+            return action->shortcut().matches(QKeySequence::Paste) ==
+                   QKeySequence::ExactMatch;
+        });
+    QVERIFY(paste != actions.end());
+    window.statusBar()->clearMessage();
+    (*paste)->trigger();
+    QCoreApplication::processEvents();
+    QCOMPARE(
+        regmap::findRegister(*controller->workspace(), "reg-control")->type,
+        regmap::FieldType::unsignedInteger);
+    QCOMPARE(controller->undoDepth(), registerUndoDepth);
+    QVERIFY2(
+        window.statusBar()->currentMessage().contains(
+            QStringLiteral("individually confirmed")),
+        qPrintable(window.statusBar()->currentMessage()));
+
+    bool registerAcceptSeen = false;
+    QTimer::singleShot(0, &window, [&] {
+        auto* dialog =
+            qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (dialog == nullptr) {
+            return;
+        }
+        registerAcceptSeen = true;
+        if (auto* confirm = dialog->button(QMessageBox::Yes)) {
+            QTest::mouseClick(confirm, Qt::LeftButton);
+        } else {
+            dialog->reject();
+        }
+    });
+    controlRow = registerRowForId(QStringLiteral("reg-control"));
+    QVERIFY(registers->model()->setData(
+        registers->model()->index(controlRow, 4),
+        QStringLiteral("enum")));
+    QCoreApplication::processEvents();
+    QVERIFY(registerAcceptSeen);
+    const auto* enumRegister =
+        regmap::findRegister(*controller->workspace(), "reg-control");
+    QVERIFY(enumRegister != nullptr);
+    QCOMPARE(enumRegister->type, regmap::FieldType::enumeration);
+    QVERIFY(!enumRegister->minimumValue.has_value());
+    QVERIFY(!enumRegister->maximumValue.has_value());
+    QCOMPARE(enumRegister->enumValues.size(), std::size_t{1});
+    QCOMPARE(controller->undoDepth(), registerUndoDepth + 1);
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("2 Range bounds removed")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("NEW_VALUE created")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Ctrl+Z")));
+
+    controller->undo();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findRegister(*controller->workspace(), "reg-control")->type ==
+            regmap::FieldType::unsignedInteger,
+        2000);
+    QCOMPARE(
+        regmap::findRegister(*controller->workspace(), "reg-control")
+            ->maximumValue,
+        std::optional<std::string>{"300"});
+    QCOMPARE(controller->undoDepth(), registerUndoDepth);
+
+    const int statusRow =
+        registerRowForId(QStringLiteral("reg-status"));
+    QVERIFY(statusRow >= 0);
+    Q_EMIT registers->clicked(
+        registers->model()->index(statusRow, 5));
+    QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
+    const auto fieldRowForId = [fields](const QString& id) {
+        for (int row = 0; row < fields->model()->rowCount(); ++row) {
+            if (fields->model()
+                    ->index(row, 0)
+                    .data(Qt::UserRole + 1)
+                    .toString() == id) {
+                return row;
+            }
+        }
+        return -1;
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fieldRowForId(QStringLiteral("field-ready")) >= 0, 2000);
+    int readyRow = fieldRowForId(QStringLiteral("field-ready"));
+    const std::size_t fieldUndoDepth = controller->undoDepth();
+
+    for (const auto& edit :
+         std::array<std::pair<int, QString>, 3>{
+             std::pair{4, QStringLiteral("7")},
+             std::pair{2, QStringLiteral("6")},
+             std::pair{5, QStringLiteral("uint7")}}) {
+        readyRow = fieldRowForId(QStringLiteral("field-ready"));
+        QVERIFY(readyRow >= 0);
+        QVERIFY(fields->model()->setData(
+            fields->model()->index(readyRow, edit.first), edit.second));
+        QTRY_COMPARE_WITH_TIMEOUT(
+            fields->model()
+                ->index(fieldRowForId(QStringLiteral("field-ready")), 4)
+                .data()
+                .toString(),
+            QStringLiteral("8"), 2000);
+        QCOMPARE(controller->undoDepth(), fieldUndoDepth);
+        QVERIFY(window.statusBar()->currentMessage().contains(
+            QStringLiteral("Range")));
+    }
+
+    readyRow = fieldRowForId(QStringLiteral("field-ready"));
+    QVERIFY(fields->model()->setData(
+        fields->model()->index(readyRow, 5),
+        QStringLiteral("int8")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fields->model()
+            ->index(fieldRowForId(QStringLiteral("field-ready")), 5)
+            .data()
+            .toString(),
+        QStringLiteral("uint8"), 2000);
+    QCOMPARE(controller->undoDepth(), fieldUndoDepth);
+
+    auto* fieldClipboardData = new QMimeData;
+    fieldClipboardData->setText(QStringLiteral("bits"));
+    QApplication::clipboard()->setMimeData(fieldClipboardData);
+    readyRow = fieldRowForId(QStringLiteral("field-ready"));
+    const QModelIndex fieldType =
+        fields->model()->index(readyRow, 5);
+    fields->setCurrentIndex(fieldType);
+    fields->selectionModel()->select(
+        fieldType, QItemSelectionModel::ClearAndSelect);
+    window.activateWindow();
+    fields->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
+    window.statusBar()->clearMessage();
+    (*paste)->trigger();
+    QCoreApplication::processEvents();
+    QCOMPARE(
+        regmap::findField(*controller->workspace(), "field-ready")->type,
+        regmap::FieldType::unsignedInteger);
+    QCOMPARE(controller->undoDepth(), fieldUndoDepth);
+    QVERIFY2(
+        window.statusBar()->currentMessage().contains(
+            QStringLiteral("individually confirmed")),
+        qPrintable(window.statusBar()->currentMessage()));
+
+    bool fieldAcceptSeen = false;
+    QString fieldAcceptFailure;
+    QTimer::singleShot(0, &window, [&] {
+        auto* dialog =
+            qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (dialog == nullptr) {
+            fieldAcceptFailure =
+                QStringLiteral("Field Range confirmation did not open");
+            return;
+        }
+        fieldAcceptSeen = true;
+        if (dialog->windowTitle() !=
+                QStringLiteral("Change Numeric Field Type") ||
+            !dialog->text().contains(QStringLiteral("READY")) ||
+            !dialog->text().contains(QStringLiteral("2 Range bounds"))) {
+            fieldAcceptFailure =
+                QStringLiteral("Field Range confirmation lacks impact details");
+        }
+        if (auto* confirm = dialog->button(QMessageBox::Yes)) {
+            QTest::mouseClick(confirm, Qt::LeftButton);
+        } else {
+            dialog->reject();
+        }
+    });
+    readyRow = fieldRowForId(QStringLiteral("field-ready"));
+    QVERIFY(fields->model()->setData(
+        fields->model()->index(readyRow, 5),
+        QStringLiteral("bits")));
+    QCoreApplication::processEvents();
+    QVERIFY2(fieldAcceptFailure.isEmpty(),
+             qPrintable(fieldAcceptFailure));
+    QVERIFY(fieldAcceptSeen);
+    const auto* bitsField =
+        regmap::findField(*controller->workspace(), "field-ready");
+    QVERIFY(bitsField != nullptr);
+    QCOMPARE(bitsField->type, regmap::FieldType::bits);
+    QVERIFY(!bitsField->minimumValue.has_value());
+    QVERIFY(!bitsField->maximumValue.has_value());
+    QCOMPARE(controller->undoDepth(), fieldUndoDepth + 1);
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("2 Range bounds removed")));
+
+    controller->undo();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findField(*controller->workspace(), "field-ready")->type ==
+            regmap::FieldType::unsignedInteger,
+        2000);
+    QCOMPARE(
+        regmap::findField(*controller->workspace(), "field-ready")
+            ->maximumValue,
+        std::optional<std::string>{"200"});
+    QCOMPARE(controller->undoDepth(), fieldUndoDepth);
+
+    readyRow = fieldRowForId(QStringLiteral("field-ready"));
+    QVERIFY(fields->model()->setData(
+        fields->model()->index(readyRow, 7), QStringLiteral("100")));
+    readyRow = fieldRowForId(QStringLiteral("field-ready"));
+    QVERIFY(fields->model()->setData(
+        fields->model()->index(readyRow, 5), QStringLiteral("uint7")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fields->model()
+            ->index(fieldRowForId(QStringLiteral("field-ready")), 5)
+            .data()
+            .toString(),
+        QStringLiteral("uint7"), 2000);
+    QCOMPARE(
+        regmap::findField(*controller->workspace(), "field-ready")
+            ->maximumValue,
+        std::optional<std::string>{"100"});
     QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
 
     makeGeneratedFilesWritable(directory.path());
