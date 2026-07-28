@@ -2631,10 +2631,29 @@ void GuiSmokeTests::editsTagsAndAccessFromDoubleClick()
     QCOMPARE(accessValues, QStringList({QStringLiteral("NONE"), QStringLiteral("RO"),
                                         QStringLiteral("WO"), QStringLiteral("RW")}));
     QVERIFY(readWrite != nullptr);
+    QSignalSpy accessResetSpy(registers->model(), &QAbstractItemModel::modelReset);
     QTest::mouseClick(access->viewport(), Qt::LeftButton, Qt::NoModifier,
                       access->visualItemRect(readWrite).center());
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 9).data().toString(),
                               QStringLiteral("RW"), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(accessResetSpy.count() > 0, 2000);
+
+    QTRY_VERIFY_WITH_TIMEOUT(QApplication::activePopupWidget() == nullptr, 2000);
+    accessIndex = registers->model()->index(0, 9);
+    registers->scrollTo(accessIndex);
+    Q_EMIT registers->doubleClicked(accessIndex);
+    QTRY_VERIFY_WITH_TIMEOUT(QApplication::activePopupWidget() != nullptr, 2000);
+    accessPopup = qobject_cast<QFrame*>(QApplication::activePopupWidget());
+    QVERIFY(accessPopup != nullptr);
+    access = accessPopup->findChild<QListWidget*>(QStringLiteral("accessOptions"));
+    QVERIFY(access != nullptr);
+    QCOMPARE(access->currentItem()->text(), QStringLiteral("RW"));
+    access->setCurrentRow(1);
+    QCOMPARE(access->currentItem()->text(), QStringLiteral("RO"));
+    access->setFocus(Qt::OtherFocusReason);
+    QTest::keyClick(access, Qt::Key_Return);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 9).data().toString(),
+                              QStringLiteral("RO"), 2000);
 
     makeGeneratedFilesWritable(directory.path());
 }

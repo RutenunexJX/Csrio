@@ -3832,12 +3832,14 @@ void MainWindow::editRegisterAccess(const QModelIndex& index)
         }
     }
     layout->addWidget(list);
-    connect(list, &QListWidget::itemClicked, popup,
-            [this, popup, registerId](QListWidgetItem* current) {
-                selectedRegisterId_ = registerId;
-                applyPropertyEdit(registerId, "access", current->text().toLower());
-                popup->close();
-            });
+    const auto chooseAccess =
+        [this, popup, registerId](QListWidgetItem* current) {
+            selectedRegisterId_ = registerId;
+            applyPropertyEdit(registerId, "access", current->text().toLower());
+            popup->close();
+        };
+    connect(list, &QListWidget::itemClicked, popup, chooseAccess);
+    connect(list, &QListWidget::itemActivated, popup, chooseAccess);
     popup->show();
     list->setFocus();
 }
