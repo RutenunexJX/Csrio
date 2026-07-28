@@ -1329,6 +1329,36 @@ makeDefaultRegisterField(const regmap::Workspace& workspace,
     return result;
 }
 
+struct RegisterDeletionImpact {
+    std::size_t fieldCount{0};
+    std::size_t enumValueCount{0};
+    std::size_t rangeBoundCount{0};
+    std::size_t tagCount{0};
+    std::size_t nonZeroValueCount{0};
+    std::size_t descriptionCount{0};
+};
+
+void accumulateFieldDeletionImpact(const std::vector<regmap::Field>& fields,
+                                   RegisterDeletionImpact& impact)
+{
+    for (const auto& field : fields) {
+        ++impact.fieldCount;
+        impact.enumValueCount += field.enumValues.size();
+        impact.rangeBoundCount +=
+            static_cast<std::size_t>(field.minimumValue.has_value()) +
+            field.maximumValue.has_value();
+        impact.nonZeroValueCount += static_cast<std::size_t>(
+            field.resetValue.has_value() && !field.resetValue->isZero());
+        impact.descriptionCount +=
+            static_cast<std::size_t>(!field.description.empty());
+        impact.descriptionCount += static_cast<std::size_t>(
+            std::ranges::count_if(field.enumValues, [](const regmap::EnumValue& value) {
+                return !value.description.empty();
+            }));
+        accumulateFieldDeletionImpact(field.members, impact);
+    }
+}
+
 [[nodiscard]] std::optional<regmap::UnsignedValue>
 effectiveFieldReset(const regmap::Field& field, const regmap::Register* owner)
 {
@@ -6238,6 +6268,7 @@ void MainWindow::deleteSelectedRegisterAndShift()
     std::uint64_t lastFollowingOffset = 0;
     std::size_t affectedCount = 0;
     std::string underflowRegisterName;
+    RegisterDeletionImpact contentImpact;
     std::uint64_t underflowOffset = 0;
     const std::string registerId = selectedRegisterId_;
     for (const auto& space : workspace->addressSpaces) {
@@ -6250,6 +6281,25 @@ void MainWindow::deleteSelectedRegisterAndShift()
             blockId = block.id;
             registerName = iterator->name;
             registerOffset = iterator->offset;
+            contentImpact.enumValueCount = iterator->enumValues.size();
+            contentImpact.rangeBoundCount =
+                static_cast<std::size_t>(iterator->minimumValue.has_value()) +
+                iterator->maximumValue.has_value();
+            contentImpact.tagCount = iterator->tags.size();
+            contentImpact.nonZeroValueCount =
+                static_cast<std::size_t>(
+                    iterator->initialValue.has_value() &&
+                    !iterator->initialValue->isZero()) +
+                static_cast<std::size_t>(
+                    iterator->resetValue.has_value() &&
+                    !iterator->resetValue->isZero());
+            contentImpact.descriptionCount =
+                static_cast<std::size_t>(!iterator->description.empty()) +
+                static_cast<std::size_t>(std::ranges::count_if(
+                    iterator->enumValues, [](const regmap::EnumValue& value) {
+                        return !value.description.empty();
+                    }));
+            accumulateFieldDeletionImpact(iterator->fields, contentImpact);
             const auto extent = checkedRegisterExtent(*iterator);
             if (!extent) {
                 statusBar()->showMessage(
@@ -6344,21 +6394,59 @@ void MainWindow::deleteSelectedRegisterAndShift()
         return;
     }
 
-    QString impact = QStringLiteral("No following register will move.");
+    QString shiftImpact = QStringLiteral("No following register will move.");
     if (affectedCount > 0) {
-        impact =
+        shiftImpact =
             QStringLiteral("%1 following register(s) will shift by %2:\n%3 … %4  →  %5 … %6")
                 .arg(affectedCount)
                 .arg(hex(shift), hex(firstFollowingOffset), hex(lastFollowingOffset),
                      hex(firstFollowingOffset - shift),
                      hex(lastFollowingOffset - shift));
     }
+    QStringList removedContent;
+    const auto appendCount =
+        [&removedContent](std::size_t count, const QString& singular,
+                          const QString& plural) {
+            if (count != 0) {
+                removedContent << (
+                    count == 1
+                        ? QStringLiteral("1 %1").arg(singular)
+                        : QStringLiteral("%1 %2").arg(count).arg(plural));
+            }
+        };
+    appendCount(contentImpact.fieldCount, QStringLiteral("Field"),
+                QStringLiteral("Fields/Members"));
+    appendCount(contentImpact.enumValueCount, QStringLiteral("Enum value"),
+                QStringLiteral("Enum values"));
+    appendCount(contentImpact.rangeBoundCount, QStringLiteral("Range bound"),
+                QStringLiteral("Range bounds"));
+    appendCount(contentImpact.tagCount, QStringLiteral("tag"),
+                QStringLiteral("tags"));
+    appendCount(contentImpact.nonZeroValueCount,
+                QStringLiteral("non-zero Initial/Reset value"),
+                QStringLiteral("non-zero Initial/Reset values"));
+    appendCount(contentImpact.descriptionCount, QStringLiteral("description"),
+                QStringLiteral("descriptions"));
+    const QString contentSummary =
+        removedContent.empty()
+            ? QStringLiteral(
+                  "The Register has no Fields, Enum values, Range bounds, tags, "
+                  "non-zero Initial/Reset values, or descriptions.")
+            : QStringLiteral("Deleting it also removes: %1.")
+                  .arg(removedContent.join(QStringLiteral(", ")));
     const QString prompt =
-        QStringLiteral("Delete %1 at offset %2?\n\n%3\n\nThis can be restored with Ctrl+Z.")
-            .arg(fromUtf8(registerName), hex(registerOffset), impact);
+        QStringLiteral(
+            "Delete %1 at offset %2?\n\n%3\n\n%4\n\n"
+            "This can be restored with Ctrl+Z.")
+            .arg(fromUtf8(registerName), hex(registerOffset), contentSummary,
+                 shiftImpact);
     if (QMessageBox::warning(this, QStringLiteral("Delete and Shift Registers"), prompt,
                              QMessageBox::Yes | QMessageBox::No, QMessageBox::No) !=
         QMessageBox::Yes) {
+        statusBar()->showMessage(
+            QStringLiteral("Delete cancelled · %1 kept")
+                .arg(fromUtf8(registerName)),
+            6000);
         return;
     }
 

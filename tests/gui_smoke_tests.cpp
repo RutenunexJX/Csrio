@@ -8425,6 +8425,46 @@ void GuiSmokeTests::deletesFocusedRegisterAndRestoresIt()
     QVERIFY(controller != nullptr);
     QCOMPARE(fields->model()->rowCount(), 0);
     QVERIFY(!fields->isVisible());
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Configure register deletion fixture"),
+        [](regmap::Workspace& workspace) {
+            auto* status = regmap::findRegister(workspace, "reg-status");
+            auto* ready = regmap::findField(workspace, "field-ready");
+            QVERIFY(status != nullptr);
+            QVERIFY(ready != nullptr);
+            status->description = "Status register definition.";
+            status->initialValue = regmap::UnsignedValue(1);
+            status->resetValue = regmap::UnsignedValue(1);
+            ready->type = regmap::FieldType::enumeration;
+            ready->resetValue = regmap::UnsignedValue(1);
+            ready->description = "Ready state definition.";
+            regmap::EnumValue clear;
+            clear.id = "enum-ready-clear";
+            clear.name = "CLEAR";
+            clear.value = regmap::UnsignedValue(0);
+            regmap::EnumValue set;
+            set.id = "enum-ready-set";
+            set.name = "SET";
+            set.value = regmap::UnsignedValue(1);
+            ready->enumValues = {clear, set};
+
+            regmap::Field threshold;
+            threshold.id = "field-threshold";
+            threshold.name = "THRESHOLD";
+            threshold.msb = 3;
+            threshold.lsb = 1;
+            threshold.type = regmap::FieldType::unsignedInteger;
+            threshold.softwareAccess = regmap::AccessMode::readOnly;
+            threshold.hardwareAccess = regmap::AccessMode::writeOnly;
+            threshold.resetValue = regmap::UnsignedValue(0);
+            threshold.readSideEffect = regmap::ReadSideEffect::none;
+            threshold.writeSideEffect = regmap::WriteSideEffect::none;
+            threshold.minimumValue = "0";
+            threshold.maximumValue = "7";
+            threshold.description = "Numeric threshold definition.";
+            status->fields.push_back(std::move(threshold));
+        }));
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
     const std::size_t undoDepth = controller->undoDepth();
 
     generated->setCurrentIndex(generated->model()->index(0, 0));
@@ -8438,28 +8478,70 @@ void GuiSmokeTests::deletesFocusedRegisterAndRestoresIt()
 
     registers->setCurrentIndex(registers->model()->index(0, 0));
     registers->setFocus();
-    bool confirmationSeen = false;
-    bool confirmationDescribesShift = false;
-    QTimer::singleShot(0, &window, [&] {
-        auto* dialog = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
-        if (dialog == nullptr) {
-            return;
-        }
-        confirmationSeen = true;
-        confirmationDescribesShift =
-            dialog->windowTitle() == QStringLiteral("Delete and Shift Registers") &&
-            dialog->text().contains(QStringLiteral("STATUS")) &&
-            dialog->text().contains(QStringLiteral("1 following register(s)")) &&
-            dialog->text().contains(QStringLiteral("0x4"));
-        if (auto* confirm = dialog->button(QMessageBox::Yes)) {
-            QTest::mouseClick(confirm, Qt::LeftButton);
-        } else {
-            dialog->reject();
-        }
-    });
-    QTest::keyClick(registers, Qt::Key_Delete);
-    QVERIFY(confirmationSeen);
-    QVERIFY(confirmationDescribesShift);
+    struct DeleteInvocation {
+        bool dialogSeen{false};
+        bool impactDescribed{false};
+    };
+    const auto invokeDelete =
+        [&](QMessageBox::StandardButton response) {
+            DeleteInvocation result;
+            window.activateWindow();
+            registers->setCurrentIndex(registers->model()->index(0, 0));
+            registers->scrollTo(registers->currentIndex());
+            registers->setFocus(Qt::OtherFocusReason);
+            QCoreApplication::processEvents();
+            QTest::qWait(10);
+            QTimer::singleShot(0, &window, [&] {
+                auto* dialog =
+                    qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+                if (dialog == nullptr) {
+                    return;
+                }
+                result.dialogSeen = true;
+                result.impactDescribed =
+                    dialog->windowTitle() ==
+                        QStringLiteral("Delete and Shift Registers") &&
+                    dialog->text().contains(QStringLiteral("STATUS")) &&
+                    dialog->text().contains(QStringLiteral("2 Fields/Members")) &&
+                    dialog->text().contains(QStringLiteral("2 Enum values")) &&
+                    dialog->text().contains(QStringLiteral("2 Range bounds")) &&
+                    dialog->text().contains(QStringLiteral("1 tag")) &&
+                    dialog->text().contains(
+                        QStringLiteral("3 non-zero Initial/Reset values")) &&
+                    dialog->text().contains(QStringLiteral("3 descriptions")) &&
+                    dialog->text().contains(
+                        QStringLiteral("1 following register(s)")) &&
+                    dialog->text().contains(QStringLiteral("0x4")) &&
+                    dialog->text().contains(QStringLiteral("Ctrl+Z")) &&
+                    dialog->defaultButton() ==
+                        dialog->button(QMessageBox::No);
+                if (auto* button = dialog->button(response)) {
+                    QTest::mouseClick(button, Qt::LeftButton);
+                } else {
+                    dialog->reject();
+                }
+            });
+            QTest::keyClick(registers, Qt::Key_Delete);
+            return result;
+        };
+
+    const DeleteInvocation cancelled = invokeDelete(QMessageBox::No);
+    QVERIFY(cancelled.dialogSeen);
+    QVERIFY(cancelled.impactDescribed);
+    QCOMPARE(registers->model()->rowCount(), 3);
+    QCOMPARE(controller->undoDepth(), undoDepth);
+    const auto* retained =
+        regmap::findRegister(*controller->workspace(), "reg-status");
+    QVERIFY(retained != nullptr);
+    QCOMPARE(retained->fields.size(), std::size_t{2});
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Delete cancelled")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("STATUS kept")));
+
+    const DeleteInvocation confirmed = invokeDelete(QMessageBox::Yes);
+    QVERIFY(confirmed.dialogSeen);
+    QVERIFY(confirmed.impactDescribed);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->rowCount(), 2, 2000);
     bool foundStatus = false;
     for (int row = 0; row < registers->model()->rowCount(); ++row) {
@@ -8494,6 +8576,33 @@ void GuiSmokeTests::deletesFocusedRegisterAndRestoresIt()
     }
     QVERIFY(controlRow >= 0);
     QCOMPARE(registers->model()->index(controlRow, 1).data().toString(), QStringLiteral("0x4"));
+    const auto* restored =
+        regmap::findRegister(*controller->workspace(), "reg-status");
+    QVERIFY(restored != nullptr);
+    QCOMPARE(restored->description,
+             std::string("Status register definition."));
+    QCOMPARE(restored->tags, std::vector<std::string>{"existing"});
+    QVERIFY(restored->initialValue ==
+            std::optional(regmap::UnsignedValue(1)));
+    QVERIFY(restored->resetValue ==
+            std::optional(regmap::UnsignedValue(1)));
+    QCOMPARE(restored->fields.size(), std::size_t{2});
+    const auto* ready =
+        regmap::findField(*controller->workspace(), "field-ready");
+    const auto* threshold =
+        regmap::findField(*controller->workspace(), "field-threshold");
+    QVERIFY(ready != nullptr);
+    QVERIFY(threshold != nullptr);
+    QCOMPARE(ready->enumValues.size(), std::size_t{2});
+    QCOMPARE(ready->description,
+             std::string("Ready state definition."));
+    QCOMPARE(threshold->minimumValue,
+             std::optional<std::string>{"0"});
+    QCOMPARE(threshold->maximumValue,
+             std::optional<std::string>{"7"});
+    QCOMPARE(threshold->description,
+             std::string("Numeric threshold definition."));
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
 
     makeGeneratedFilesWritable(directory.path());
 }
