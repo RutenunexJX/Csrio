@@ -3793,6 +3793,11 @@ void MainWindow::editRegisterTags(const QModelIndex& index)
         search->clear();
         commit();
     });
+    connect(search, &QLineEdit::returnPressed, popup, [add] {
+        if (add->isEnabled()) {
+            add->click();
+        }
+    });
 
     popup->show();
     search->setFocus();
