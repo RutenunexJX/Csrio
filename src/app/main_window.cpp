@@ -1071,9 +1071,8 @@ void MainWindow::buildUi()
         registerFieldsColumn,
         new FieldsButtonDelegate(openFieldsRole, fieldsOpenRole, registerView_));
     registerView_->setMinimumHeight(120);
-    registerView_->setEditTriggers(QAbstractItemView::DoubleClicked |
-                                   QAbstractItemView::EditKeyPressed |
-                                   QAbstractItemView::AnyKeyPressed);
+    registerView_->setEditTriggers(
+        QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
     registerView_->setContextMenuPolicy(Qt::CustomContextMenu);
     registerTable->setBoundaryPredicate([this](int row) { return canInsertRegisterAt(row); });
     registerTable->setInsertHandler([this](int row) { insertRegisterAt(row); });
@@ -1158,9 +1157,8 @@ void MainWindow::buildUi()
     fieldView_->setObjectName(QStringLiteral("fieldView"));
     fieldView_->setModel(fieldModel_);
     configureTable(fieldView_);
-    fieldView_->setEditTriggers(QAbstractItemView::DoubleClicked |
-                                QAbstractItemView::EditKeyPressed |
-                                QAbstractItemView::AnyKeyPressed);
+    fieldView_->setEditTriggers(
+        QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
     fieldView_->setContextMenuPolicy(Qt::CustomContextMenu);
 
     bitfieldView_ = new BitfieldView(this);
@@ -1191,9 +1189,8 @@ void MainWindow::buildUi()
     enumView_->setObjectName(QStringLiteral("enumView"));
     enumView_->setModel(enumModel_);
     configureTable(enumView_);
-    enumView_->setEditTriggers(QAbstractItemView::DoubleClicked |
-                               QAbstractItemView::EditKeyPressed |
-                               QAbstractItemView::AnyKeyPressed);
+    enumView_->setEditTriggers(
+        QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
     enumView_->setContextMenuPolicy(Qt::CustomContextMenu);
     enumView_->setFixedHeight(112);
 

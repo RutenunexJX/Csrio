@@ -93,6 +93,7 @@ private slots:
     void searchesAndNavigatesProblems();
     void refreshesSearchResultsAfterModelChanges();
     void copiesAndPastesEditableCells();
+    void requiresExplicitCellEditing();
     void keepsUndoRedoInsideActiveEditor();
     void savesActiveEditorWithShortcut();
     void rejectsInvalidActiveEditorBeforeSave();
@@ -3759,6 +3760,79 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
                               QStringLiteral("RO"), 2000);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 9).data().toString(),
                               QStringLiteral("RW"), 2000);
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::requiresExplicitCellEditing()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+
+    auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* fields = window.findChild<QTableView*>(QStringLiteral("fieldView"));
+    auto* enums = window.findChild<QTableView*>(QStringLiteral("enumView"));
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+    QVERIFY(enums != nullptr);
+
+    const auto visibleEditor = [](QTableView* view) -> QLineEdit* {
+        for (auto* editor : view->findChildren<QLineEdit*>()) {
+            if (editor->isVisible()) {
+                return editor;
+            }
+        }
+        return nullptr;
+    };
+
+    const QModelIndex registerName = registers->model()->index(0, 0);
+    registers->setCurrentIndex(registerName);
+    registers->selectionModel()->select(
+        registerName, QItemSelectionModel::ClearAndSelect);
+    registers->setFocus(Qt::OtherFocusReason);
+    QTest::keyClick(registers, Qt::Key_X);
+    QCoreApplication::processEvents();
+    QCOMPARE(visibleEditor(registers), nullptr);
+    QCOMPARE(registerName.data().toString(), QStringLiteral("STATUS"));
+
+    QTest::keyClick(registers, Qt::Key_F2);
+    QTRY_VERIFY_WITH_TIMEOUT(visibleEditor(registers) != nullptr, 2000);
+    QTest::keyClick(visibleEditor(registers), Qt::Key_Escape);
+    QTRY_COMPARE_WITH_TIMEOUT(visibleEditor(registers), nullptr, 2000);
+
+    const QModelIndex fieldsAction = registers->model()->index(0, 5);
+    registers->setCurrentIndex(fieldsAction);
+    registers->setFocus(Qt::OtherFocusReason);
+    QTest::keyClick(registers, Qt::Key_Space);
+    QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
+
+    const QModelIndex fieldName = fields->model()->index(0, 0);
+    fields->setCurrentIndex(fieldName);
+    fields->selectionModel()->select(
+        fieldName, QItemSelectionModel::ClearAndSelect);
+    fields->setFocus(Qt::OtherFocusReason);
+    QTest::keyClick(fields, Qt::Key_X);
+    QCoreApplication::processEvents();
+    QCOMPARE(visibleEditor(fields), nullptr);
+    QCOMPARE(fieldName.data().toString(), QStringLiteral("READY"));
+
+    QTest::keyClick(fields, Qt::Key_F2);
+    QTRY_VERIFY_WITH_TIMEOUT(visibleEditor(fields) != nullptr, 2000);
+    QTest::keyClick(visibleEditor(fields), Qt::Key_Escape);
+
+    for (QTableView* view : {registers, fields, enums}) {
+        QVERIFY(view->editTriggers().testFlag(QAbstractItemView::DoubleClicked));
+        QVERIFY(view->editTriggers().testFlag(QAbstractItemView::EditKeyPressed));
+        QVERIFY(!view->editTriggers().testFlag(QAbstractItemView::AnyKeyPressed));
+    }
 
     makeGeneratedFilesWritable(directory.path());
 }
