@@ -6,6 +6,7 @@
 #include "regmap/core/model_tokens.hpp"
 #include "regmap/core/sync_diff.hpp"
 #include "regmap/core/unsigned_value.hpp"
+#include "regmap/core/validation.hpp"
 #include "regmap/core/workspace_store.hpp"
 
 #include <QAbstractItemView>
@@ -84,6 +85,7 @@
 namespace {
 
 constexpr std::uint32_t maximumEditableWidth = 65536;
+constexpr std::string_view numericRangeDiagnosticCode = "RM3052";
 constexpr auto tableClipboardMimeType =
     "application/x-regmap-workbench-table-cells";
 constexpr auto hierarchyClipboardMimeType =
@@ -3129,6 +3131,27 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
         }
         return PropertyEditResult{PropertyEditStatus::rejected, expectation};
     };
+    const auto acceptsNumericRange =
+        [workspace](std::string_view targetId,
+                    const std::optional<std::string>& minimum,
+                    const std::optional<std::string>& maximum) {
+            regmap::Workspace candidate = *workspace;
+            if (auto* field = regmap::findField(candidate, targetId)) {
+                field->minimumValue = minimum;
+                field->maximumValue = maximum;
+            } else if (auto* reg = regmap::findRegister(candidate, targetId)) {
+                reg->minimumValue = minimum;
+                reg->maximumValue = maximum;
+            } else {
+                return false;
+            }
+            const auto diagnostics = regmap::validateWorkspace(candidate);
+            return std::ranges::none_of(
+                diagnostics, [targetId](const regmap::Diagnostic& diagnostic) {
+                    return diagnostic.code == numericRangeDiagnosticCode &&
+                           diagnostic.objectId == targetId;
+                });
+        };
 
     if (workspace->id == objectId && property == "name") {
         if (textValue.empty()) {
@@ -3255,9 +3278,33 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
         if (property == "minimum" || property == "maximum") {
             const std::optional<std::string> range =
                 textValue.empty() ? std::nullopt : std::optional{textValue};
+            const auto* current = regmap::findField(*workspace, objectId);
+            if (current == nullptr) {
+                return reject(QStringLiteral("a numeric range with a valid Field owner"));
+            }
+            std::optional<std::string> minimum = current->minimumValue;
+            std::optional<std::string> maximum = current->maximumValue;
+            (property == "minimum" ? minimum : maximum) = range;
+            const bool editedBoundValid =
+                property == "minimum"
+                    ? acceptsNumericRange(objectId, minimum, std::nullopt)
+                    : acceptsNumericRange(objectId, std::nullopt, maximum);
+            const bool otherBoundValid =
+                property == "minimum"
+                    ? acceptsNumericRange(objectId, std::nullopt, maximum)
+                    : acceptsNumericRange(objectId, minimum, std::nullopt);
+            if (!editedBoundValid ||
+                (otherBoundValid &&
+                 !acceptsNumericRange(objectId, minimum, maximum))) {
+                return reject(
+                    QStringLiteral(
+                        "a numeric range whose bounds fit the Field type and width "
+                        "and whose minimum does not exceed its maximum"));
+            }
             return commit([=](regmap::Workspace& candidate) {
                 if (auto* field = regmap::findField(candidate, objectId)) {
-                    (property == "minimum" ? field->minimumValue : field->maximumValue) = range;
+                    field->minimumValue = minimum;
+                    field->maximumValue = maximum;
                 }
             });
         }
@@ -3560,6 +3607,12 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                 if (!maximumText.isEmpty()) {
                     maximum = maximumText.toUtf8().toStdString();
                 }
+            }
+            if (!acceptsNumericRange(objectId, minimum, maximum)) {
+                return reject(
+                    QStringLiteral(
+                        "a numeric range whose bounds fit the Register type and width "
+                        "and whose minimum does not exceed its maximum"));
             }
             return commit([=](regmap::Workspace& candidate) {
                 if (auto* reg = regmap::findRegister(candidate, objectId)) {

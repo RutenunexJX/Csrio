@@ -96,6 +96,7 @@ private slots:
     void refreshesSearchResultsAfterModelChanges();
     void copiesAndPastesEditableCells();
     void rejectsOutOfRangeNumericEdits();
+    void rejectsInvalidNumericRangesDuringEditing();
     void synchronizesFieldResetEdits();
     void protectsEnumContractsDuringEditing();
     void rejectsRegisterResetsOutsideFieldEnums();
@@ -3815,6 +3816,209 @@ void GuiSmokeTests::rejectsOutOfRangeNumericEdits()
     QCOMPARE(controller->undoDepth(), enumWidthUndoDepth);
     QVERIFY(window.statusBar()->currentMessage().contains(
         QStringLiteral("Initial, Reset, and Enum")));
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::rejectsInvalidNumericRangesDuringEditing()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createTwoRegisterProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+
+    auto* controller = window.findChild<ProjectController*>();
+    auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* fields = window.findChild<QTableView*>(QStringLiteral("fieldView"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Configure numeric range fixture"),
+        [](regmap::Workspace& workspace) {
+            auto* field = regmap::findField(workspace, "field-ready");
+            if (field == nullptr) {
+                return;
+            }
+            field->msb = 7;
+            field->lsb = 0;
+            field->type = regmap::FieldType::unsignedInteger;
+            field->minimumValue = "0";
+            field->maximumValue = "100";
+            field->enumValues.clear();
+        }));
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+
+    const auto registerRow = [registers](const QString& id) {
+        for (int row = 0; row < registers->model()->rowCount(); ++row) {
+            if (registers->model()->index(row, 0).data(Qt::UserRole + 1).toString() == id) {
+                return row;
+            }
+        }
+        return -1;
+    };
+    int controlRow = registerRow(QStringLiteral("reg-control"));
+    QVERIFY(controlRow >= 0);
+    const std::size_t initialUndoDepth = controller->undoDepth();
+
+    QVERIFY(registers->model()->setData(
+        registers->model()->index(controlRow, 6), QStringLiteral("10 .. 1")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()
+            ->index(registerRow(QStringLiteral("reg-control")), 6)
+            .data()
+            .toString(),
+        QString{}, 2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+    QVERIFY(!regmap::findRegister(*controller->workspace(), "reg-control")
+                 ->minimumValue.has_value());
+    QVERIFY(!regmap::findRegister(*controller->workspace(), "reg-control")
+                 ->maximumValue.has_value());
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("numeric range")));
+
+    controlRow = registerRow(QStringLiteral("reg-control"));
+    QVERIFY(registers->model()->setData(
+        registers->model()->index(controlRow, 6), QStringLiteral("-1 .. 10")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()
+            ->index(registerRow(QStringLiteral("reg-control")), 6)
+            .data()
+            .toString(),
+        QString{}, 2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+
+    controlRow = registerRow(QStringLiteral("reg-control"));
+    QVERIFY(registers->model()->setData(
+        registers->model()->index(controlRow, 6),
+        QStringLiteral("0 .. 0x100000000")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()
+            ->index(registerRow(QStringLiteral("reg-control")), 6)
+            .data()
+            .toString(),
+        QString{}, 2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+
+    controlRow = registerRow(QStringLiteral("reg-control"));
+    QVERIFY(registers->model()->setData(
+        registers->model()->index(controlRow, 6), QStringLiteral("0 .. 255")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()
+            ->index(registerRow(QStringLiteral("reg-control")), 6)
+            .data()
+            .toString(),
+        QStringLiteral("0 .. 255"), 2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth + 1);
+    QCOMPARE(regmap::findRegister(*controller->workspace(), "reg-control")->minimumValue,
+             std::optional<std::string>{"0"});
+    QCOMPARE(regmap::findRegister(*controller->workspace(), "reg-control")->maximumValue,
+             std::optional<std::string>{"255"});
+
+    const int statusRow = registerRow(QStringLiteral("reg-status"));
+    QVERIFY(statusRow >= 0);
+    Q_EMIT registers->clicked(registers->model()->index(statusRow, 5));
+    QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
+    const auto fieldRow = [fields](const QString& id) {
+        for (int row = 0; row < fields->model()->rowCount(); ++row) {
+            if (fields->model()->index(row, 0).data(Qt::UserRole + 1).toString() == id) {
+                return row;
+            }
+        }
+        return -1;
+    };
+    int readyRow = fieldRow(QStringLiteral("field-ready"));
+    QVERIFY(readyRow >= 0);
+    const std::size_t registerRangeUndoDepth = controller->undoDepth();
+
+    QVERIFY(fields->model()->setData(
+        fields->model()->index(readyRow, 6), QStringLiteral("101")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fields->model()
+            ->index(fieldRow(QStringLiteral("field-ready")), 6)
+            .data()
+            .toString(),
+        QStringLiteral("0"), 2000);
+    QCOMPARE(controller->undoDepth(), registerRangeUndoDepth);
+    QCOMPARE(regmap::findField(*controller->workspace(), "field-ready")->minimumValue,
+             std::optional<std::string>{"0"});
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("numeric range")));
+
+    readyRow = fieldRow(QStringLiteral("field-ready"));
+    QVERIFY(fields->model()->setData(
+        fields->model()->index(readyRow, 7), QStringLiteral("256")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fields->model()
+            ->index(fieldRow(QStringLiteral("field-ready")), 7)
+            .data()
+            .toString(),
+        QStringLiteral("100"), 2000);
+    QCOMPARE(controller->undoDepth(), registerRangeUndoDepth);
+
+    readyRow = fieldRow(QStringLiteral("field-ready"));
+    QVERIFY(fields->model()->setData(
+        fields->model()->index(readyRow, 7), QStringLiteral("200")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fields->model()
+            ->index(fieldRow(QStringLiteral("field-ready")), 7)
+            .data()
+            .toString(),
+        QStringLiteral("200"), 2000);
+    QCOMPARE(controller->undoDepth(), registerRangeUndoDepth + 1);
+    QCOMPARE(regmap::findField(*controller->workspace(), "field-ready")->maximumValue,
+             std::optional<std::string>{"200"});
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Configure invalid range recovery fixture"),
+        [](regmap::Workspace& workspace) {
+            if (auto* field = regmap::findField(workspace, "field-ready")) {
+                field->minimumValue = "invalid-minimum";
+                field->maximumValue = "invalid-maximum";
+            }
+        }));
+    QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
+    readyRow = fieldRow(QStringLiteral("field-ready"));
+    QVERIFY(readyRow >= 0);
+    QCOMPARE(fields->model()->index(readyRow, 6).data().toString(),
+             QStringLiteral("invalid-minimum"));
+    QCOMPARE(fields->model()->index(readyRow, 7).data().toString(),
+             QStringLiteral("invalid-maximum"));
+    const std::size_t recoveryUndoDepth = controller->undoDepth();
+
+    QVERIFY(fields->model()->setData(
+        fields->model()->index(readyRow, 6), QString{}));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fields->model()
+            ->index(fieldRow(QStringLiteral("field-ready")), 6)
+            .data()
+            .toString(),
+        QString{}, 2000);
+    QCOMPARE(controller->undoDepth(), recoveryUndoDepth + 1);
+    QVERIFY(!regmap::findField(*controller->workspace(), "field-ready")
+                 ->minimumValue.has_value());
+    QCOMPARE(regmap::findField(*controller->workspace(), "field-ready")->maximumValue,
+             std::optional<std::string>{"invalid-maximum"});
+
+    readyRow = fieldRow(QStringLiteral("field-ready"));
+    QVERIFY(fields->model()->setData(
+        fields->model()->index(readyRow, 7), QString{}));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fields->model()
+            ->index(fieldRow(QStringLiteral("field-ready")), 7)
+            .data()
+            .toString(),
+        QString{}, 2000);
+    QCOMPARE(controller->undoDepth(), recoveryUndoDepth + 2);
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
 
     makeGeneratedFilesWritable(directory.path());
 }
