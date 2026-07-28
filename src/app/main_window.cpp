@@ -853,6 +853,42 @@ private:
     return nullptr;
 }
 
+[[nodiscard]] std::optional<std::size_t>
+enumValueOwnerWidth(const std::vector<regmap::Field>& fields, std::string_view enumValueId)
+{
+    for (const auto& field : fields) {
+        if (std::ranges::any_of(field.enumValues, [&](const regmap::EnumValue& value) {
+                return value.id == enumValueId;
+            })) {
+            return static_cast<std::size_t>(field.width());
+        }
+        if (const auto width = enumValueOwnerWidth(field.members, enumValueId)) {
+            return width;
+        }
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] std::optional<std::size_t>
+enumValueOwnerWidth(const regmap::Workspace& workspace, std::string_view enumValueId)
+{
+    for (const auto& addressSpace : workspace.addressSpaces) {
+        for (const auto& block : addressSpace.blocks) {
+            for (const auto& reg : block.registers) {
+                if (std::ranges::any_of(reg.enumValues, [&](const regmap::EnumValue& value) {
+                        return value.id == enumValueId;
+                    })) {
+                    return static_cast<std::size_t>(reg.width);
+                }
+                if (const auto width = enumValueOwnerWidth(reg.fields, enumValueId)) {
+                    return width;
+                }
+            }
+        }
+    }
+    return std::nullopt;
+}
+
 void configureTable(QTableView* view)
 {
     view->setSelectionBehavior(QAbstractItemView::SelectItems);
@@ -2795,8 +2831,14 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
         }
         if (property == "value") {
             const auto parsed = parseUnsigned();
-            if (!parsed) {
-                return reject(QStringLiteral("an unsigned integer"));
+            const auto ownerWidth = enumValueOwnerWidth(*workspace, objectId);
+            if (!parsed || !ownerWidth || !parsed->fitsInBits(*ownerWidth)) {
+                return reject(
+                    ownerWidth
+                        ? QStringLiteral(
+                              "an unsigned integer fitting the owning %1-bit value")
+                              .arg(*ownerWidth)
+                        : QStringLiteral("an unsigned integer with a valid Enum owner"));
             }
             return commit([=](regmap::Workspace& candidate) {
                 if (auto* enumValue = regmap::findEnumValue(candidate, objectId)) {
@@ -2866,11 +2908,17 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
         }
         if (property == "reset") {
             std::optional<regmap::UnsignedValue> parsed;
+            const auto* current = regmap::findField(*workspace, objectId);
             if (!textValue.empty()) {
                 parsed = parseUnsigned();
-                if (!parsed) {
+                if (!parsed || current == nullptr ||
+                    !parsed->fitsInBits(static_cast<std::size_t>(current->width()))) {
                     return reject(
-                        QStringLiteral("an unsigned integer or an empty value"));
+                        current == nullptr
+                            ? QStringLiteral("an unsigned integer with a valid Field owner")
+                            : QStringLiteral(
+                                  "an unsigned integer fitting the %1-bit field, or empty")
+                                  .arg(current->width()));
                 }
             }
             return commit([=](regmap::Workspace& candidate) {
@@ -3210,10 +3258,15 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
         }
         if (property == "base" || property == "size") {
             std::optional<std::uint64_t> parsed;
-            if (property == "base" || !textValue.empty()) {
+            const bool optionalSize = property == "size" && textValue.empty();
+            if (!optionalSize) {
                 parsed = parseUInt64();
                 if (!parsed) {
                     return reject(QStringLiteral("a 64-bit unsigned integer"));
+                }
+                if (property == "size" && *parsed == 0) {
+                    return reject(
+                        QStringLiteral("a positive block size or an empty value"));
                 }
             }
             return commit([=](regmap::Workspace& candidate) {
@@ -3249,8 +3302,9 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
         }
         if (property == "address_width") {
             const auto parsed = parseUInt32();
-            if (!parsed) {
-                return reject(QStringLiteral("a 32-bit unsigned integer"));
+            if (!parsed || *parsed == 0 || *parsed > 64) {
+                return reject(
+                    QStringLiteral("an address width from 1 to 64 bits"));
             }
             return commit([=](regmap::Workspace& candidate) {
                 if (auto* space = regmap::findAddressSpace(candidate, objectId)) {

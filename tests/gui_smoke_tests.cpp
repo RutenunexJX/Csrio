@@ -94,6 +94,7 @@ private slots:
     void searchesAndNavigatesProblems();
     void refreshesSearchResultsAfterModelChanges();
     void copiesAndPastesEditableCells();
+    void rejectsOutOfRangeNumericEdits();
     void requiresExplicitCellEditing();
     void keepsUndoRedoInsideActiveEditor();
     void savesActiveEditorWithShortcut();
@@ -3525,6 +3526,110 @@ void GuiSmokeTests::refreshesSearchResultsAfterModelChanges()
     QTRY_COMPARE_WITH_TIMEOUT(
         registers->currentIndex().data(Qt::UserRole + 1).toString(),
         QStringLiteral("reg-control"), 2000);
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::rejectsOutOfRangeNumericEdits()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+
+    auto* controller = window.findChild<ProjectController*>();
+    auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* fields = window.findChild<QTableView*>(QStringLiteral("fieldView"));
+    auto* enums = window.findChild<QTableView*>(QStringLiteral("enumView"));
+    auto* pageWidth = window.findChild<QLineEdit*>(QStringLiteral("pageWidthEdit"));
+    auto* blockSize = window.findChild<QLineEdit*>(QStringLiteral("blockSizeEdit"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+    QVERIFY(enums != nullptr);
+    QVERIFY(pageWidth != nullptr);
+    QVERIFY(blockSize != nullptr);
+
+    const std::size_t initialUndoDepth = controller->undoDepth();
+    pageWidth->setText(QStringLiteral("0"));
+    Q_EMIT pageWidth->editingFinished();
+    QTRY_COMPARE_WITH_TIMEOUT(pageWidth->text(), QStringLiteral("32"), 2000);
+    QCOMPARE(controller->workspace()->addressSpaces.front().addressWidth,
+             std::uint32_t{32});
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("1 to 64")));
+
+    blockSize->setText(QStringLiteral("0"));
+    Q_EMIT blockSize->editingFinished();
+    QTRY_COMPARE_WITH_TIMEOUT(blockSize->text(), QStringLiteral("0x1000"), 2000);
+    QCOMPARE(controller->workspace()->addressSpaces.front().blocks.front().size,
+             std::optional<std::uint64_t>{0x1000});
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("positive block size")));
+
+    Q_EMIT registers->clicked(registers->model()->index(0, 5));
+    QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
+    const QModelIndex fieldReset = fields->model()->index(0, 10);
+    QCOMPARE(fieldReset.data().toString(), QStringLiteral("0x0"));
+    QVERIFY(fields->model()->setData(fieldReset, QStringLiteral("0x2")));
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(0, 10).data().toString(),
+                              QStringLiteral("0x0"), 2000);
+    QCOMPARE(regmap::findField(*controller->workspace(), "field-ready")->resetValue,
+             std::optional(regmap::UnsignedValue(0)));
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("1-bit field")));
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Configure enum bounds fixture"),
+        [](regmap::Workspace& workspace) {
+            auto* reg = regmap::findRegister(workspace, "reg-status");
+            if (reg == nullptr) {
+                return;
+            }
+            reg->width = 2;
+            reg->type = regmap::FieldType::enumeration;
+            reg->fields.clear();
+            reg->array.stride = 1;
+            regmap::EnumValue zero;
+            zero.id = "enum-zero";
+            zero.name = "ZERO";
+            zero.value = regmap::UnsignedValue(0);
+            regmap::EnumValue one;
+            one.id = "enum-one";
+            one.name = "ONE";
+            one.value = regmap::UnsignedValue(1);
+            reg->enumValues = {zero, one};
+        }));
+    QTRY_VERIFY_WITH_TIMEOUT(enums->isVisible(), 2000);
+    int zeroRow = -1;
+    for (int row = 0; row < enums->model()->rowCount(); ++row) {
+        if (enums->model()->index(row, 0).data(Qt::UserRole + 1).toString() ==
+            QStringLiteral("enum-zero")) {
+            zeroRow = row;
+            break;
+        }
+    }
+    QVERIFY(zeroRow >= 0);
+    const std::size_t enumUndoDepth = controller->undoDepth();
+    const QModelIndex enumValue = enums->model()->index(zeroRow, 1);
+    QCOMPARE(enumValue.data().toString(), QStringLiteral("0x0"));
+    QVERIFY(enums->model()->setData(enumValue, QStringLiteral("0x4")));
+    QTRY_COMPARE_WITH_TIMEOUT(enums->model()->index(zeroRow, 1).data().toString(),
+                              QStringLiteral("0x0"), 2000);
+    QCOMPARE(regmap::findEnumValue(*controller->workspace(), "enum-zero")->value,
+             regmap::UnsignedValue(0));
+    QCOMPARE(controller->undoDepth(), enumUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("2-bit value")));
 
     makeGeneratedFilesWritable(directory.path());
 }
