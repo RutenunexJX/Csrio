@@ -4154,6 +4154,38 @@ void GuiSmokeTests::rejectsRegisterResetsOutsideFieldEnums()
                               QStringLiteral("0x0"), 2000);
     QCOMPARE(controller->undoDepth(), undoDepth);
 
+    QVERIFY(fields->model()->setData(fields->model()->index(parentRow, 10),
+                                     QStringLiteral("0x2")));
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 8).data().toString(),
+                              QStringLiteral("0x0"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(parentRow, 10).data().toString(),
+                              QStringLiteral("0x0"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(memberRow, 10).data().toString(),
+                              QStringLiteral("0x0"), 2000);
+    QCOMPARE(controller->undoDepth(), undoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Enum/Bool Field slices")));
+
+    QVERIFY(fields->model()->setData(fields->model()->index(parentRow, 10),
+                                     QStringLiteral("0x6")));
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 8).data().toString(),
+                              QStringLiteral("0x600"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(parentRow, 10).data().toString(),
+                              QStringLiteral("0x6"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(memberRow, 10).data().toString(),
+                              QStringLiteral("0x3"), 2000);
+    QCOMPARE(controller->undoDepth(), undoDepth + 1);
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+
+    QTest::keyClick(&window, Qt::Key_Z, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 8).data().toString(),
+                              QStringLiteral("0x0"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(parentRow, 10).data().toString(),
+                              QStringLiteral("0x0"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(memberRow, 10).data().toString(),
+                              QStringLiteral("0x0"), 2000);
+    QCOMPARE(controller->undoDepth(), undoDepth);
+
     makeGeneratedFilesWritable(directory.path());
 }
 

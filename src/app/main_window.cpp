@@ -1147,6 +1147,23 @@ void refreshRegisterFieldResets(regmap::Register& reg)
     }
 }
 
+[[nodiscard]] std::optional<regmap::UnsignedValue>
+mergedRegisterReset(const regmap::Register& reg, std::string_view fieldId,
+                    const regmap::UnsignedValue& fieldReset)
+{
+    if (!reg.resetValue) {
+        return std::nullopt;
+    }
+    const auto* field = findFieldRecursive(reg.fields, fieldId);
+    const auto absoluteLsb = fieldAbsoluteLsb(reg.fields, fieldId);
+    if (field == nullptr || !absoluteLsb) {
+        return std::nullopt;
+    }
+    return reg.resetValue->replacingSlice(
+        static_cast<std::size_t>(*absoluteLsb),
+        static_cast<std::size_t>(field->width()), fieldReset);
+}
+
 void assignFieldReset(regmap::Workspace& workspace, std::string_view fieldId,
                       const std::optional<regmap::UnsignedValue>& value)
 {
@@ -1155,14 +1172,8 @@ void assignFieldReset(regmap::Workspace& workspace, std::string_view fieldId,
         return;
     }
     auto* reg = findRegisterContainingField(workspace, fieldId);
-    if (value && reg != nullptr && reg->resetValue) {
-        const auto absoluteLsb = fieldAbsoluteLsb(reg->fields, fieldId);
-        const auto merged =
-            absoluteLsb
-                ? reg->resetValue->replacingSlice(
-                      static_cast<std::size_t>(*absoluteLsb),
-                      static_cast<std::size_t>(field->width()), *value)
-                : std::nullopt;
+    if (value && reg != nullptr) {
+        const auto merged = mergedRegisterReset(*reg, fieldId, *value);
         if (merged) {
             reg->resetValue = *merged;
             refreshRegisterFieldResets(*reg);
@@ -3163,6 +3174,19 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                     })) {
                 return reject(
                     QStringLiteral("an existing Enum value for this field, or empty"));
+            }
+            if (parsed && owner != nullptr && owner->resetValue) {
+                const auto merged =
+                    mergedRegisterReset(*owner, objectId, *parsed);
+                if (!merged ||
+                    !resetMatchesFieldEnums(
+                        owner->fields, *merged,
+                        static_cast<std::uint64_t>(owner->width))) {
+                    return reject(
+                        QStringLiteral(
+                            "a Reset value whose Enum/Bool Field slices match "
+                            "existing Enum values, or empty"));
+                }
             }
             const bool updatesRegisterReset =
                 parsed.has_value() && current != nullptr && owner != nullptr &&
