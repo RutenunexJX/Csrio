@@ -118,6 +118,8 @@ private:
     bool refreshing_{false};
     bool modelEditInProgress_{false};
     bool refreshPending_{false};
+    bool committingActiveEditor_{false};
+    bool activeEditorCommitRejected_{false};
     QString lastSyncMessage_;
     QString searchQuery_;
     std::vector<std::string> searchResults_;
@@ -126,7 +128,7 @@ private:
     void buildUi();
     void buildActions();
     void connectSignals();
-    void commitActiveEditor();
+    [[nodiscard]] bool commitActiveEditor();
     bool confirmProjectReplacement();
     void requestProjectRefresh();
     void refreshProject();

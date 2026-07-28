@@ -87,6 +87,7 @@ private slots:
     void copiesAndPastesEditableCells();
     void keepsUndoRedoInsideActiveEditor();
     void savesActiveEditorWithShortcut();
+    void rejectsInvalidActiveEditorBeforeSave();
     void deletesFocusedRegisterAndRestoresIt();
     void editsUndoesAndSavesProject();
     void rejectsInvalidManagedRtl();
@@ -3393,9 +3394,11 @@ void GuiSmokeTests::savesActiveEditorWithShortcut()
     QCOMPARE(registers->model()->index(0, 0).data().toString(),
              QStringLiteral("STATUS"));
 
+    QSignalSpy saveResetSpy(registers->model(), &QAbstractItemModel::modelReset);
     QTest::keyClick(editor, Qt::Key_S, Qt::ControlModifier);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 0).data().toString(),
                               savedName, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(saveResetSpy.count() > 0, 2000);
     QTRY_VERIFY_WITH_TIMEOUT(!controller->isDirty(), 2000);
 
     const auto reopened =
@@ -3404,6 +3407,58 @@ void GuiSmokeTests::savesActiveEditorWithShortcut()
     QCOMPARE(QString::fromStdString(
                  regmap::findRegister(*reopened.workspace, "reg-status")->name),
              savedName);
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::rejectsInvalidActiveEditorBeforeSave()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createTwoRegisterProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+    auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* controller = window.findChild<ProjectController*>();
+    QVERIFY(registers != nullptr);
+    QVERIFY(controller != nullptr);
+    QVERIFY(!controller->isDirty());
+
+    QSignalSpy syncSpy(controller, &ProjectController::syncStatusChanged);
+    const QModelIndex width = registers->model()->index(0, 3);
+    registers->setCurrentIndex(width);
+    registers->scrollTo(width);
+    registers->setFocus(Qt::OtherFocusReason);
+    registers->edit(width);
+    QCoreApplication::processEvents();
+    const auto visibleEditor = [registers]() -> QLineEdit* {
+        const auto editors = registers->findChildren<QLineEdit*>();
+        const auto visible = std::ranges::find_if(
+            editors, [](const QLineEdit* editor) { return editor->isVisible(); });
+        return visible == editors.end() ? nullptr : *visible;
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(visibleEditor() != nullptr, 2000);
+    QLineEdit* invalidEditor = visibleEditor();
+    invalidEditor->selectAll();
+    QTest::keyClicks(invalidEditor, QStringLiteral("invalid-width"));
+    QCOMPARE(invalidEditor->text(), QStringLiteral("invalid-width"));
+    QCOMPARE(registers->model()->index(0, 3).data().toString(),
+             QStringLiteral("32"));
+
+    QSignalSpy resetSpy(registers->model(), &QAbstractItemModel::modelReset);
+    QTest::keyClick(invalidEditor, Qt::Key_S, Qt::ControlModifier);
+    QTRY_VERIFY_WITH_TIMEOUT(resetSpy.count() > 0, 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 3).data().toString(),
+                              QStringLiteral("32"), 2000);
+    QCOMPARE(syncSpy.count(), 0);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Edit rejected: expected")));
+    QVERIFY(!controller->isDirty());
     makeGeneratedFilesWritable(directory.path());
 }
 

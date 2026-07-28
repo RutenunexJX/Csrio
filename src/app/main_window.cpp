@@ -1331,7 +1331,9 @@ void MainWindow::buildActions()
     saveAction_->setShortcut(QKeySequence::Save);
     saveAction_->setEnabled(false);
     connect(saveAction_, &QAction::triggered, this, [this] {
-        commitActiveEditor();
+        if (!commitActiveEditor()) {
+            return;
+        }
         controller_.save();
     });
 
@@ -1339,7 +1341,9 @@ void MainWindow::buildActions()
     reloadAction_->setShortcut(QKeySequence::Refresh);
     reloadAction_->setEnabled(false);
     connect(reloadAction_, &QAction::triggered, this, [this] {
-        commitActiveEditor();
+        if (!commitActiveEditor()) {
+            return;
+        }
         if (controller_.isDirty() &&
             QMessageBox::question(
                 this, QStringLiteral("Reload Project"),
@@ -1376,7 +1380,9 @@ void MainWindow::buildActions()
     generateAction_->setShortcut(QKeySequence(QStringLiteral("Ctrl+G")));
     generateAction_->setEnabled(false);
     connect(generateAction_, &QAction::triggered, this, [this] {
-        commitActiveEditor();
+        if (!commitActiveEditor()) {
+            return;
+        }
         controller_.generateNow();
     });
 
@@ -1384,7 +1390,9 @@ void MainWindow::buildActions()
     synchronizeAction_->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+S")));
     synchronizeAction_->setEnabled(false);
     connect(synchronizeAction_, &QAction::triggered, this, [this] {
-        commitActiveEditor();
+        if (!commitActiveEditor()) {
+            return;
+        }
         controller_.synchronizeNow();
     });
 
@@ -1817,16 +1825,21 @@ void MainWindow::connectSignals()
     connect(enumModel_, &QStandardItemModel::itemChanged, this, handleModelEdit);
 }
 
-void MainWindow::commitActiveEditor()
+bool MainWindow::commitActiveEditor()
 {
+    activeEditorCommitRejected_ = false;
     if (auto* edit = qobject_cast<QLineEdit*>(QApplication::focusWidget())) {
+        const QScopedValueRollback commitGuard(committingActiveEditor_, true);
         edit->clearFocus();
     }
+    return !activeEditorCommitRejected_;
 }
 
 bool MainWindow::confirmProjectReplacement()
 {
-    commitActiveEditor();
+    if (!commitActiveEditor()) {
+        return false;
+    }
     if (!controller_.isDirty()) {
         return true;
     }
@@ -2680,6 +2693,9 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
             return PropertyEditResult{PropertyEditStatus::unchanged, {}};
         };
     const auto reject = [this, reportFeedback](const QString& expectation) {
+        if (committingActiveEditor_) {
+            activeEditorCommitRejected_ = true;
+        }
         if (reportFeedback) {
             statusBar()->showMessage(
                 QStringLiteral("Edit rejected: expected %1").arg(expectation), 5000);
@@ -5324,7 +5340,10 @@ void MainWindow::updateEditActions()
 
 void MainWindow::closeEvent(QCloseEvent* event)
 {
-    commitActiveEditor();
+    if (!commitActiveEditor()) {
+        event->ignore();
+        return;
+    }
     if (!controller_.isDirty()) {
         event->accept();
         return;
