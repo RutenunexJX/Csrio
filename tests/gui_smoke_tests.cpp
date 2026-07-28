@@ -5977,6 +5977,19 @@ void GuiSmokeTests::rejectsAddressEditsThatIntroduceConflicts()
     QVERIFY(blockSize != nullptr);
     QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
 
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Add adjacent Block allocation"),
+        [](regmap::Workspace& workspace) {
+            regmap::RegisterBlock adjacent;
+            adjacent.id = "block-adjacent";
+            adjacent.name = "Adjacent";
+            adjacent.baseAddress = 0x1000;
+            adjacent.size = 0x1000;
+            workspace.addressSpaces.front().blocks.push_back(
+                std::move(adjacent));
+        }));
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+
     const auto registerRow = [registers](const QString& id) {
         for (int row = 0; row < registers->model()->rowCount(); ++row) {
             if (registers->model()->index(row, 0).data(Qt::UserRole + 1).toString() == id) {
@@ -5988,6 +6001,20 @@ void GuiSmokeTests::rejectsAddressEditsThatIntroduceConflicts()
     int controlRow = registerRow(QStringLiteral("reg-control"));
     QVERIFY(controlRow >= 0);
     const std::size_t initialUndoDepth = controller->undoDepth();
+
+    blockSize->setText(QStringLiteral("0x1800"));
+    Q_EMIT blockSize->editingFinished();
+    QTRY_COMPARE_WITH_TIMEOUT(blockSize->text(), QStringLiteral("0x1000"), 2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Block address layout")));
+
+    blockBase->setText(QStringLiteral("0x800"));
+    Q_EMIT blockBase->editingFinished();
+    QTRY_COMPARE_WITH_TIMEOUT(blockBase->text(), QStringLiteral("0x0"), 2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Block address layout")));
 
     QVERIFY(registers->model()->setData(
         registers->model()->index(controlRow, 1), QStringLiteral("0x0")));

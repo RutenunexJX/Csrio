@@ -61,6 +61,7 @@ private slots:
     void rejectsCorruptSynchronizationBaseline();
     void validatesModelConflicts();
     void validatesNumericRangeBoundaries();
+    void validatesBlockAllocationRanges();
     void generatesReadOnlyArtifacts();
     void reportsGeneratedIdentifierCollisions();
     void sanitizesXlsxWorksheetNames();
@@ -949,6 +950,79 @@ void CoreTests::validatesNumericRangeBoundaries()
     numeric.minimumValue = "-1";
     numeric.maximumValue = "1";
     QVERIFY(hasRangeDiagnostic(workspace));
+}
+
+void CoreTests::validatesBlockAllocationRanges()
+{
+    regmap::Workspace workspace;
+    workspace.id = "workspace";
+    workspace.name = "Workspace";
+
+    regmap::AddressSpace page;
+    page.id = "space";
+    page.name = "Main";
+    page.addressWidth = 12;
+
+    regmap::RegisterBlock first;
+    first.id = "block-first";
+    first.name = "First";
+    first.baseAddress = 0;
+    first.size = 0x100;
+
+    regmap::RegisterBlock second;
+    second.id = "block-second";
+    second.name = "Second";
+    second.baseAddress = 0x80;
+    second.size = 0x100;
+
+    page.blocks = {first, second};
+    workspace.addressSpaces.push_back(page);
+
+    const auto hasDiagnostic =
+        [](const regmap::Workspace& candidate,
+           std::string_view code, std::string_view objectId,
+           std::string_view message) {
+            const auto diagnostics = regmap::validateWorkspace(candidate);
+            return std::ranges::any_of(
+                diagnostics, [&](const regmap::Diagnostic& diagnostic) {
+                    return diagnostic.code == code &&
+                           diagnostic.objectId == objectId &&
+                           diagnostic.message.find(message) !=
+                               std::string::npos;
+                });
+        };
+
+    QVERIFY(hasDiagnostic(
+        workspace, "RM3025", "block-second",
+        "overlaps register block 'First'"));
+
+    workspace.addressSpaces[0].blocks[1].baseAddress = 0x100;
+    QVERIFY(regmap::validateWorkspace(workspace).empty());
+
+    workspace.addressSpaces[0].blocks[1].baseAddress = 0xF80;
+    QVERIFY(hasDiagnostic(
+        workspace, "RM3011", "block-second",
+        "outside the address-space width"));
+
+    auto& addressSpace = workspace.addressSpaces[0];
+    addressSpace.addressWidth = 64;
+    addressSpace.blocks = {second};
+    addressSpace.blocks[0].baseAddress =
+        std::numeric_limits<std::uint64_t>::max() - 0x7F;
+    QVERIFY(hasDiagnostic(
+        workspace, "RM3011", "block-second",
+        "overflows the 64-bit address range"));
+
+    addressSpace.blocks[0].baseAddress = 0x200;
+    addressSpace.blocks[0].size.reset();
+    regmap::Register registerValue;
+    registerValue.id = "reg-value";
+    registerValue.name = "VALUE";
+    registerValue.offset = 0;
+    registerValue.width = 32;
+    registerValue.array.stride = 4;
+    addressSpace.blocks[0].registers.push_back(registerValue);
+    QVERIFY(regmap::validateWorkspace(workspace).empty());
 }
 
 void CoreTests::generatesReadOnlyArtifacts()

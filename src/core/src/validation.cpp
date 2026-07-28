@@ -28,6 +28,7 @@ constexpr std::string_view arrayCountCode = "RM3021";
 constexpr std::string_view strideCode = "RM3022";
 constexpr std::string_view registerRangeCode = "RM3023";
 constexpr std::string_view addressOverlapCode = "RM3024";
+constexpr std::string_view blockOverlapCode = "RM3025";
 constexpr std::string_view fieldRangeCode = "RM3030";
 constexpr std::string_view fieldOverlapCode = "RM3031";
 constexpr std::string_view accessConflictCode = "RM3032";
@@ -50,6 +51,12 @@ struct AddressInterval {
     std::uint64_t last{0};
     const Register* reg{nullptr};
     std::uint32_t instance{0};
+};
+
+struct BlockAddressInterval {
+    std::uint64_t first{0};
+    std::uint64_t last{0};
+    const RegisterBlock* block{nullptr};
 };
 
 [[nodiscard]] bool addOverflow(std::uint64_t left, std::uint64_t right,
@@ -231,7 +238,9 @@ private:
                           const SourceLocation& source);
     void validateAddressSpace(const AddressSpace& addressSpace);
     void validateBlock(const AddressSpace& addressSpace, const RegisterBlock& block,
-                       std::vector<AddressInterval>& intervals);
+                       std::vector<AddressInterval>& intervals,
+                       std::vector<BlockAddressInterval>& blockIntervals);
+    void validateBlockAddressIntervals(std::vector<BlockAddressInterval>& intervals);
     void validateRegister(const Register& reg);
     void validateFieldContainer(const Register& reg, const std::vector<Field>& fields,
                                 std::uint64_t containerWidth, std::uint64_t absoluteLsb,
@@ -304,6 +313,7 @@ void Validator::validateAddressSpace(const AddressSpace& addressSpace)
 
     std::set<std::string, std::less<>> blockNames;
     std::vector<AddressInterval> intervals;
+    std::vector<BlockAddressInterval> blockIntervals;
     for (const auto& block : addressSpace.blocks) {
         if (!block.name.empty() && !blockNames.insert(block.name).second) {
             addDiagnostic(diagnostics_, duplicateNameCode,
@@ -311,13 +321,15 @@ void Validator::validateAddressSpace(const AddressSpace& addressSpace)
                               "' is duplicated in address space '" + addressSpace.name + "'.",
                           block.id, propertySource(block, "block_name"));
         }
-        validateBlock(addressSpace, block, intervals);
+        validateBlock(addressSpace, block, intervals, blockIntervals);
     }
+    validateBlockAddressIntervals(blockIntervals);
     validateAddressIntervals(intervals);
 }
 
 void Validator::validateBlock(const AddressSpace& addressSpace, const RegisterBlock& block,
-                              std::vector<AddressInterval>& intervals)
+                              std::vector<AddressInterval>& intervals,
+                              std::vector<BlockAddressInterval>& blockIntervals)
 {
     validateIdentity(block.id, block.name, "register block", block.source);
     if (block.size.has_value() && *block.size == 0) {
@@ -333,6 +345,29 @@ void Validator::validateBlock(const AddressSpace& addressSpace, const RegisterBl
         addDiagnostic(diagnostics_, addressRangeCode,
                       "Register-block base address overflows the 64-bit address range.", block.id,
                       propertySource(block, "block_base"));
+    }
+    if (!blockAddressOverflow && block.size.has_value() && *block.size > 0) {
+        std::uint64_t blockLast = 0;
+        if (addOverflow(blockAbsolute, *block.size - 1, blockLast)) {
+            addDiagnostic(
+                diagnostics_, addressRangeCode,
+                "Declared register-block range overflows the 64-bit address range.",
+                block.id, propertySource(block, "block_size"));
+        } else {
+            if (addressSpace.addressWidth > 0 &&
+                addressSpace.addressWidth < 64) {
+                const std::uint64_t limit =
+                    std::uint64_t{1} << addressSpace.addressWidth;
+                if (blockLast >= limit) {
+                    addDiagnostic(
+                        diagnostics_, addressRangeCode,
+                        "Declared register-block range lies outside the address-space width.",
+                        block.id, propertySource(block, "block_size"));
+                }
+            }
+            blockIntervals.push_back(
+                BlockAddressInterval{blockAbsolute, blockLast, &block});
+        }
     }
 
     std::set<std::string, std::less<>> registerNames;
@@ -387,6 +422,38 @@ void Validator::validateBlock(const AddressSpace& addressSpace, const RegisterBl
             }
 
             intervals.push_back(AddressInterval{absoluteStart, absoluteLast, &reg, instance});
+        }
+    }
+}
+
+void Validator::validateBlockAddressIntervals(
+    std::vector<BlockAddressInterval>& intervals)
+{
+    std::sort(
+        intervals.begin(), intervals.end(),
+        [](const BlockAddressInterval& left,
+           const BlockAddressInterval& right) {
+            return std::tuple{left.first, left.last, left.block->id} <
+                   std::tuple{right.first, right.last, right.block->id};
+        });
+    if (intervals.empty()) {
+        return;
+    }
+
+    const BlockAddressInterval* active = &intervals.front();
+    for (std::size_t index = 1; index < intervals.size(); ++index) {
+        const BlockAddressInterval& current = intervals[index];
+        if (current.first <= active->last) {
+            addDiagnostic(
+                diagnostics_, blockOverlapCode,
+                "Declared range for register block '" +
+                    current.block->name +
+                    "' overlaps register block '" + active->block->name + "'.",
+                current.block->id,
+                propertySource(*current.block, "block_base"));
+        }
+        if (current.last > active->last) {
+            active = &current;
         }
     }
 }

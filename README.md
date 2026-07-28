@@ -44,7 +44,8 @@ Workspace -> Page (Address Space) -> Register Block -> Register -> Field -> Enum
   it covers.
 - Boolean/enumeration, `intN`/`uintN` numeric ranges, and compound fields with member fields.
 - Continuous validation of identity, address ranges and overlap, field ranges and overlap,
-  access and side-effect combinations, reset values, and enum values.
+  declared Block allocation ranges, access and side-effect combinations, reset values, and
+  enum values.
 - Undo, redo, dirty-state tracking, atomic project save, and close-time save protection.
 - One visible **Save & Sync** action and a persistent state badge for unsaved, synchronizing,
   synchronized, blocked, partial-output-failure, and conflict states.

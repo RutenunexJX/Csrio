@@ -104,6 +104,10 @@ hexadecimal notation.
   `description`, `enum_values`, and optional recursive `members`.
 - Enum value: `id`, `name`, `value`, `description`.
 
+A Block with `size` reserves the half-open Page-relative interval `[base, base + size)`.
+Declared Block intervals must not overlap and their complete extent must fit the Page address
+width. Registers must also remain inside their containing Block interval.
+
 Legacy `reset_domain` keys are ignored when read and are omitted on the next save.
 
 Accepted tokens:

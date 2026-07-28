@@ -90,6 +90,7 @@ constexpr std::string_view addressRangeDiagnosticCode = "RM3011";
 constexpr std::string_view strideDiagnosticCode = "RM3022";
 constexpr std::string_view registerRangeDiagnosticCode = "RM3023";
 constexpr std::string_view addressOverlapDiagnosticCode = "RM3024";
+constexpr std::string_view blockOverlapDiagnosticCode = "RM3025";
 constexpr std::string_view fieldRangeDiagnosticCode = "RM3030";
 constexpr std::string_view fieldOverlapDiagnosticCode = "RM3031";
 constexpr std::string_view fieldTypeDiagnosticCode = "RM3036";
@@ -1491,7 +1492,8 @@ blockSiblings(const regmap::Workspace& workspace, std::string_view blockId)
            code == addressRangeDiagnosticCode ||
            code == strideDiagnosticCode ||
            code == registerRangeDiagnosticCode ||
-           code == addressOverlapDiagnosticCode;
+           code == addressOverlapDiagnosticCode ||
+           code == blockOverlapDiagnosticCode;
 }
 
 [[nodiscard]] const regmap::AddressSpace*
