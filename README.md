@@ -102,7 +102,9 @@ Changing a populated structure Register or compound Field back to a scalar type 
 how many child Fields or Members will be removed and defaults to cancel. A confirmed conversion
 is one undoable transaction, so `Ctrl+Z` restores the complete hierarchy. Multi-cell paste never
 opens repeated destructive confirmations; it rejects these Type cells and directs the user to
-confirm each conversion individually.
+confirm each conversion individually. Changing an Enum Register or Field to a non-enumeration
+type uses the same protection, reports how many Enum values will be removed, and preserves all
+values when cancelled.
 Register types use the same value-type vocabulary. A register's **Range** cell uses
 `minimum .. maximum`; **Initial** is independent of **Reset**. For `enum` and `bool` registers,
 enum values for the selected register are edited in the same table below the field table.

@@ -88,6 +88,7 @@ private slots:
     void keepsRegisterFieldConversionImmediatelyUsable();
     void keepsEnumConversionsImmediatelyUsable();
     void confirmsCompoundTypeChangesBeforeRemovingChildren();
+    void confirmsEnumTypeChangesBeforeRemovingValues();
     void keepsCompoundFieldsUsableDuringConversionAndDeletion();
     void dragsFieldsAndResolvesOverlaps();
     void cancelsInterruptedFieldDrag();
@@ -1921,6 +1922,20 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
         });
         return undo == actions.end() ? nullptr : *undo;
     };
+    const auto acceptEnumRemoval = [&window] {
+        QTimer::singleShot(0, &window, [] {
+            auto* dialog =
+                qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+            if (dialog == nullptr) {
+                return;
+            }
+            if (auto* confirm = dialog->button(QMessageBox::Yes)) {
+                QTest::mouseClick(confirm, Qt::LeftButton);
+            } else {
+                dialog->reject();
+            }
+        });
+    };
 
     pageBase->setText(QStringLiteral("0x1000"));
     Q_EMIT pageBase->editingFinished();
@@ -2038,13 +2053,15 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     QCOMPARE(registers->model()->index(1, 4).data().toString(), QStringLiteral("enum"));
 
     window.statusBar()->clearMessage();
+    acceptEnumRemoval();
     QVERIFY(registers->model()->setData(registers->model()->index(1, 4),
                                         QStringLiteral("field")));
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 4).data().toString(),
                               QStringLiteral("field"), 2000);
     QTRY_VERIFY_WITH_TIMEOUT(!enums->isVisible(), 2000);
     QCOMPARE(enums->model()->rowCount(), 0);
-    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("incompatible data")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Enum values removed")));
     QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("Ctrl+Z")));
     QVERIFY(window.statusBar()->currentMessage().contains(
         QStringLiteral("NEW_FIELD created")));
@@ -2080,6 +2097,7 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
                               QStringLiteral("0x3"), 2000);
 
     window.statusBar()->clearMessage();
+    acceptEnumRemoval();
     QVERIFY(registers->model()->setData(registers->model()->index(1, 4),
                                         QStringLiteral("reserved")));
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 4).data().toString(),
@@ -2228,6 +2246,7 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     QCOMPARE(registers->currentIndex().data(Qt::UserRole + 1).toString(),
              enumOwnerRegisterId);
 
+    acceptEnumRemoval();
     QVERIFY(registers->model()->setData(registers->model()->index(1, 4),
                                         QStringLiteral("field")));
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 4).data().toString(),
@@ -2455,6 +2474,7 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
 
     memberRow = fieldRowForId(memberFieldId);
     QVERIFY(memberRow >= 0);
+    acceptEnumRemoval();
     QVERIFY(fields->model()->setData(fields->model()->index(memberRow, 5),
                                      QStringLiteral("bits")));
     QTRY_VERIFY_WITH_TIMEOUT(!enums->isVisible(), 2000);
@@ -2484,6 +2504,7 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     }
     QVERIFY(restoredGuardedFieldEnum);
     QVERIFY(restoredNewFieldEnum);
+    acceptEnumRemoval();
     QVERIFY(fields->model()->setData(fields->model()->index(memberRow, 5),
                                      QStringLiteral("bits")));
     QTRY_VERIFY_WITH_TIMEOUT(!enums->isVisible(), 2000);
@@ -2501,6 +2522,7 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
 
     memberRow = fieldRowForId(memberFieldId);
     QVERIFY(memberRow >= 0);
+    acceptEnumRemoval();
     QVERIFY(fields->model()->setData(fields->model()->index(memberRow, 5),
                                      QStringLiteral("uint2")));
     QTRY_VERIFY_WITH_TIMEOUT(!enums->isVisible(), 2000);
@@ -3078,6 +3100,279 @@ void GuiSmokeTests::confirmsCompoundTypeChangesBeforeRemovingChildren()
     QCOMPARE(regmap::findField(*controller->workspace(), "field-ready")->type,
              regmap::FieldType::structure);
     QCOMPARE(controller->undoDepth(), compoundUndoDepth);
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::confirmsEnumTypeChangesBeforeRemovingValues()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createTwoRegisterProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+
+    auto* controller = window.findChild<ProjectController*>();
+    auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* fields = window.findChild<QTableView*>(QStringLiteral("fieldView"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+
+    const auto enumValues = [](std::string_view prefix) {
+        regmap::EnumValue zero;
+        zero.id = std::string(prefix) + "-zero";
+        zero.name = "ZERO";
+        zero.value = regmap::UnsignedValue(0);
+        regmap::EnumValue one;
+        one.id = std::string(prefix) + "-one";
+        one.name = "ONE";
+        one.value = regmap::UnsignedValue(1);
+        return std::vector<regmap::EnumValue>{
+            std::move(zero), std::move(one)};
+    };
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Configure enum removal fixture"),
+        [enumValues](regmap::Workspace& workspace) {
+            auto* control =
+                regmap::findRegister(workspace, "reg-control");
+            auto* ready = regmap::findField(workspace, "field-ready");
+            QVERIFY(control != nullptr);
+            QVERIFY(ready != nullptr);
+            control->type = regmap::FieldType::enumeration;
+            control->enumValues = enumValues("register-enum");
+            ready->type = regmap::FieldType::enumeration;
+            ready->enumValues = enumValues("field-enum");
+        }));
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+
+    const auto registerRowForId = [registers](const QString& id) {
+        for (int row = 0; row < registers->model()->rowCount(); ++row) {
+            if (registers->model()
+                    ->index(row, 0)
+                    .data(Qt::UserRole + 1)
+                    .toString() == id) {
+                return row;
+            }
+        }
+        return -1;
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(
+        registerRowForId(QStringLiteral("reg-control")) >= 0, 2000);
+    const int controlRow = registerRowForId(QStringLiteral("reg-control"));
+    registers->setCurrentIndex(registers->model()->index(controlRow, 0));
+    registers->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
+
+    const std::size_t registerUndoDepth = controller->undoDepth();
+    bool registerCancelSeen = false;
+    QString registerCancelFailure;
+    QTimer::singleShot(0, &window, [&] {
+        auto* dialog =
+            qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (dialog == nullptr) {
+            registerCancelFailure =
+                QStringLiteral("Register Enum confirmation did not open");
+            return;
+        }
+        registerCancelSeen = true;
+        if (dialog->windowTitle() !=
+                QStringLiteral("Change Enum Register Type") ||
+            !dialog->text().contains(QStringLiteral("CONTROL")) ||
+            !dialog->text().contains(QStringLiteral("2 Enum values")) ||
+            !dialog->text().contains(QStringLiteral("Ctrl+Z")) ||
+            dialog->defaultButton() != dialog->button(QMessageBox::No)) {
+            registerCancelFailure =
+                QStringLiteral("Register Enum confirmation lacks impact details");
+        }
+        if (auto* cancel = dialog->button(QMessageBox::No)) {
+            QTest::mouseClick(cancel, Qt::LeftButton);
+        } else {
+            dialog->reject();
+        }
+    });
+    QVERIFY(registers->model()->setData(
+        registers->model()->index(controlRow, 4),
+        QStringLiteral("uint32")));
+    QCoreApplication::processEvents();
+    QVERIFY2(registerCancelFailure.isEmpty(),
+             qPrintable(registerCancelFailure));
+    QVERIFY(registerCancelSeen);
+    QCOMPARE(
+        regmap::findRegister(*controller->workspace(), "reg-control")->type,
+        regmap::FieldType::enumeration);
+    QCOMPARE(
+        regmap::findRegister(*controller->workspace(), "reg-control")
+            ->enumValues.size(),
+        std::size_t{2});
+    QCOMPARE(controller->undoDepth(), registerUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("cancelled")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("kept")));
+
+    auto* clipboardData = new QMimeData;
+    clipboardData->setText(QStringLiteral("uint32"));
+    QApplication::clipboard()->setMimeData(clipboardData);
+    const QModelIndex registerType =
+        registers->model()->index(controlRow, 4);
+    registers->setCurrentIndex(registerType);
+    registers->selectionModel()->select(
+        registerType, QItemSelectionModel::ClearAndSelect);
+    window.activateWindow();
+    registers->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
+    const auto actions = window.findChildren<QAction*>();
+    const auto paste = std::ranges::find_if(
+        actions, [](const QAction* action) {
+            return action->shortcut().matches(QKeySequence::Paste) ==
+                   QKeySequence::ExactMatch;
+        });
+    QVERIFY(paste != actions.end());
+    window.statusBar()->clearMessage();
+    (*paste)->trigger();
+    QCoreApplication::processEvents();
+    QCOMPARE(
+        regmap::findRegister(*controller->workspace(), "reg-control")->type,
+        regmap::FieldType::enumeration);
+    QCOMPARE(controller->undoDepth(), registerUndoDepth);
+    QVERIFY2(
+        window.statusBar()->currentMessage().contains(
+            QStringLiteral("individually confirmed")),
+        qPrintable(window.statusBar()->currentMessage()));
+
+    bool registerAcceptSeen = false;
+    QTimer::singleShot(0, &window, [&] {
+        auto* dialog =
+            qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (dialog == nullptr) {
+            return;
+        }
+        registerAcceptSeen = true;
+        if (auto* confirm = dialog->button(QMessageBox::Yes)) {
+            QTest::mouseClick(confirm, Qt::LeftButton);
+        } else {
+            dialog->reject();
+        }
+    });
+    QVERIFY(registers->model()->setData(
+        registers->model()->index(controlRow, 4),
+        QStringLiteral("uint32")));
+    QCoreApplication::processEvents();
+    QVERIFY(registerAcceptSeen);
+    const auto* numeric =
+        regmap::findRegister(*controller->workspace(), "reg-control");
+    QVERIFY(numeric != nullptr);
+    QCOMPARE(numeric->type, regmap::FieldType::unsignedInteger);
+    QVERIFY(numeric->enumValues.empty());
+    QCOMPARE(controller->undoDepth(), registerUndoDepth + 1);
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("2 Enum values removed")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Ctrl+Z")));
+
+    controller->undo();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findEnumValue(
+            *controller->workspace(), "register-enum-zero") != nullptr,
+        2000);
+    QVERIFY(regmap::findEnumValue(
+                *controller->workspace(), "register-enum-one") != nullptr);
+    QCOMPARE(controller->undoDepth(), registerUndoDepth);
+
+    const int statusRow =
+        registerRowForId(QStringLiteral("reg-status"));
+    QVERIFY(statusRow >= 0);
+    Q_EMIT registers->clicked(
+        registers->model()->index(statusRow, 5));
+    QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
+    int readyRow = -1;
+    for (int row = 0; row < fields->model()->rowCount(); ++row) {
+        if (fields->model()
+                ->index(row, 0)
+                .data(Qt::UserRole + 1)
+                .toString() == QStringLiteral("field-ready")) {
+            readyRow = row;
+            break;
+        }
+    }
+    QVERIFY(readyRow >= 0);
+    const std::size_t fieldUndoDepth = controller->undoDepth();
+    auto* fieldClipboardData = new QMimeData;
+    fieldClipboardData->setText(QStringLiteral("bits"));
+    QApplication::clipboard()->setMimeData(fieldClipboardData);
+    const QModelIndex fieldType = fields->model()->index(readyRow, 5);
+    fields->setCurrentIndex(fieldType);
+    fields->selectionModel()->select(
+        fieldType, QItemSelectionModel::ClearAndSelect);
+    window.activateWindow();
+    fields->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
+    window.statusBar()->clearMessage();
+    (*paste)->trigger();
+    QCoreApplication::processEvents();
+    QCOMPARE(
+        regmap::findField(*controller->workspace(), "field-ready")->type,
+        regmap::FieldType::enumeration);
+    QCOMPARE(controller->undoDepth(), fieldUndoDepth);
+    QVERIFY2(
+        window.statusBar()->currentMessage().contains(
+            QStringLiteral("individually confirmed")),
+        qPrintable(window.statusBar()->currentMessage()));
+
+    bool fieldAcceptSeen = false;
+    QString fieldAcceptFailure;
+    QTimer::singleShot(0, &window, [&] {
+        auto* dialog =
+            qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (dialog == nullptr) {
+            fieldAcceptFailure =
+                QStringLiteral("Field Enum confirmation did not open");
+            return;
+        }
+        fieldAcceptSeen = true;
+        if (dialog->windowTitle() !=
+                QStringLiteral("Change Enum Field Type") ||
+            !dialog->text().contains(QStringLiteral("READY")) ||
+            !dialog->text().contains(QStringLiteral("2 Enum values"))) {
+            fieldAcceptFailure =
+                QStringLiteral("Field Enum confirmation lacks impact details");
+        }
+        if (auto* confirm = dialog->button(QMessageBox::Yes)) {
+            QTest::mouseClick(confirm, Qt::LeftButton);
+        } else {
+            dialog->reject();
+        }
+    });
+    QVERIFY(fields->model()->setData(
+        fields->model()->index(readyRow, 5), QStringLiteral("bits")));
+    QCoreApplication::processEvents();
+    QVERIFY2(fieldAcceptFailure.isEmpty(), qPrintable(fieldAcceptFailure));
+    QVERIFY(fieldAcceptSeen);
+    const auto* bitsField =
+        regmap::findField(*controller->workspace(), "field-ready");
+    QVERIFY(bitsField != nullptr);
+    QCOMPARE(bitsField->type, regmap::FieldType::bits);
+    QVERIFY(bitsField->enumValues.empty());
+    QCOMPARE(controller->undoDepth(), fieldUndoDepth + 1);
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("2 Enum values removed")));
+
+    controller->undo();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findEnumValue(
+            *controller->workspace(), "field-enum-zero") != nullptr,
+        2000);
+    QVERIFY(regmap::findEnumValue(
+                *controller->workspace(), "field-enum-one") != nullptr);
+    QCOMPARE(controller->undoDepth(), fieldUndoDepth);
 
     makeGeneratedFilesWritable(directory.path());
 }

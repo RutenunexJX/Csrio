@@ -3815,6 +3815,8 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                                  *parsed == regmap::FieldType::unsignedInteger;
             const bool clearsEnumValues =
                 currentField != nullptr && !enumerationLike && !currentField->enumValues.empty();
+            const std::size_t removedEnumValueCount =
+                clearsEnumValues ? currentField->enumValues.size() : 0;
             const bool clearsRange = currentField != nullptr && !numeric &&
                                      (currentField->minimumValue || currentField->maximumValue);
             const std::vector<regmap::EnumValue> defaultEnumValues =
@@ -3935,6 +3937,35 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                             .arg(memberLabel));
                 }
             }
+            if (clearsEnumValues) {
+                const QString enumLabel =
+                    removedEnumValueCount == 1
+                        ? QStringLiteral("1 Enum value")
+                        : QStringLiteral("%1 Enum values")
+                              .arg(removedEnumValueCount);
+                const QString expectation =
+                    QStringLiteral(
+                        "an individually confirmed Type change before removing %1")
+                        .arg(enumLabel);
+                if (!reportFeedback) {
+                    return reject(expectation);
+                }
+                const auto answer = QMessageBox::warning(
+                    this, QStringLiteral("Change Enum Field Type"),
+                    QStringLiteral(
+                        "Change Field %1 to %2?\n\n"
+                        "This removes %3 and their descriptions.\n\n"
+                        "Ctrl+Z can restore the complete Enum definition.")
+                        .arg(fromUtf8(currentField->name),
+                             value.trimmed(), enumLabel),
+                    QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+                if (answer != QMessageBox::Yes) {
+                    return cancelEdit(
+                        expectation,
+                        QStringLiteral("Type change cancelled · %1 kept")
+                            .arg(enumLabel));
+                }
+            }
             const PropertyEditResult result = commit(mutation);
             if (result.status == PropertyEditStatus::changed && reportFeedback) {
                 QStringList changes;
@@ -3951,9 +3982,16 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                 if (!defaultEnumValues.empty()) {
                     changes << enumValuesCreatedText(defaultEnumValues.size());
                 }
-                if (clearsEnumValues || clearsRange) {
+                if (clearsEnumValues) {
+                    changes << (
+                        removedEnumValueCount == 1
+                            ? QStringLiteral("1 Enum value removed")
+                            : QStringLiteral("%1 Enum values removed")
+                                  .arg(removedEnumValueCount));
+                }
+                if (clearsRange) {
                     changes << QStringLiteral(
-                        "incompatible Enum/Range data cleared");
+                        "incompatible Range data cleared");
                 }
                 if (!changes.empty()) {
                     statusBar()->showMessage(
@@ -4197,6 +4235,8 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
             const bool numeric = *parsed == regmap::FieldType::signedInteger ||
                                  *parsed == regmap::FieldType::unsignedInteger;
             const bool clearsEnumValues = !enumerationLike && !current->enumValues.empty();
+            const std::size_t removedEnumValueCount =
+                clearsEnumValues ? current->enumValues.size() : 0;
             const bool clearsRange =
                 !numeric && (current->minimumValue || current->maximumValue);
             const std::vector<regmap::EnumValue> defaultEnumValues =
@@ -4284,11 +4324,38 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                             .arg(fieldLabel));
                 }
             }
+            if (clearsEnumValues) {
+                const QString enumLabel =
+                    removedEnumValueCount == 1
+                        ? QStringLiteral("1 Enum value")
+                        : QStringLiteral("%1 Enum values")
+                              .arg(removedEnumValueCount);
+                const QString expectation =
+                    QStringLiteral(
+                        "an individually confirmed Type change before removing %1")
+                        .arg(enumLabel);
+                if (!reportFeedback) {
+                    return reject(expectation);
+                }
+                const auto answer = QMessageBox::warning(
+                    this, QStringLiteral("Change Enum Register Type"),
+                    QStringLiteral(
+                        "Change Register %1 to %2?\n\n"
+                        "This removes %3 and their descriptions.\n\n"
+                        "Ctrl+Z can restore the complete Enum definition.")
+                        .arg(fromUtf8(current->name),
+                             value.trimmed(), enumLabel),
+                    QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+                if (answer != QMessageBox::Yes) {
+                    return cancelEdit(
+                        expectation,
+                        QStringLiteral("Type change cancelled · %1 kept")
+                            .arg(enumLabel));
+                }
+            }
             const PropertyEditResult result = commit(mutation);
             if (result.status == PropertyEditStatus::changed && reportFeedback) {
                 QStringList changes;
-                const bool normalized =
-                    clearsEnumValues || clearsRange || normalizesReserved;
                 if (removesFields) {
                     changes << (
                         removedFieldCount == 1
@@ -4302,7 +4369,14 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                 if (!defaultEnumValues.empty()) {
                     changes << enumValuesCreatedText(defaultEnumValues.size());
                 }
-                if (normalized) {
+                if (clearsEnumValues) {
+                    changes << (
+                        removedEnumValueCount == 1
+                            ? QStringLiteral("1 Enum value removed")
+                            : QStringLiteral("%1 Enum values removed")
+                                  .arg(removedEnumValueCount));
+                }
+                if (clearsRange || normalizesReserved) {
                     changes << QStringLiteral(
                         "incompatible data cleared or normalized");
                 }
