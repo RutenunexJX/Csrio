@@ -77,6 +77,7 @@ private slots:
     void opensProjectAndPopulatesEditableViews();
     void navigatesHierarchyAndOpensFieldsExplicitly();
     void hierarchyContextActionsUseRightClickedTarget();
+    void confirmsHierarchyDeletionImpactAndRestoresIt();
     void placesNewHierarchyObjectsWithoutAddressErrors();
     void copiesAndPastesHierarchyObjects();
     void movesHierarchyObjectsByDrag();
@@ -1448,8 +1449,10 @@ void GuiSmokeTests::hierarchyContextActionsUseRightClickedTarget()
         const QString text = dialog->text();
         confirmationDescribesTarget =
             text.contains(QStringLiteral("TARGET_PAGE")) &&
-            text.contains(QStringLiteral("2 block(s)")) &&
-            text.contains(QStringLiteral("2 register(s)"));
+            text.contains(QStringLiteral("2 Blocks")) &&
+            text.contains(QStringLiteral("2 Registers")) &&
+            dialog->defaultButton() ==
+                dialog->button(QMessageBox::No);
         if (auto* confirm = dialog->button(QMessageBox::Yes)) {
             QTest::mouseClick(confirm, Qt::LeftButton);
         } else {
@@ -1503,6 +1506,199 @@ void GuiSmokeTests::hierarchyContextActionsUseRightClickedTarget()
     QCOMPARE(registers->model()->index(registerBRow, 0).data().toString(),
              QStringLiteral("NEW_REGISTER"));
     QVERIFY(!registerExists(QStringLiteral("reg-status")));
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::confirmsHierarchyDeletionImpactAndRestoresIt()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest =
+        directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+
+    auto* hierarchy =
+        window.findChild<QTreeView*>(QStringLiteral("hierarchyView"));
+    auto* controller = window.findChild<ProjectController*>();
+    QVERIFY(hierarchy != nullptr);
+    QVERIFY(controller != nullptr);
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Configure hierarchy deletion fixture"),
+        [](regmap::Workspace& workspace) {
+            auto* page = regmap::findAddressSpace(workspace, "space-main");
+            auto* block =
+                regmap::findRegisterBlock(workspace, "block-control");
+            auto* status = regmap::findRegister(workspace, "reg-status");
+            auto* ready = regmap::findField(workspace, "field-ready");
+            QVERIFY(page != nullptr);
+            QVERIFY(block != nullptr);
+            QVERIFY(status != nullptr);
+            QVERIFY(ready != nullptr);
+            page->description = "Page definition.";
+            block->description = "Block definition.";
+            status->description = "Status register definition.";
+            status->initialValue = regmap::UnsignedValue(1);
+            status->resetValue = regmap::UnsignedValue(1);
+            ready->resetValue = regmap::UnsignedValue(1);
+            ready->description = "Ready field definition.";
+        }));
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+
+    struct DeleteInvocation {
+        bool dialogSeen{false};
+        bool defaultedToCancel{false};
+        QString text;
+    };
+    const auto invokeDelete =
+        [&](const QString& objectId,
+            QMessageBox::StandardButton response) {
+            DeleteInvocation result;
+            const QModelIndex target =
+                hierarchyIndexByObjectId(hierarchy->model(), objectId);
+            if (!target.isValid()) {
+                return result;
+            }
+            window.activateWindow();
+            hierarchy->expandAll();
+            hierarchy->setCurrentIndex(target);
+            hierarchy->scrollTo(target);
+            hierarchy->setFocus(Qt::OtherFocusReason);
+            QCoreApplication::processEvents();
+            QTest::qWait(10);
+            QTimer::singleShot(0, &window, [&] {
+                auto* dialog =
+                    qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+                if (dialog == nullptr) {
+                    return;
+                }
+                result.dialogSeen = true;
+                result.text = dialog->text();
+                result.defaultedToCancel =
+                    dialog->windowTitle() ==
+                        QStringLiteral("Delete Register-Map Objects") &&
+                    dialog->defaultButton() ==
+                        dialog->button(QMessageBox::No);
+                if (auto* button = dialog->button(response)) {
+                    QTest::mouseClick(button, Qt::LeftButton);
+                } else {
+                    dialog->reject();
+                }
+            });
+            QTest::keyClick(hierarchy, Qt::Key_Delete);
+            return result;
+        };
+
+    const std::size_t initialUndoDepth = controller->undoDepth();
+    const DeleteInvocation cancelledBlock =
+        invokeDelete(QStringLiteral("block-control"), QMessageBox::No);
+    QVERIFY(cancelledBlock.dialogSeen);
+    QVERIFY(cancelledBlock.defaultedToCancel);
+    QVERIFY(cancelledBlock.text.contains(QStringLiteral("block Control")));
+    QVERIFY(cancelledBlock.text.contains(QStringLiteral("1 Register")));
+    QVERIFY(cancelledBlock.text.contains(QStringLiteral("1 Field")));
+    QVERIFY(cancelledBlock.text.contains(QStringLiteral("1 tag")));
+    QVERIFY(cancelledBlock.text.contains(
+        QStringLiteral("3 non-zero Initial/Reset values")));
+    QVERIFY(cancelledBlock.text.contains(QStringLiteral("3 descriptions")));
+    QVERIFY(cancelledBlock.text.contains(QStringLiteral("Ctrl+Z")));
+    QVERIFY(hierarchyIndexByObjectId(
+                hierarchy->model(), QStringLiteral("block-control"))
+                .isValid());
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Delete cancelled")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("block Control kept")));
+
+    const DeleteInvocation deletedBlock =
+        invokeDelete(QStringLiteral("block-control"), QMessageBox::Yes);
+    QVERIFY(deletedBlock.dialogSeen);
+    QVERIFY(deletedBlock.defaultedToCancel);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !hierarchyIndexByObjectId(
+             hierarchy->model(), QStringLiteral("block-control"))
+             .isValid(),
+        2000);
+    QVERIFY(hierarchyIndexByObjectId(
+                hierarchy->model(), QStringLiteral("space-main"))
+                .isValid());
+    QCOMPARE(controller->undoDepth(), initialUndoDepth + 1);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Deleted block Control")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Ctrl+Z")));
+
+    controller->undo();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        hierarchyIndexByObjectId(
+            hierarchy->model(), QStringLiteral("block-control"))
+            .isValid(),
+        2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+    QVERIFY(regmap::findField(*controller->workspace(), "field-ready") !=
+            nullptr);
+
+    const DeleteInvocation cancelledPage =
+        invokeDelete(QStringLiteral("space-main"), QMessageBox::No);
+    QVERIFY(cancelledPage.dialogSeen);
+    QVERIFY(cancelledPage.defaultedToCancel);
+    QVERIFY(cancelledPage.text.contains(QStringLiteral("page Main")));
+    QVERIFY(cancelledPage.text.contains(QStringLiteral("1 Block")));
+    QVERIFY(cancelledPage.text.contains(QStringLiteral("1 Register")));
+    QVERIFY(cancelledPage.text.contains(QStringLiteral("1 Field")));
+    QVERIFY(cancelledPage.text.contains(QStringLiteral("1 tag")));
+    QVERIFY(cancelledPage.text.contains(
+        QStringLiteral("3 non-zero Initial/Reset values")));
+    QVERIFY(cancelledPage.text.contains(QStringLiteral("4 descriptions")));
+    QVERIFY(hierarchyIndexByObjectId(
+                hierarchy->model(), QStringLiteral("space-main"))
+                .isValid());
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("page Main kept")));
+
+    const DeleteInvocation deletedPage =
+        invokeDelete(QStringLiteral("space-main"), QMessageBox::Yes);
+    QVERIFY(deletedPage.dialogSeen);
+    QVERIFY(deletedPage.defaultedToCancel);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !hierarchyIndexByObjectId(
+             hierarchy->model(), QStringLiteral("space-main"))
+             .isValid(),
+        2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth + 1);
+
+    controller->undo();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        hierarchyIndexByObjectId(
+            hierarchy->model(), QStringLiteral("space-main"))
+            .isValid(),
+        2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+    const auto* restored =
+        regmap::findRegister(*controller->workspace(), "reg-status");
+    const auto* restoredField =
+        regmap::findField(*controller->workspace(), "field-ready");
+    QVERIFY(restored != nullptr);
+    QVERIFY(restoredField != nullptr);
+    QCOMPARE(restored->description,
+             std::string("Status register definition."));
+    QVERIFY(restored->initialValue ==
+            std::optional(regmap::UnsignedValue(1)));
+    QVERIFY(restored->resetValue ==
+            std::optional(regmap::UnsignedValue(1)));
+    QCOMPARE(restoredField->description,
+             std::string("Ready field definition."));
+    QVERIFY(restoredField->resetValue ==
+            std::optional(regmap::UnsignedValue(1)));
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
 
     makeGeneratedFilesWritable(directory.path());
 }

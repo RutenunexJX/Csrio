@@ -25,6 +25,10 @@ Workspace -> Page (Address Space) -> Register Block -> Register -> Field -> Enum
   inline enum-value table.
 - Hierarchy context menus create Pages, Register Blocks, and Registers at their natural parent;
   rename, delete, expand, and collapse remain local to the navigation pane.
+  Deleting a Page or Block recursively reports how many Blocks, Registers, Fields/Members, Enum
+  values, Range bounds, tags, non-zero Initial/Reset values, and descriptions will be removed.
+  The confirmation defaults to cancel, cancellation explicitly reports that the hierarchy was
+  kept, and one `Ctrl+Z` restores the complete deleted subtree.
 - Structure-register rows expose a dedicated **Open (N)** Fields button.
 - Trailing `+` rows for register/field creation; page and block base addresses appear once in
   the context bar above the register table and remain directly editable.

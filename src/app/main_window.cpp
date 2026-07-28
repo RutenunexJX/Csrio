@@ -1359,6 +1359,63 @@ void accumulateFieldDeletionImpact(const std::vector<regmap::Field>& fields,
     }
 }
 
+void accumulateRegisterDeletionImpact(const regmap::Register& reg,
+                                      RegisterDeletionImpact& impact)
+{
+    impact.enumValueCount += reg.enumValues.size();
+    impact.rangeBoundCount +=
+        static_cast<std::size_t>(reg.minimumValue.has_value()) +
+        reg.maximumValue.has_value();
+    impact.tagCount += reg.tags.size();
+    impact.nonZeroValueCount +=
+        static_cast<std::size_t>(
+            reg.initialValue.has_value() && !reg.initialValue->isZero()) +
+        static_cast<std::size_t>(
+            reg.resetValue.has_value() && !reg.resetValue->isZero());
+    impact.descriptionCount +=
+        static_cast<std::size_t>(!reg.description.empty()) +
+        static_cast<std::size_t>(
+            std::ranges::count_if(reg.enumValues, [](const regmap::EnumValue& value) {
+                return !value.description.empty();
+            }));
+    accumulateFieldDeletionImpact(reg.fields, impact);
+}
+
+void appendDeletionCount(QStringList& output, std::size_t count,
+                         const QString& singular, const QString& plural)
+{
+    if (count == 0) {
+        return;
+    }
+    output << (
+        count == 1
+            ? QStringLiteral("1 %1").arg(singular)
+            : QStringLiteral("%1 %2").arg(count).arg(plural));
+}
+
+[[nodiscard]] QStringList
+configuredDeletionItems(const RegisterDeletionImpact& impact)
+{
+    QStringList result;
+    appendDeletionCount(result, impact.fieldCount, QStringLiteral("Field"),
+                        QStringLiteral("Fields/Members"));
+    appendDeletionCount(result, impact.enumValueCount,
+                        QStringLiteral("Enum value"),
+                        QStringLiteral("Enum values"));
+    appendDeletionCount(result, impact.rangeBoundCount,
+                        QStringLiteral("Range bound"),
+                        QStringLiteral("Range bounds"));
+    appendDeletionCount(result, impact.tagCount, QStringLiteral("tag"),
+                        QStringLiteral("tags"));
+    appendDeletionCount(result, impact.nonZeroValueCount,
+                        QStringLiteral("non-zero Initial/Reset value"),
+                        QStringLiteral("non-zero Initial/Reset values"));
+    appendDeletionCount(result, impact.descriptionCount,
+                        QStringLiteral("description"),
+                        QStringLiteral("descriptions"));
+    return result;
+}
+
 [[nodiscard]] std::optional<regmap::UnsignedValue>
 effectiveFieldReset(const regmap::Field& field, const regmap::Register* owner)
 {
@@ -6281,25 +6338,7 @@ void MainWindow::deleteSelectedRegisterAndShift()
             blockId = block.id;
             registerName = iterator->name;
             registerOffset = iterator->offset;
-            contentImpact.enumValueCount = iterator->enumValues.size();
-            contentImpact.rangeBoundCount =
-                static_cast<std::size_t>(iterator->minimumValue.has_value()) +
-                iterator->maximumValue.has_value();
-            contentImpact.tagCount = iterator->tags.size();
-            contentImpact.nonZeroValueCount =
-                static_cast<std::size_t>(
-                    iterator->initialValue.has_value() &&
-                    !iterator->initialValue->isZero()) +
-                static_cast<std::size_t>(
-                    iterator->resetValue.has_value() &&
-                    !iterator->resetValue->isZero());
-            contentImpact.descriptionCount =
-                static_cast<std::size_t>(!iterator->description.empty()) +
-                static_cast<std::size_t>(std::ranges::count_if(
-                    iterator->enumValues, [](const regmap::EnumValue& value) {
-                        return !value.description.empty();
-                    }));
-            accumulateFieldDeletionImpact(iterator->fields, contentImpact);
+            accumulateRegisterDeletionImpact(*iterator, contentImpact);
             const auto extent = checkedRegisterExtent(*iterator);
             if (!extent) {
                 statusBar()->showMessage(
@@ -6403,30 +6442,7 @@ void MainWindow::deleteSelectedRegisterAndShift()
                      hex(firstFollowingOffset - shift),
                      hex(lastFollowingOffset - shift));
     }
-    QStringList removedContent;
-    const auto appendCount =
-        [&removedContent](std::size_t count, const QString& singular,
-                          const QString& plural) {
-            if (count != 0) {
-                removedContent << (
-                    count == 1
-                        ? QStringLiteral("1 %1").arg(singular)
-                        : QStringLiteral("%1 %2").arg(count).arg(plural));
-            }
-        };
-    appendCount(contentImpact.fieldCount, QStringLiteral("Field"),
-                QStringLiteral("Fields/Members"));
-    appendCount(contentImpact.enumValueCount, QStringLiteral("Enum value"),
-                QStringLiteral("Enum values"));
-    appendCount(contentImpact.rangeBoundCount, QStringLiteral("Range bound"),
-                QStringLiteral("Range bounds"));
-    appendCount(contentImpact.tagCount, QStringLiteral("tag"),
-                QStringLiteral("tags"));
-    appendCount(contentImpact.nonZeroValueCount,
-                QStringLiteral("non-zero Initial/Reset value"),
-                QStringLiteral("non-zero Initial/Reset values"));
-    appendCount(contentImpact.descriptionCount, QStringLiteral("description"),
-                QStringLiteral("descriptions"));
+    const QStringList removedContent = configuredDeletionItems(contentImpact);
     const QString contentSummary =
         removedContent.empty()
             ? QStringLiteral(
@@ -6675,19 +6691,50 @@ void MainWindow::deleteObject(const std::string& id, bool deletingEnumValue)
     bool deletingField = false;
     if (const auto* page = regmap::findAddressSpace(*workspace, id)) {
         deletingPage = true;
+        RegisterDeletionImpact impact;
+        impact.descriptionCount +=
+            static_cast<std::size_t>(!page->description.empty());
         std::size_t registerCount = 0;
         for (const auto& block : page->blocks) {
+            impact.descriptionCount +=
+                static_cast<std::size_t>(!block.description.empty());
             registerCount += block.registers.size();
+            for (const auto& reg : block.registers) {
+                accumulateRegisterDeletionImpact(reg, impact);
+            }
         }
         label = QStringLiteral("page %1").arg(fromUtf8(page->name));
-        compositeImpact = QStringLiteral("This removes %1 block(s) and %2 register(s).")
-                              .arg(page->blocks.size())
-                              .arg(registerCount);
+        QStringList removedContent;
+        appendDeletionCount(removedContent, page->blocks.size(),
+                            QStringLiteral("Block"), QStringLiteral("Blocks"));
+        appendDeletionCount(removedContent, registerCount,
+                            QStringLiteral("Register"),
+                            QStringLiteral("Registers"));
+        removedContent.append(configuredDeletionItems(impact));
+        compositeImpact =
+            removedContent.empty()
+                ? QStringLiteral("This Page contains no Blocks or Registers.")
+                : QStringLiteral("This removes: %1.")
+                      .arg(removedContent.join(QStringLiteral(", ")));
     } else if (const auto* block = regmap::findRegisterBlock(*workspace, id)) {
         deletingBlock = true;
         label = QStringLiteral("block %1").arg(fromUtf8(block->name));
+        RegisterDeletionImpact impact;
+        impact.descriptionCount +=
+            static_cast<std::size_t>(!block->description.empty());
+        for (const auto& reg : block->registers) {
+            accumulateRegisterDeletionImpact(reg, impact);
+        }
+        QStringList removedContent;
+        appendDeletionCount(removedContent, block->registers.size(),
+                            QStringLiteral("Register"),
+                            QStringLiteral("Registers"));
+        removedContent.append(configuredDeletionItems(impact));
         compositeImpact =
-            QStringLiteral("This removes %1 register(s).").arg(block->registers.size());
+            removedContent.empty()
+                ? QStringLiteral("This Block contains no Registers.")
+                : QStringLiteral("This removes: %1.")
+                      .arg(removedContent.join(QStringLiteral(", ")));
     } else if (const auto* reg = regmap::findRegister(*workspace, id)) {
         deletingRegister = true;
         label = QStringLiteral("register %1").arg(fromUtf8(reg->name));
@@ -6714,13 +6761,18 @@ void MainWindow::deleteObject(const std::string& id, bool deletingEnumValue)
             QStringLiteral("The target no longer exists; reopen the menu and try again"), 5000);
         return;
     }
-    if (!compositeImpact.isEmpty() &&
-        QMessageBox::warning(this, QStringLiteral("Delete Register-Map Objects"),
-                             QStringLiteral("Delete %1?\n\n%2\n\nThis can be restored with Ctrl+Z.")
-                                 .arg(label, compositeImpact),
-                             QMessageBox::Yes | QMessageBox::No,
-                             QMessageBox::No) != QMessageBox::Yes) {
-        return;
+    if (!compositeImpact.isEmpty()) {
+        const auto answer = QMessageBox::warning(
+            this, QStringLiteral("Delete Register-Map Objects"),
+            QStringLiteral("Delete %1?\n\n%2\n\nThis can be restored with Ctrl+Z.")
+                .arg(label, compositeImpact),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (answer != QMessageBox::Yes) {
+            statusBar()->showMessage(
+                QStringLiteral("Delete cancelled · %1 kept").arg(label),
+                6000);
+            return;
+        }
     }
 
     if (controller_.editWorkspace(QStringLiteral("Delete %1").arg(label),
