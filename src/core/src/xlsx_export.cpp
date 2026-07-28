@@ -258,14 +258,28 @@ void configureColumns(QXlsx::Document& document, const std::vector<double>& widt
     return accessText(field.softwareAccess);
 }
 
+[[nodiscard]] QString withoutBoundaryApostrophes(QString value)
+{
+    value = value.trimmed();
+    while (value.startsWith(QLatin1Char('\''))) {
+        value.remove(0, 1);
+        value = value.trimmed();
+    }
+    while (value.endsWith(QLatin1Char('\''))) {
+        value.chop(1);
+        value = value.trimmed();
+    }
+    return value;
+}
+
 [[nodiscard]] QString sanitizedSheetName(const QString& requested, const QStringList& usedNames)
 {
-    QString base = requested.trimmed();
+    QString base = withoutBoundaryApostrophes(requested);
     for (const QChar invalid : QStringLiteral("[]:*?/\\"))
         base.replace(invalid, QLatin1Char('_'));
+    base = withoutBoundaryApostrophes(base.left(31));
     if (base.isEmpty())
         base = QStringLiteral("Page");
-    base = base.left(31);
 
     auto alreadyUsed = [&usedNames](const QString& candidate) {
         return std::ranges::any_of(usedNames, [&candidate](const QString& used) {

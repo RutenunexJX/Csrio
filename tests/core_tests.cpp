@@ -8,6 +8,7 @@
 #include "regmap/core/sync_diff.hpp"
 #include "regmap/core/unsigned_value.hpp"
 #include "regmap/core/validation.hpp"
+#include "regmap/core/xlsx_export.hpp"
 #include "regmap/core/workspace_store.hpp"
 #include "regmap/core/three_way_merge.hpp"
 
@@ -59,6 +60,7 @@ private slots:
     void rejectsCorruptSynchronizationBaseline();
     void validatesModelConflicts();
     void generatesReadOnlyArtifacts();
+    void sanitizesXlsxWorksheetNames();
     void diffsByStableId();
 };
 
@@ -1094,6 +1096,68 @@ void CoreTests::generatesReadOnlyArtifacts()
     for (const auto& artifact : generation.artifacts) {
         QFile::setPermissions(QString::fromStdWString(artifact.path.wstring()),
                               QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    }
+}
+
+void CoreTests::sanitizesXlsxWorksheetNames()
+{
+    regmap::Workspace workspace;
+    workspace.id = "workspace-sheet-names";
+    workspace.name = "Worksheet names";
+
+    const auto appendPage = [&workspace](std::string name) {
+        regmap::AddressSpace page;
+        page.id = "page-" + std::to_string(workspace.addressSpaces.size());
+        page.name = std::move(name);
+        workspace.addressSpaces.push_back(std::move(page));
+    };
+
+    const std::string longName = "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890";
+    appendPage("'Status'");
+    appendPage("status");
+    appendPage(longName);
+    appendPage(longName);
+    appendPage("ABCDEFGHIJKLMNOPQRSTUVWXYZ1234'TAIL");
+    appendPage("[]:*?/\\");
+    appendPage("   ");
+    appendPage("''");
+
+    const auto exported = regmap::exportReadOnlyWorkbook(workspace);
+    for (const auto& diagnostic : exported.diagnostics) {
+        qWarning().noquote() << QString::fromStdString(diagnostic.code + ": " +
+                                                     diagnostic.message);
+    }
+    QVERIFY(exported.diagnostics.empty());
+    QVERIFY(!exported.bytes.empty());
+
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString path = directory.filePath(QStringLiteral("worksheet-names.xlsx"));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    const QByteArray bytes(reinterpret_cast<const char*>(exported.bytes.data()),
+                           static_cast<qsizetype>(exported.bytes.size()));
+    QCOMPARE(file.write(bytes), bytes.size());
+    file.close();
+
+    QXlsx::Document workbook(path);
+    QVERIFY(workbook.load());
+    const QStringList names = workbook.sheetNames();
+    QCOMPARE(names.size(), 8);
+    QCOMPARE(names.at(0), QStringLiteral("Status"));
+    QCOMPARE(names.at(1), QStringLiteral("status (2)"));
+    QCOMPARE(names.at(2), QString::fromStdString(longName).left(31));
+    QCOMPARE(names.at(3), names.at(2).left(27) + QStringLiteral(" (2)"));
+    QCOMPARE(names.at(4), QStringLiteral("ABCDEFGHIJKLMNOPQRSTUVWXYZ1234"));
+    QCOMPARE(names.at(6), QStringLiteral("Page"));
+    QCOMPARE(names.at(7), QStringLiteral("Page (2)"));
+
+    for (qsizetype index = 0; index < names.size(); ++index) {
+        QVERIFY(names.at(index).size() <= 31);
+        QVERIFY(!names.at(index).startsWith(QLatin1Char('\'')));
+        QVERIFY(!names.at(index).endsWith(QLatin1Char('\'')));
+        for (qsizetype previous = 0; previous < index; ++previous)
+            QVERIFY(names.at(previous).compare(names.at(index), Qt::CaseInsensitive) != 0);
     }
 }
 
