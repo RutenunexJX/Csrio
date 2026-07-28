@@ -1951,14 +1951,19 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     const int nextEnumRow = enums->model()->rowCount() - 1;
     Q_EMIT enums->clicked(enums->model()->index(nextEnumRow, 0));
     QString guardedEnumId;
+    int guardedEnumRow = -1;
     for (int row = 0; row < enums->model()->rowCount(); ++row) {
         const QString candidate =
             enums->model()->index(row, 0).data(Qt::UserRole + 1).toString();
         if (!candidate.isEmpty() && candidate != enumId) {
             guardedEnumId = candidate;
+            guardedEnumRow = row;
         }
     }
     QVERIFY(!guardedEnumId.isEmpty());
+    QVERIFY(guardedEnumRow >= 0);
+    QCOMPARE(enums->model()->index(guardedEnumRow, 0).data().toString(),
+             QStringLiteral("NEW_VALUE_2"));
     QCOMPARE(registers->currentIndex().row(), 1);
     registers->setCurrentIndex(registers->model()->index(0, 0));
     QCoreApplication::processEvents();
@@ -2393,7 +2398,7 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     Q_EMIT enums->clicked(enums->model()->index(fieldEnumAddRow, 0));
     QTRY_VERIFY_WITH_TIMEOUT(visibleEnumEditor() != nullptr, 2000);
     auto* fieldEnumNameEditor = visibleEnumEditor();
-    QCOMPARE(fieldEnumNameEditor->text(), QStringLiteral("NEW_VALUE"));
+    QCOMPARE(fieldEnumNameEditor->text(), QStringLiteral("NEW_VALUE_2"));
     const QString fieldEnumId =
         enums->currentIndex().data(Qt::UserRole + 1).toString();
     QVERIFY(!fieldEnumId.isEmpty());

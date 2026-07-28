@@ -4115,9 +4115,19 @@ void MainWindow::addEnumValue()
         return;
     }
 
+    std::string name = "NEW_VALUE";
+    for (std::size_t suffix = 2;
+         std::ranges::any_of(
+             currentValues, [&](const regmap::EnumValue& item) {
+                 return item.name == name;
+             });
+         ++suffix) {
+        name = "NEW_VALUE_" + std::to_string(suffix);
+    }
+
     regmap::EnumValue enumValue;
     enumValue.id = regmap::makeStableObjectId(*workspace, "enum");
-    enumValue.name = "NEW_VALUE";
+    enumValue.name = std::move(name);
     enumValue.value = regmap::UnsignedValue(value);
     const std::string newId = enumValue.id;
     const std::string ownerId = field != nullptr ? field->id : reg->id;
