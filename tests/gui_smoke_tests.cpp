@@ -81,6 +81,7 @@ private slots:
     void switchesProjectsWithoutReusingFieldWorkspaceState();
     void reloadsProjectWithoutLosingFieldWorkspaceContext();
     void navigatesFieldProblemsAndFallsBackForHiddenFields();
+    void navigatesEnumProblemsToExactRows();
     void supportsTrailingRowsAndFieldMovement();
     void dragsFieldsAndResolvesOverlaps();
     void cancelsInterruptedFieldDrag();
@@ -1630,6 +1631,103 @@ void GuiSmokeTests::navigatesFieldProblemsAndFallsBackForHiddenFields()
 
     makeGeneratedFilesWritable(root.filePath(QStringLiteral("visible")));
     makeGeneratedFilesWritable(root.filePath(QStringLiteral("hidden")));
+}
+
+void GuiSmokeTests::navigatesEnumProblemsToExactRows()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createTwoRegisterProject(manifest);
+
+    MainWindow window;
+    window.resize(1100, 720);
+    window.show();
+    window.openProjectPath(manifest);
+    QTest::qWait(50);
+
+    auto* controller = window.findChild<ProjectController*>();
+    auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* fields = window.findChild<QTableView*>(QStringLiteral("fieldView"));
+    auto* enums = window.findChild<QTableView*>(QStringLiteral("enumView"));
+    auto* problems = window.findChild<QTableView*>(QStringLiteral("problemsView"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+    QVERIFY(enums != nullptr);
+    QVERIFY(problems != nullptr);
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Seed enum navigation diagnostics"),
+        [](regmap::Workspace& workspace) {
+            const auto enumValue = [](std::string id, std::string name,
+                                      std::uint64_t value) {
+                regmap::EnumValue result;
+                result.id = std::move(id);
+                result.name = std::move(name);
+                result.value = regmap::UnsignedValue(value);
+                return result;
+            };
+
+            auto* registerEnum = regmap::findRegister(workspace, "reg-control");
+            auto* fieldRegister = regmap::findRegister(workspace, "reg-status");
+            if (registerEnum == nullptr || fieldRegister == nullptr ||
+                fieldRegister->fields.empty()) {
+                return;
+            }
+            registerEnum->width = 2;
+            registerEnum->type = regmap::FieldType::enumeration;
+            registerEnum->enumValues = {
+                enumValue("enum-register-off", "OFF", 0),
+                enumValue("enum-register-on", "ON", 0),
+            };
+
+            auto& fieldEnum = fieldRegister->fields.front();
+            fieldEnum.type = regmap::FieldType::enumeration;
+            fieldEnum.enumValues = {
+                enumValue("enum-field-low", "LOW", 0),
+                enumValue("enum-field-high", "HIGH", 0),
+            };
+        }));
+
+    const auto problemRow = [problems](const QString& objectId) {
+        for (int row = 0; row < problems->model()->rowCount(); ++row) {
+            if (problems->model()->index(row, 1).data().toString() ==
+                    QStringLiteral("RM3041") &&
+                problems->model()->index(row, 3).data().toString() == objectId) {
+                return row;
+            }
+        }
+        return -1;
+    };
+
+    QTRY_VERIFY_WITH_TIMEOUT(
+        problemRow(QStringLiteral("enum-register-on")) >= 0, 2000);
+    const int registerProblem = problemRow(QStringLiteral("enum-register-on"));
+    Q_EMIT problems->doubleClicked(problems->model()->index(registerProblem, 2));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->currentIndex().data(Qt::UserRole + 1).toString(),
+        QStringLiteral("reg-control"), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(enums->isVisible(), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        enums->currentIndex().data(Qt::UserRole + 1).toString(),
+        QStringLiteral("enum-register-on"), 2000);
+
+    QTRY_VERIFY_WITH_TIMEOUT(problemRow(QStringLiteral("enum-field-high")) >= 0, 2000);
+    const int fieldProblem = problemRow(QStringLiteral("enum-field-high"));
+    Q_EMIT problems->doubleClicked(problems->model()->index(fieldProblem, 2));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->currentIndex().data(Qt::UserRole + 1).toString(),
+        QStringLiteral("reg-status"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fields->currentIndex().data(Qt::UserRole + 1).toString(),
+        QStringLiteral("field-ready"), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(enums->isVisible(), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        enums->currentIndex().data(Qt::UserRole + 1).toString(),
+        QStringLiteral("enum-field-high"), 2000);
+
+    makeGeneratedFilesWritable(directory.path());
 }
 
 void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()

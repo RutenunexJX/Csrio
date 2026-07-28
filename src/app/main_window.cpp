@@ -4607,22 +4607,32 @@ bool MainWindow::navigateToObject(const std::string& id)
             }
             for (const auto& reg : block.registers) {
                 bool registerMatch = reg.id == id;
+                std::string enumValueId;
                 if (!registerMatch) {
-                    registerMatch = std::ranges::any_of(
+                    const auto enumValue = std::ranges::find_if(
                         reg.enumValues, [&](const regmap::EnumValue& value) {
                             return value.id == id;
                         });
+                    if (enumValue != reg.enumValues.end()) {
+                        registerMatch = true;
+                        enumValueId = enumValue->id;
+                    }
                 }
                 std::string fieldId;
                 const auto findFieldOwner =
                     [&](const auto& self, const std::vector<regmap::Field>& fields) -> bool {
                     for (const auto& field : fields) {
-                        if (field.id == id ||
-                            std::ranges::any_of(
-                                field.enumValues, [&](const regmap::EnumValue& value) {
-                                    return value.id == id;
-                                })) {
+                        if (field.id == id) {
                             fieldId = field.id;
+                            return true;
+                        }
+                        const auto enumValue = std::ranges::find_if(
+                            field.enumValues, [&](const regmap::EnumValue& value) {
+                                return value.id == id;
+                            });
+                        if (enumValue != field.enumValues.end()) {
+                            fieldId = field.id;
+                            enumValueId = enumValue->id;
                             return true;
                         }
                         if (self(self, field.members)) {
@@ -4661,6 +4671,22 @@ bool MainWindow::navigateToObject(const std::string& id)
                     registerView_->scrollTo(typeIndex);
                     registerView_->setFocus(Qt::OtherFocusReason);
                 }
+                const bool canOpenEnum =
+                    !enumValueId.empty() && (fieldId.empty() || canOpenField);
+                if (canOpenEnum) {
+                    for (int row = 0; row < enumModel_->rowCount(); ++row) {
+                        const QModelIndex enumIndex =
+                            enumModel_->index(row, enumNameColumn);
+                        if (enumIndex.data(objectIdRole).toString().toUtf8().toStdString() !=
+                            enumValueId) {
+                            continue;
+                        }
+                        enumView_->setCurrentIndex(enumIndex);
+                        enumView_->scrollTo(enumIndex);
+                        enumView_->setFocus(Qt::OtherFocusReason);
+                        break;
+                    }
+                }
                 QString located =
                     QStringLiteral("Located register %1").arg(fromUtf8(reg.name));
                 if (!fieldId.empty()) {
@@ -4668,6 +4694,13 @@ bool MainWindow::navigateToObject(const std::string& id)
                         located = QStringLiteral("Located field %1").arg(fromUtf8(field->name));
                     } else {
                         located = QStringLiteral("Located field");
+                    }
+                }
+                if (canOpenEnum) {
+                    if (const auto* enumValue =
+                            regmap::findEnumValue(*workspace, enumValueId)) {
+                        located = QStringLiteral("Located enum value %1")
+                                      .arg(fromUtf8(enumValue->name));
                     }
                 }
                 if (!fieldId.empty() && !canOpenField) {
