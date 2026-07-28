@@ -94,6 +94,11 @@ valid workspace. Right-click the Workspace to create a Page, right-click the Pag
 Register Block, and right-click the Register Block to create a Register.
 An existing project can also be passed at startup:
 
+**File > Reload from Disk** reloads a clean project directly. If Workbench has local edits, it
+reports how many changes will be discarded, identifies the project file, and explains that the
+local Undo history will be cleared. **Cancel** is the default and explicitly reports that the
+unsaved edits were kept; disk reload occurs only after choosing **Discard and Reload**.
+
 ```powershell
 build\dev-debug\src\app\RegMapWorkbench.exe examples\minimal\.regmap.yaml
 ```

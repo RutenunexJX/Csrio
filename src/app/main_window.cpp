@@ -2311,12 +2311,46 @@ void MainWindow::buildActions()
         if (!commitActiveEditor()) {
             return;
         }
-        if (controller_.isDirty() &&
-            QMessageBox::question(
-                this, QStringLiteral("Reload Project"),
-                QStringLiteral("Discard unsaved Workbench edits and reload from disk?")) !=
-                QMessageBox::Yes) {
-            return;
+        if (controller_.isDirty()) {
+            const std::size_t changeCount = controller_.changes().size();
+            const QString changeSummary =
+                changeCount == 0
+                    ? QStringLiteral("the unsaved Workbench edits")
+                    : (changeCount == 1
+                           ? QStringLiteral("1 unsaved Workbench change")
+                           : QStringLiteral("%1 unsaved Workbench changes")
+                                 .arg(changeCount));
+            QMessageBox dialog(this);
+            dialog.setIcon(QMessageBox::Warning);
+            dialog.setWindowTitle(QStringLiteral("Reload Project"));
+            dialog.setText(
+                QStringLiteral("Discard %1 and reload %2 from disk?")
+                    .arg(
+                        changeSummary,
+                        QFileInfo(fromPath(controller_.manifestPath()))
+                            .fileName()));
+            dialog.setInformativeText(
+                QStringLiteral(
+                    "The current Workbench model will be replaced by the saved "
+                    "project and managed RTL. Undo history for the discarded "
+                    "local edits will be cleared.\n\nUse Save & Sync first if "
+                    "you need to keep these edits."));
+            auto* reload = dialog.addButton(
+                QStringLiteral("Discard and Reload"),
+                QMessageBox::DestructiveRole);
+            reload->setObjectName(
+                QStringLiteral("confirmReloadFromDiskButton"));
+            auto* cancel = dialog.addButton(QMessageBox::Cancel);
+            dialog.setDefaultButton(cancel);
+            dialog.setEscapeButton(cancel);
+            dialog.exec();
+            if (dialog.clickedButton() != reload) {
+                statusBar()->showMessage(
+                    QStringLiteral(
+                        "Reload cancelled · unsaved Workbench edits kept"),
+                    7000);
+                return;
+            }
         }
         controller_.reload();
     });

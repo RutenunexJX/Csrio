@@ -84,6 +84,7 @@ private slots:
     void switchesProjectsWithoutReusingFieldWorkspaceState();
     void retainsCurrentProjectWhenReplacementCannotLoad();
     void reloadsProjectWithoutLosingFieldWorkspaceContext();
+    void confirmsDiscardBeforeReloadingDirtyProject();
     void navigatesFieldProblemsAndFallsBackForHiddenFields();
     void navigatesEnumValuesFromSearchAndProblems();
     void supportsTrailingRowsAndFieldMovement();
@@ -2089,6 +2090,146 @@ void GuiSmokeTests::reloadsProjectWithoutLosingFieldWorkspaceContext()
     QTRY_COMPARE_WITH_TIMEOUT(
         fields->currentIndex().data(Qt::UserRole + 1).toString(),
         QStringLiteral("field-ready"), 2000);
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::confirmsDiscardBeforeReloadingDirtyProject()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest =
+        directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createProject(manifest);
+
+    MainWindow window;
+    window.resize(1100, 720);
+    window.show();
+    window.openProjectPath(manifest);
+    QTest::qWait(50);
+
+    auto* controller = window.findChild<ProjectController*>();
+    auto* hierarchy =
+        window.findChild<QTreeView*>(QStringLiteral("hierarchyView"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(hierarchy != nullptr);
+    QAction* reload = nullptr;
+    for (auto* action : window.findChildren<QAction*>()) {
+        if (action->text() == QStringLiteral("Reload from Disk")) {
+            reload = action;
+            break;
+        }
+    }
+    QVERIFY(reload != nullptr);
+    QVERIFY(reload->isEnabled());
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Unsaved workspace rename"),
+        [](regmap::Workspace& workspace) {
+            workspace.name = "Local Unsaved Workspace";
+        }));
+    QVERIFY(controller->isDirty());
+    QCOMPARE(controller->changes().size(), std::size_t{1});
+    const std::size_t dirtyUndoDepth = controller->undoDepth();
+    QVERIFY(dirtyUndoDepth > 0);
+
+    QFile projectFile(manifest);
+    QVERIFY(projectFile.open(QIODevice::ReadOnly | QIODevice::Text));
+    QString projectText = QString::fromUtf8(projectFile.readAll());
+    projectFile.close();
+    const QString originalPageName = QStringLiteral("      name: Main\n");
+    QCOMPARE(projectText.count(originalPageName), 1);
+    projectText.replace(
+        originalPageName,
+        QStringLiteral("      name: Main Reloaded Safely\n"));
+    const QByteArray updatedProject = projectText.toUtf8();
+    QVERIFY(projectFile.open(
+        QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate));
+    QCOMPARE(projectFile.write(updatedProject), updatedProject.size());
+    projectFile.close();
+
+    struct ReloadInvocation {
+        bool dialogSeen{false};
+        bool impactDescribed{false};
+    };
+    const auto invokeReload =
+        [&](bool confirm) {
+            ReloadInvocation result;
+            QTimer::singleShot(0, &window, [&] {
+                auto* dialog =
+                    qobject_cast<QMessageBox*>(
+                        QApplication::activeModalWidget());
+                if (dialog == nullptr) {
+                    return;
+                }
+                result.dialogSeen = true;
+                auto* proceed = dialog->findChild<QPushButton*>(
+                    QStringLiteral("confirmReloadFromDiskButton"));
+                result.impactDescribed =
+                    dialog->windowTitle() ==
+                        QStringLiteral("Reload Project") &&
+                    dialog->text().contains(
+                        QStringLiteral("1 unsaved Workbench change")) &&
+                    dialog->text().contains(
+                        QStringLiteral("project.regmap.yaml")) &&
+                    dialog->informativeText().contains(
+                        QStringLiteral("Undo history")) &&
+                    dialog->informativeText().contains(
+                        QStringLiteral("Use Save & Sync first")) &&
+                    proceed != nullptr &&
+                    proceed->text() ==
+                        QStringLiteral("Discard and Reload") &&
+                    dialog->defaultButton() ==
+                        dialog->button(QMessageBox::Cancel);
+                if (confirm && proceed != nullptr) {
+                    QTest::mouseClick(proceed, Qt::LeftButton);
+                } else {
+                    QTest::mouseClick(
+                        dialog->button(QMessageBox::Cancel),
+                        Qt::LeftButton);
+                }
+            });
+            reload->trigger();
+            return result;
+        };
+
+    const ReloadInvocation cancelled = invokeReload(false);
+    QVERIFY(cancelled.dialogSeen);
+    QVERIFY(cancelled.impactDescribed);
+    QVERIFY(controller->isDirty());
+    QCOMPARE(controller->undoDepth(), dirtyUndoDepth);
+    QCOMPARE(
+        controller->workspace()->name,
+        std::string("Local Unsaved Workspace"));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Reload cancelled")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("unsaved Workbench edits kept")));
+
+    const ReloadInvocation confirmed = invokeReload(true);
+    QVERIFY(confirmed.dialogSeen);
+    QVERIFY(confirmed.impactDescribed);
+    QTRY_VERIFY_WITH_TIMEOUT(!controller->isDirty(), 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        controller->workspace()->name,
+        std::string("GUI Workspace"), 3000);
+    QCOMPARE(controller->undoDepth(), std::size_t{0});
+    QVERIFY(!controller->canUndo());
+    const QModelIndex workspaceIndex =
+        hierarchy->model()->index(0, 0);
+    const QModelIndex pageIndex =
+        hierarchy->model()->index(0, 0, workspaceIndex);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        pageIndex.data().toString(),
+        QStringLiteral("Main Reloaded Safely"), 3000);
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+
+    const auto diskProject =
+        regmap::openProject(
+            std::filesystem::path(manifest.toStdWString()));
+    QVERIFY(diskProject.workspace.has_value());
+    QCOMPARE(diskProject.workspace->name,
+             std::string("GUI Workspace"));
 
     makeGeneratedFilesWritable(directory.path());
 }
