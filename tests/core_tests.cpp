@@ -60,6 +60,7 @@ private slots:
     void rejectsCorruptSynchronizationBaseline();
     void validatesModelConflicts();
     void generatesReadOnlyArtifacts();
+    void reportsGeneratedIdentifierCollisions();
     void sanitizesXlsxWorksheetNames();
     void diffsByStableId();
 };
@@ -1097,6 +1098,115 @@ void CoreTests::generatesReadOnlyArtifacts()
         QFile::setPermissions(QString::fromStdWString(artifact.path.wstring()),
                               QFileDevice::ReadOwner | QFileDevice::WriteOwner);
     }
+}
+
+void CoreTests::reportsGeneratedIdentifierCollisions()
+{
+    regmap::Workspace workspace;
+    workspace.id = "workspace-c-symbols";
+    workspace.name = "C Symbols";
+
+    regmap::AddressSpace page;
+    page.id = "page-main";
+    page.name = "Main";
+
+    regmap::RegisterBlock block;
+    block.id = "block-control";
+    block.name = "Control";
+    block.size = 8;
+
+    regmap::Register status;
+    status.id = "reg-status";
+    status.name = "STATUS";
+    status.offset = 0;
+    status.width = 32;
+    status.type = regmap::FieldType::structure;
+
+    regmap::Field dashedField;
+    dashedField.id = "field-ready-dashed";
+    dashedField.name = "READY-FLAG";
+    dashedField.msb = 0;
+    dashedField.lsb = 0;
+
+    regmap::Field underscoredField;
+    underscoredField.id = "field-ready-underscored";
+    underscoredField.name = "READY_FLAG";
+    underscoredField.msb = 1;
+    underscoredField.lsb = 1;
+
+    status.fields = {dashedField, underscoredField};
+
+    regmap::Register mode;
+    mode.id = "reg-mode";
+    mode.name = "MODE";
+    mode.offset = 4;
+    mode.width = 2;
+    mode.array.stride = 1;
+    mode.type = regmap::FieldType::enumeration;
+
+    regmap::EnumValue widthEnum;
+    widthEnum.id = "enum-mode-width";
+    widthEnum.name = "WIDTH";
+    widthEnum.value = regmap::UnsignedValue(0);
+
+    regmap::EnumValue activeEnum;
+    activeEnum.id = "enum-mode-active";
+    activeEnum.name = "ACTIVE";
+    activeEnum.value = regmap::UnsignedValue(1);
+    mode.enumValues = {widthEnum, activeEnum};
+
+    block.registers = {status, mode};
+    page.blocks.push_back(block);
+    workspace.addressSpaces.push_back(page);
+    QVERIFY(regmap::validateWorkspace(workspace).empty());
+
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    regmap::ProjectManifest manifest;
+    manifest.workspaceId = workspace.id;
+    manifest.workspaceName = workspace.name;
+    regmap::GenerationTargetConfig target;
+    target.kind = regmap::GenerationTargetKind::cHeader;
+    target.path.declared = "registers.h";
+    target.path.resolved =
+        std::filesystem::path(directory.path().toStdWString()) / target.path.declared;
+    target.options.emplace("guard", "MAIN_CONTROL_MODE_WIDTH");
+    manifest.targets.push_back(std::move(target));
+
+    const auto generation = regmap::generateArtifacts(workspace, manifest);
+    QVERIFY(generation.hasErrors());
+    QCOMPARE(
+        std::ranges::count_if(
+            generation.diagnostics, [](const regmap::Diagnostic& diagnostic) {
+                return diagnostic.code == "RM4001";
+            }),
+        std::ptrdiff_t{3});
+    QVERIFY(std::ranges::any_of(
+        generation.diagnostics, [](const regmap::Diagnostic& diagnostic) {
+            return diagnostic.code == "RM4001" &&
+                   diagnostic.objectId == "field-ready-underscored";
+        }));
+    QVERIFY(std::ranges::any_of(
+        generation.diagnostics, [](const regmap::Diagnostic& diagnostic) {
+            return diagnostic.code == "RM4001" && diagnostic.objectId == "enum-mode-width";
+        }));
+    QVERIFY(std::ranges::any_of(
+        generation.diagnostics, [](const regmap::Diagnostic& diagnostic) {
+            return diagnostic.code == "RM4001" && diagnostic.objectId == "reg-mode";
+        }));
+
+    manifest.targets.front().kind = regmap::GenerationTargetKind::markdown;
+    manifest.targets.front().path.declared = "registers.md";
+    manifest.targets.front().path.resolved =
+        std::filesystem::path(directory.path().toStdWString()) /
+        manifest.targets.front().path.declared;
+    const auto markdownGeneration = regmap::generateArtifacts(workspace, manifest);
+    QVERIFY(!markdownGeneration.hasErrors());
+    QCOMPARE(markdownGeneration.artifacts.size(), std::size_t{1});
+    QVERIFY(markdownGeneration.artifacts.front().content.find("READY-FLAG") !=
+            std::string::npos);
+    QVERIFY(markdownGeneration.artifacts.front().content.find("READY_FLAG") !=
+            std::string::npos);
 }
 
 void CoreTests::sanitizesXlsxWorksheetNames()

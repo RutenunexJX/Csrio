@@ -257,17 +257,123 @@ void addDiagnostic(std::vector<Diagnostic>& diagnostics, std::string_view code, 
     diagnostics.push_back(std::move(diagnostic));
 }
 
-[[nodiscard]] bool claimSymbol(std::set<std::string, std::less<>>& symbols, std::string_view value,
-                               const Register& reg, std::vector<Diagnostic>& diagnostics)
+struct CMacroDefinition {
+    std::string name;
+    const ObjectId* objectId;
+    const SourceLocation* source;
+    const void* owner;
+};
+
+template <typename Owner>
+void addCMacro(std::vector<CMacroDefinition>& definitions, std::string name, const Owner& owner)
 {
-    if (symbols.insert(std::string(value)).second) {
-        return true;
+    definitions.push_back(
+        CMacroDefinition{std::move(name), &owner.id, &owner.source, &owner});
+}
+
+template <typename Owner>
+void addCMacro(std::vector<CMacroDefinition>& definitions, std::string_view prefix,
+               std::string_view suffix, const Owner& owner)
+{
+    addCMacro(definitions, std::string(prefix) + std::string(suffix), owner);
+}
+
+void collectCFieldMacros(std::vector<CMacroDefinition>& definitions, const Field& field,
+                         std::string_view parentSymbol, std::uint64_t parentLsb)
+{
+    const std::uint64_t width = field.width();
+    if (width == 0) {
+        return;
     }
-    addDiagnostic(diagnostics, symbolCollisionCode,
-                  "Generated symbol '" + std::string(value) +
-                      "' is not unique after normalization.",
-                  reg.id, reg.source);
-    return false;
+    const std::string currentFieldSymbol = fieldSymbol(parentSymbol, field);
+    const std::uint64_t absoluteLsb = parentLsb + field.lsb;
+    addCMacro(definitions, currentFieldSymbol, "_LSB", field);
+    addCMacro(definitions, currentFieldSymbol, "_WIDTH", field);
+    const UnsignedValue mask = UnsignedValue::bitMask(absoluteLsb, width);
+    addCMacro(definitions, currentFieldSymbol,
+              mask.fitsInBits(64) ? "_MASK" : "_MASK_HEX", field);
+    if (field.minimumValue) {
+        addCMacro(definitions, currentFieldSymbol, "_MIN", field);
+    }
+    if (field.maximumValue) {
+        addCMacro(definitions, currentFieldSymbol, "_MAX", field);
+    }
+    if (field.type == FieldType::boolean && field.enumValues.empty()) {
+        addCMacro(definitions, currentFieldSymbol, "_FALSE", field);
+        addCMacro(definitions, currentFieldSymbol, "_TRUE", field);
+    }
+    for (const EnumValue* enumValue : orderedEnums(field)) {
+        addCMacro(definitions,
+                  currentFieldSymbol + '_' + identifier(enumValue->name, true), *enumValue);
+    }
+    for (const Field* member : orderedFields(field.members)) {
+        collectCFieldMacros(definitions, *member, currentFieldSymbol, absoluteLsb);
+    }
+}
+
+void validateCHeaderMacros(const Workspace& workspace, std::string_view guard,
+                           std::vector<Diagnostic>& diagnostics)
+{
+    std::vector<CMacroDefinition> definitions;
+    for (const AddressSpace* addressSpace : orderedAddressSpaces(workspace)) {
+        for (const RegisterBlock* block : orderedBlocks(*addressSpace)) {
+            for (const Register* reg : orderedRegisters(*block)) {
+                if (reg->reserved) {
+                    continue;
+                }
+                const std::string regSymbol = symbol(*addressSpace, *block, *reg);
+                addCMacro(definitions, regSymbol, "_ADDR", *reg);
+                addCMacro(definitions, regSymbol, "_OFFSET", *reg);
+                addCMacro(definitions, regSymbol, "_WIDTH", *reg);
+                if (reg->array.count > 1) {
+                    addCMacro(definitions, regSymbol, "_COUNT", *reg);
+                    addCMacro(definitions, regSymbol, "_STRIDE", *reg);
+                }
+                if (reg->minimumValue) {
+                    addCMacro(definitions, regSymbol, "_MIN", *reg);
+                }
+                if (reg->maximumValue) {
+                    addCMacro(definitions, regSymbol, "_MAX", *reg);
+                }
+                if (reg->initialValue) {
+                    addCMacro(definitions, regSymbol,
+                              reg->initialValue->fitsInBits(64) ? "_INITIAL" : "_INITIAL_HEX",
+                              *reg);
+                }
+                if (reg->resetValue) {
+                    addCMacro(definitions, regSymbol,
+                              reg->resetValue->fitsInBits(64) ? "_RESET" : "_RESET_HEX", *reg);
+                }
+                if (reg->type == FieldType::boolean && reg->enumValues.empty()) {
+                    addCMacro(definitions, regSymbol, "_FALSE", *reg);
+                    addCMacro(definitions, regSymbol, "_TRUE", *reg);
+                }
+                for (const EnumValue* enumValue : orderedEnums(*reg)) {
+                    addCMacro(definitions,
+                              regSymbol + '_' + identifier(enumValue->name, true), *enumValue);
+                }
+                for (const Field* field : orderedFields(*reg)) {
+                    collectCFieldMacros(definitions, *field, regSymbol, 0);
+                }
+            }
+        }
+    }
+
+    std::set<std::string, std::less<>> symbols;
+    symbols.insert(std::string(guard));
+    std::set<const void*> reportedOwners;
+    for (const CMacroDefinition& definition : definitions) {
+        if (symbols.insert(definition.name).second ||
+            !reportedOwners.insert(definition.owner).second) {
+            continue;
+        }
+        addDiagnostic(
+            diagnostics, symbolCollisionCode,
+            "Generated C macro '" + definition.name +
+                "' is defined more than once after name normalization. Rename the conflicting "
+                "Register, Field, or Enum value.",
+            *definition.objectId, *definition.source);
+    }
 }
 
 void generateCField(std::ostringstream& output, const Field& field, std::string_view parentSymbol,
@@ -382,11 +488,11 @@ void generateMarkdownEnums(std::ostringstream& output, const std::vector<Field>&
                                           std::vector<Diagnostic>& diagnostics)
 {
     const std::string guard = identifier(option(target, "guard", workspace.name + "_regs_h"), true);
+    validateCHeaderMacros(workspace, guard, diagnostics);
     std::ostringstream output;
     output << "/* Generated by Register Map Workbench. Do not edit. */\n"
            << "#ifndef " << guard << "\n#define " << guard << "\n\n#include <stdint.h>\n\n";
 
-    std::set<std::string, std::less<>> symbols;
     for (const AddressSpace* addressSpace : orderedAddressSpaces(workspace)) {
         for (const RegisterBlock* block : orderedBlocks(*addressSpace)) {
             for (const Register* reg : orderedRegisters(*block)) {
@@ -394,9 +500,6 @@ void generateMarkdownEnums(std::ostringstream& output, const std::vector<Field>&
                     continue;
                 }
                 const std::string regSymbol = symbol(*addressSpace, *block, *reg);
-                if (!claimSymbol(symbols, regSymbol, *reg, diagnostics)) {
-                    continue;
-                }
                 const auto address = absoluteAddress(*addressSpace, *block, *reg);
                 if (!address) {
                     addDiagnostic(diagnostics, addressOverflowCode,
@@ -473,7 +576,6 @@ void generateMarkdownEnums(std::ostringstream& output, const std::vector<Field>&
     output << "# " << escapeMarkdown(title) << "\n\n"
            << "> Generated by Register Map Workbench. Do not edit.\n\n";
 
-    std::set<std::string, std::less<>> symbols;
     for (const AddressSpace* addressSpace : orderedAddressSpaces(workspace)) {
         output << "## Page: " << escapeMarkdown(addressSpace->name) << "\n\n"
                << "Page base address: `" << UnsignedValue(addressSpace->baseAddress).toHexString()
@@ -485,10 +587,6 @@ void generateMarkdownEnums(std::ostringstream& output, const std::vector<Field>&
                       "Reset | Tags | State |\n"
                    << "|---|---:|---:|---:|---|---|---|---:|---:|---|---|\n";
             for (const Register* reg : orderedRegisters(*block)) {
-                const std::string regSymbol = symbol(*addressSpace, *block, *reg);
-                if (!claimSymbol(symbols, regSymbol, *reg, diagnostics)) {
-                    continue;
-                }
                 const auto address = absoluteAddress(*addressSpace, *block, *reg);
                 if (!address) {
                     addDiagnostic(diagnostics, addressOverflowCode,
