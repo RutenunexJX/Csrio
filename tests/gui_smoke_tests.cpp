@@ -106,6 +106,7 @@ private slots:
     void protectsNumericRangesDuringShapeChanges();
     void confirmsReservedConversionBeforeClearingContent();
     void rejectsAddressEditsThatIntroduceConflicts();
+    void rejectsRecoveryEditsThatReplaceAddressProblems();
     void rejectsGeometryConflictsFromWidthAndTypeEdits();
     void synchronizesFieldResetEdits();
     void protectsEnumContractsDuringEditing();
@@ -6137,6 +6138,127 @@ void GuiSmokeTests::rejectsAddressEditsThatIntroduceConflicts()
             .toString(),
         QStringLiteral("0x4"), 2000);
     QCOMPARE(controller->undoDepth(), recoveryUndoDepth + 1);
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::rejectsRecoveryEditsThatReplaceAddressProblems()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest =
+        directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createTwoRegisterProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+
+    auto* controller = window.findChild<ProjectController*>();
+    auto* registers =
+        window.findChild<QTableView*>(QStringLiteral("registerView"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(registers != nullptr);
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Configure multiple address Problems"),
+        [](regmap::Workspace& workspace) {
+            auto* block =
+                regmap::findRegisterBlock(workspace, "block-control");
+            auto* status =
+                regmap::findRegister(workspace, "reg-status");
+            auto* control =
+                regmap::findRegister(workspace, "reg-control");
+            QVERIFY(block != nullptr);
+            QVERIFY(status != nullptr);
+            QVERIFY(control != nullptr);
+            status->offset = 0;
+            control->offset = 0;
+
+            regmap::Register third;
+            third.id = "reg-third";
+            third.name = "THIRD";
+            third.offset = 0;
+            third.width = 32;
+            third.array.count = 1;
+            third.array.stride = 4;
+            third.type = regmap::FieldType::unsignedInteger;
+            third.initialValue = regmap::UnsignedValue(0);
+            third.resetValue = regmap::UnsignedValue(0);
+            third.access = regmap::AccessMode::readWrite;
+            block->registers.push_back(std::move(third));
+        }));
+
+    const auto overlapCount = [controller] {
+        return static_cast<std::size_t>(
+            std::ranges::count_if(
+                regmap::validateWorkspace(*controller->workspace()),
+                [](const regmap::Diagnostic& diagnostic) {
+                    return diagnostic.code == "RM3024";
+                }));
+    };
+    QCOMPARE(overlapCount(), std::size_t{2});
+
+    const auto rowForId = [registers](const QString& id) {
+        for (int row = 0; row < registers->model()->rowCount(); ++row) {
+            if (registers->model()
+                    ->index(row, 0)
+                    .data(Qt::UserRole + 1)
+                    .toString() == id) {
+                return row;
+            }
+        }
+        return -1;
+    };
+    const std::size_t initialUndoDepth = controller->undoDepth();
+    int controlRow = rowForId(QStringLiteral("reg-control"));
+    QVERIFY(controlRow >= 0);
+    window.statusBar()->clearMessage();
+    QVERIFY(registers->model()->setData(
+        registers->model()->index(controlRow, 1),
+        QStringLiteral("0x4")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()
+            ->index(rowForId(QStringLiteral("reg-control")), 1)
+            .data()
+            .toString(),
+        QStringLiteral("0x0"), 2000);
+    QCOMPARE(overlapCount(), std::size_t{2});
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("address layout")));
+
+    int thirdRow = rowForId(QStringLiteral("reg-third"));
+    QVERIFY(thirdRow >= 0);
+    QVERIFY(registers->model()->setData(
+        registers->model()->index(thirdRow, 1),
+        QStringLiteral("0x8")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()
+            ->index(rowForId(QStringLiteral("reg-third")), 1)
+            .data()
+            .toString(),
+        QStringLiteral("0x8"), 2000);
+    QCOMPARE(overlapCount(), std::size_t{1});
+    QCOMPARE(controller->undoDepth(), initialUndoDepth + 1);
+
+    const int statusRow =
+        rowForId(QStringLiteral("reg-status"));
+    QVERIFY(statusRow >= 0);
+    QVERIFY(registers->model()->setData(
+        registers->model()->index(statusRow, 1),
+        QStringLiteral("0x4")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()
+            ->index(rowForId(QStringLiteral("reg-status")), 1)
+            .data()
+            .toString(),
+        QStringLiteral("0x4"), 2000);
+    QCOMPARE(overlapCount(), std::size_t{0});
+    QCOMPARE(controller->undoDepth(), initialUndoDepth + 2);
     QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
 
     makeGeneratedFilesWritable(directory.path());

@@ -49,6 +49,9 @@ Workspace -> Page (Address Space) -> Register Block -> Register -> Field -> Enum
 - Continuous validation of identity, address ranges and overlap, field ranges and overlap,
   declared Block allocation ranges, access and side-effect combinations, reset values, and
   enum values.
+  A pre-existing invalid layout can be repaired incrementally, but each accepted edit must leave
+  only diagnostics that already existed before that edit; reducing the count by replacing old
+  Problems with a different Problem is rejected.
 - Undo, redo, dirty-state tracking, atomic project save, and close-time save protection.
 - One visible **Save & Sync** action and a persistent state badge for unsaved, synchronizing,
   synchronized, blocked, partial-output-failure, and conflict states.

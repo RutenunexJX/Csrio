@@ -1549,16 +1549,22 @@ addressLayoutIssues(const regmap::Workspace& workspace,
     return issues;
 }
 
+[[nodiscard]] bool introducesNoNewIssues(
+    const std::vector<std::string>& beforeIssues,
+    const std::vector<std::string>& afterIssues)
+{
+    return std::includes(
+        beforeIssues.begin(), beforeIssues.end(),
+        afterIssues.begin(), afterIssues.end());
+}
+
 [[nodiscard]] bool addressEditDoesNotWorsen(
     const regmap::Workspace& before, const regmap::Workspace& after,
     std::string_view targetId)
 {
     const auto beforeIssues = addressLayoutIssues(before, targetId);
     const auto afterIssues = addressLayoutIssues(after, targetId);
-    return afterIssues.size() < beforeIssues.size() ||
-           std::includes(
-               beforeIssues.begin(), beforeIssues.end(),
-               afterIssues.begin(), afterIssues.end());
+    return introducesNoNewIssues(beforeIssues, afterIssues);
 }
 
 [[nodiscard]] bool isFieldGeometryDiagnostic(std::string_view code) noexcept
@@ -1609,10 +1615,7 @@ fieldGeometryIssues(const regmap::Workspace& workspace,
 {
     const auto beforeIssues = fieldGeometryIssues(before, fieldId);
     const auto afterIssues = fieldGeometryIssues(after, fieldId);
-    return afterIssues.size() < beforeIssues.size() ||
-           std::includes(
-               beforeIssues.begin(), beforeIssues.end(),
-               afterIssues.begin(), afterIssues.end());
+    return introducesNoNewIssues(beforeIssues, afterIssues);
 }
 
 [[nodiscard]] std::vector<std::string>
@@ -1639,10 +1642,7 @@ numericRangeIssues(const regmap::Workspace& workspace,
 {
     const auto beforeIssues = numericRangeIssues(before, objectId);
     const auto afterIssues = numericRangeIssues(after, objectId);
-    return afterIssues.size() < beforeIssues.size() ||
-           std::includes(
-               beforeIssues.begin(), beforeIssues.end(),
-               afterIssues.begin(), afterIssues.end());
+    return introducesNoNewIssues(beforeIssues, afterIssues);
 }
 
 [[nodiscard]] std::optional<std::size_t>
