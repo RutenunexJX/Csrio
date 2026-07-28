@@ -3610,7 +3610,15 @@ void MainWindow::updateSyncPresentation(const QString& message)
         text = QStringLiteral("Saved · output failed");
     } else if (controller_.hasProjectErrors()) {
         state = QStringLiteral("blocked");
-        text = QStringLiteral("Blocked · see Problems");
+        if (controller_.isDirty()) {
+            const std::size_t changeCount = controller_.changes().size();
+            text = changeCount == 0
+                ? QStringLiteral("Blocked · unsaved changes")
+                : QStringLiteral("Blocked · %1 unsaved change(s)")
+                      .arg(changeCount);
+        } else {
+            text = QStringLiteral("Blocked · see Problems");
+        }
     } else if (controller_.isDirty()) {
         state = QStringLiteral("dirty");
         text = QStringLiteral("Unsaved · %1 change(s)").arg(controller_.changes().size());

@@ -488,7 +488,14 @@ void ProjectController::synchronizeRtl(bool automatic, bool persistWhenClean)
             refreshWatchPaths();
             emit diagnosticsChanged();
             emit syncStatusChanged(
-                QStringLiteral("Managed RTL contains errors; the last Workbench model is retained"));
+                store_.dirty()
+                    ? QStringLiteral(
+                          "Save & Sync blocked: managed RTL contains errors; "
+                          "Workbench edits remain unsaved. Fix RTL, then use "
+                          "Save & Sync again.")
+                    : QStringLiteral(
+                          "Managed RTL contains errors; the last Workbench model "
+                          "is retained. Fix RTL, then retry synchronization."));
             return;
         }
         rtlWorkspace = std::move(*parsed.workspace);

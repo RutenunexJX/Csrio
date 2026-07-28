@@ -103,6 +103,7 @@ private slots:
     void closesTagPopupWhenFilteredRegisterDisappears();
     void insertsRegisterBetweenRows();
     void showsUnifiedSyncStateAndGeneratedResults();
+    void reportsBlockedUnsavedSyncAndRecovers();
     void searchesAndNavigatesProblems();
     void refreshesSearchResultsAfterModelChanges();
     void copiesAndPastesEditableCells();
@@ -5301,6 +5302,103 @@ void GuiSmokeTests::showsUnifiedSyncStateAndGeneratedResults()
                  QStringLiteral("Synchronized"));
     }
 #endif
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::reportsBlockedUnsavedSyncAndRecovers()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest =
+        directory.filePath(QStringLiteral("project.regmap.yaml"));
+    const QString rtlPath =
+        directory.filePath(QStringLiteral("rtl/gui_registers.sv"));
+    createProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1200, 760);
+    window.show();
+    QTest::qWait(50);
+
+    auto* state =
+        window.findChild<QLabel*>(QStringLiteral("syncStateBadge"));
+    auto* save =
+        window.findChild<QAction*>(QStringLiteral("saveSyncAction"));
+    auto* registers =
+        window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* controller = window.findChild<ProjectController*>();
+    QVERIFY(state != nullptr);
+    QVERIFY(save != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(controller != nullptr);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        state->text().startsWith(QStringLiteral("Synchronized")), 2000);
+
+    const QString editedDescription =
+        QStringLiteral("Workbench edit waiting for valid RTL.");
+    QVERIFY(registers->model()->setData(
+        registers->model()->index(0, 11), editedDescription));
+    QTRY_VERIFY_WITH_TIMEOUT(controller->isDirty(), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        state->text().startsWith(QStringLiteral("Unsaved")), 2000);
+
+    editManagedRtlValue(
+        rtlPath, QStringLiteral("reg-status"),
+        QStringLiteral("offset"), QStringLiteral("64'hx"));
+    save->trigger();
+
+    QTRY_VERIFY_WITH_TIMEOUT(controller->hasProjectErrors(), 2000);
+    QVERIFY(controller->isDirty());
+    QTRY_COMPARE_WITH_TIMEOUT(
+        state->text(), QStringLiteral("Blocked · 1 unsaved change(s)"),
+        2000);
+    QVERIFY(state->toolTip().contains(
+        QStringLiteral("Workbench edits remain unsaved")));
+    QVERIFY(state->toolTip().contains(QStringLiteral("Fix RTL")));
+    QVERIFY(state->toolTip().contains(
+        QStringLiteral("Save & Sync again")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Workbench edits remain unsaved")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Save & Sync again")));
+
+    const auto unchanged =
+        regmap::openProject(
+            std::filesystem::path(manifest.toStdWString()));
+    QVERIFY(unchanged.workspace.has_value());
+    QCOMPARE(
+        regmap::findRegister(*unchanged.workspace, "reg-status")
+            ->description,
+        std::string{});
+
+    const auto validDiskModel =
+        regmap::openProject(
+            std::filesystem::path(manifest.toStdWString()));
+    QVERIFY(validDiskModel.workspace.has_value());
+    QVERIFY(regmap::writeManagedRtl(
+                std::filesystem::path(rtlPath.toStdWString()),
+                "gui_registers", *validDiskModel.workspace)
+                .empty());
+
+    save->trigger();
+    QTRY_VERIFY_WITH_TIMEOUT(!controller->isDirty(), 4000);
+    QTRY_VERIFY_WITH_TIMEOUT(!controller->hasProjectErrors(), 4000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        state->text().startsWith(QStringLiteral("Synchronized")), 4000);
+    QVERIFY(state->toolTip().contains(
+        QStringLiteral("Project, managed RTL, and read-only outputs saved")));
+
+    const auto saved =
+        regmap::openProject(
+            std::filesystem::path(manifest.toStdWString()));
+    QVERIFY(saved.workspace.has_value());
+    QCOMPARE(
+        QString::fromStdString(
+            regmap::findRegister(*saved.workspace, "reg-status")
+                ->description),
+        editedDescription);
 
     makeGeneratedFilesWritable(directory.path());
 }

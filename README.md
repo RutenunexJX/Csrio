@@ -164,6 +164,10 @@ completed, was blocked by Problems, stopped for an RTL conflict, or saved with a
 The Generated view lists each output's path, result, and last update time. If Excel is holding the
 XLSX file open, the model and RTL remain saved, the XLSX row reports failure, and **Retry outputs**
 runs the output step again after the workbook is closed.
+If managed RTL is invalid while Workbench has edits, the state badge explicitly reports that the
+operation is blocked and the changes remain unsaved. The project file and synchronization baseline
+are not advanced. The status message directs the user to fix RTL and invoke **Save & Sync** again;
+the same pending Workbench edit is then saved without re-entry.
 
 Use `Ctrl+F` to focus global search. Press Enter or `F3` for the next result and `Shift+F3` for the
 previous result. Double-clicking a Problem or Diff row selects the corresponding Workbench object.
