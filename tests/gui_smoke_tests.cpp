@@ -4057,13 +4057,24 @@ void GuiSmokeTests::deletesFocusedRegisterAndRestoresIt()
     QTest::qWait(50);
     auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
     auto* fields = window.findChild<QTableView*>(QStringLiteral("fieldView"));
+    auto* generated = window.findChild<QTableView*>(QStringLiteral("generatedView"));
     auto* controller = window.findChild<ProjectController*>();
     QVERIFY(registers != nullptr);
     QVERIFY(fields != nullptr);
+    QVERIFY(generated != nullptr);
     QVERIFY(controller != nullptr);
     QCOMPARE(fields->model()->rowCount(), 0);
     QVERIFY(!fields->isVisible());
     const std::size_t undoDepth = controller->undoDepth();
+
+    generated->setCurrentIndex(generated->model()->index(0, 0));
+    generated->setFocus(Qt::OtherFocusReason);
+    QTest::keyClick(generated, Qt::Key_Delete);
+    QCoreApplication::processEvents();
+    QCOMPARE(registers->model()->rowCount(), 3);
+    QCOMPARE(controller->undoDepth(), undoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("focused hierarchy or editor")));
 
     registers->setCurrentIndex(registers->model()->index(0, 0));
     registers->setFocus();

@@ -4485,14 +4485,10 @@ void MainWindow::deleteSelection()
         return;
     } else if (focusInside(hierarchyView_)) {
         id = !selectedBlockId_.empty() ? selectedBlockId_ : selectedAddressId_;
-    } else if (!selectedFieldId_.empty()) {
-        id = selectedFieldId_;
-    } else if (!selectedRegisterId_.empty()) {
-        id = selectedRegisterId_;
-    } else if (!selectedBlockId_.empty()) {
-        id = selectedBlockId_;
     } else {
-        id = selectedAddressId_;
+        statusBar()->showMessage(
+            QStringLiteral("Delete applies only to the focused hierarchy or editor"), 4000);
+        return;
     }
     if (id.empty()) {
         return;
