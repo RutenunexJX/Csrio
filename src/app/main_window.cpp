@@ -4749,13 +4749,12 @@ void MainWindow::rebuildSearchResults()
             }
         }
     };
-    const auto enumText = [](const std::vector<regmap::EnumValue>& values) {
-        QStringList text;
+    const auto addEnumValues = [&](const std::vector<regmap::EnumValue>& values) {
         for (const auto& value : values) {
-            text << fromUtf8(value.name) << fromUtf8(value.value.toHexString())
-                 << fromUtf8(value.description);
+            addIfMatch(value.id, {fromUtf8(value.name), fromUtf8(value.id),
+                                  fromUtf8(value.value.toHexString()),
+                                  fromUtf8(value.description)});
         }
-        return text;
     };
 
     addIfMatch(workspace->id, {fromUtf8(workspace->name), fromUtf8(workspace->id)});
@@ -4776,8 +4775,8 @@ void MainWindow::rebuildSearchResults()
                     addressOverflow ? QStringLiteral("overflow") : hex(absoluteAddress),
                     registerTypeText(reg), accessText(reg.access), tagsText(reg.tags),
                     fromUtf8(reg.description)};
-                registerValues.append(enumText(reg.enumValues));
                 addIfMatch(reg.id, registerValues);
+                addEnumValues(reg.enumValues);
 
                 const auto visitFields =
                     [&](const auto& self, const std::vector<regmap::Field>& fields,
@@ -4791,8 +4790,8 @@ void MainWindow::rebuildSearchResults()
                             QString::number(field.msb), QString::number(field.lsb),
                             fieldTypeText(field), accessText(field.softwareAccess),
                             fromUtf8(field.description)};
-                        fieldValues.append(enumText(field.enumValues));
                         addIfMatch(field.id, fieldValues);
+                        addEnumValues(field.enumValues);
                         self(self, field.members, path);
                     }
                 };
