@@ -79,6 +79,7 @@ private slots:
     void copiesAndPastesHierarchyObjects();
     void movesHierarchyObjectsByDrag();
     void switchesProjectsWithoutReusingFieldWorkspaceState();
+    void retainsCurrentProjectWhenReplacementCannotLoad();
     void reloadsProjectWithoutLosingFieldWorkspaceContext();
     void navigatesFieldProblemsAndFallsBackForHiddenFields();
     void navigatesEnumValuesFromSearchAndProblems();
@@ -1466,6 +1467,68 @@ void GuiSmokeTests::switchesProjectsWithoutReusingFieldWorkspaceState()
 
     makeGeneratedFilesWritable(root.filePath(QStringLiteral("first")));
     makeGeneratedFilesWritable(root.filePath(QStringLiteral("second")));
+}
+
+void GuiSmokeTests::retainsCurrentProjectWhenReplacementCannotLoad()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    QDir root(directory.path());
+    QVERIFY(root.mkpath(QStringLiteral("current")));
+    QVERIFY(root.mkpath(QStringLiteral("broken")));
+    const QString currentManifest =
+        root.filePath(QStringLiteral("current/project.regmap.yaml"));
+    const QString brokenManifest =
+        root.filePath(QStringLiteral("broken/project.regmap.yaml"));
+    createProject(currentManifest);
+
+    QFile brokenFile(brokenManifest);
+    QVERIFY(brokenFile.open(
+        QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate));
+    const QByteArray brokenText("schema_version: [\n");
+    QCOMPARE(brokenFile.write(brokenText), brokenText.size());
+    brokenFile.close();
+
+    MainWindow window;
+    window.resize(1100, 720);
+    window.show();
+    window.openProjectPath(currentManifest);
+    QTest::qWait(50);
+
+    auto* controller = window.findChild<ProjectController*>();
+    auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(controller->workspace() != nullptr);
+    const std::filesystem::path originalManifestPath = controller->manifestPath();
+    const QString originalRegisterId =
+        registers->currentIndex().data(Qt::UserRole + 1).toString();
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Unsaved workspace rename"),
+        [](regmap::Workspace& workspace) {
+            workspace.name = "Unsaved Workspace Name";
+        }));
+    QTRY_VERIFY_WITH_TIMEOUT(controller->isDirty(), 2000);
+
+    QSignalSpy projectChanged(controller, &ProjectController::projectChanged);
+    QSignalSpy statusChanged(controller, &ProjectController::syncStatusChanged);
+    window.openProjectPath(brokenManifest);
+    QCoreApplication::processEvents();
+
+    QVERIFY(controller->workspace() != nullptr);
+    QCOMPARE(QString::fromStdString(controller->workspace()->name),
+             QStringLiteral("Unsaved Workspace Name"));
+    QCOMPARE(controller->manifestPath(), originalManifestPath);
+    QVERIFY(controller->isDirty());
+    QCOMPARE(projectChanged.count(), 0);
+    QCOMPARE(registers->currentIndex().data(Qt::UserRole + 1).toString(),
+             originalRegisterId);
+    QVERIFY(!statusChanged.isEmpty());
+    QVERIFY(statusChanged.last().at(0).toString().contains(
+        QStringLiteral("current project retained")));
+
+    makeGeneratedFilesWritable(root.filePath(QStringLiteral("current")));
 }
 
 void GuiSmokeTests::reloadsProjectWithoutLosingFieldWorkspaceContext()

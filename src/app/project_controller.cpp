@@ -245,9 +245,27 @@ bool ProjectController::squashUndoSince(
 
 void ProjectController::openProject(const QString& manifestPath)
 {
-    manifestPath_ = std::filesystem::absolute(
-                        std::filesystem::path(manifestPath.toStdWString()))
-                        .lexically_normal();
+    const std::filesystem::path requestedPath =
+        std::filesystem::absolute(std::filesystem::path(manifestPath.toStdWString()))
+            .lexically_normal();
+    auto loaded = regmap::openProject(requestedPath);
+    if (store_.workspace() != nullptr &&
+        (!loaded.manifest.has_value() || !loaded.workspace.has_value())) {
+        const auto firstError = std::ranges::find_if(
+            loaded.diagnostics, [](const regmap::Diagnostic& diagnostic) {
+                return diagnostic.severity == regmap::DiagnosticSeverity::error;
+            });
+        const QString fileName = QFileInfo(fromPath(requestedPath)).fileName();
+        const QString detail = firstError == loaded.diagnostics.end()
+            ? QString {}
+            : QStringLiteral(": %1").arg(fromUtf8(firstError->message));
+        emit syncStatusChanged(
+            QStringLiteral("Could not open %1%2; current project retained")
+                .arg(fileName, detail));
+        return;
+    }
+
+    manifestPath_ = requestedPath;
     manifest_.reset();
     store_ = regmap::WorkspaceStore {};
     baseline_.reset();
@@ -260,7 +278,7 @@ void ProjectController::openProject(const QString& manifestPath)
     generationDiagnostics_.clear();
     diagnostics_.clear();
     lastAcceptedModelWasValid_ = false;
-    reloadImpl(false);
+    reloadImpl(false, &loaded);
 }
 
 void ProjectController::reload()
@@ -268,7 +286,7 @@ void ProjectController::reload()
     reloadImpl(false);
 }
 
-void ProjectController::reloadImpl(bool automatic)
+void ProjectController::reloadImpl(bool automatic, regmap::ProjectOpenResult* preloaded)
 {
     if (manifestPath_.empty()) {
         return;
@@ -284,7 +302,8 @@ void ProjectController::reloadImpl(bool automatic)
         automatic ? QStringLiteral("Synchronizing saved project data...")
                   : QStringLiteral("Loading project..."));
 
-    auto loaded = regmap::openProject(manifestPath_);
+    auto loaded = preloaded == nullptr ? regmap::openProject(manifestPath_)
+                                       : std::move(*preloaded);
     loadDiagnostics_ = std::move(loaded.diagnostics);
     std::erase_if(loadDiagnostics_, isValidationDiagnostic);
     changes_.clear();

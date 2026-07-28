@@ -22,6 +22,10 @@
 #include <utility>
 #include <vector>
 
+namespace regmap {
+struct ProjectOpenResult;
+}
+
 class ProjectController final : public QObject {
     Q_OBJECT
 
@@ -95,7 +99,7 @@ private:
     bool lastAcceptedModelWasValid_ {false};
     bool initialSyncChoicePending_ {false};
 
-    void reloadImpl(bool automatic);
+    void reloadImpl(bool automatic, regmap::ProjectOpenResult* preloaded = nullptr);
     void generateImpl(bool automatic);
     void rebuildDiagnostics();
     void refreshWatchPaths();
