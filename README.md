@@ -111,7 +111,10 @@ target a Field open the corresponding Fields workspace automatically.
 Field LSB is derived and read-only. Edit **Width** or **MSB**, or drag a top-level field in the
 bit-field view. Every block shows its bit range above it; the moving block is painted on top and
 its MSB/LSB update continuously. On overlap, Workbench asks whether to trim the moving field or
-the overlapping fields. Field types may be selected from the field context menu;
+the overlapping fields. The complete trimmed result is validated before it is committed; a move
+that would invalidate an existing Reset, Enum value, numeric Range, access rule, or Member Field
+is rejected without changing the model or Undo history. Field types may be selected from the
+field context menu;
 `int8`, `uint32`, and the other `intN`/`uintN` forms set signedness and width together. Numeric
 ranges use **Minimum/Maximum**. Changing a scalar Field to `field` creates the first
 `NEW_MEMBER` in the same undoable edit, so the compound Field is immediately valid. Further

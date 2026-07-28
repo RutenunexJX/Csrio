@@ -92,6 +92,7 @@ private slots:
     void confirmsEnumTypeChangesBeforeRemovingValues();
     void keepsCompoundFieldsUsableDuringConversionAndDeletion();
     void dragsFieldsAndResolvesOverlaps();
+    void rejectsFieldMoveThatInvalidatesValueContracts();
     void cancelsInterruptedFieldDrag();
     void editsTagsAndAccessFromDoubleClick();
     void editsFieldAccessFromConstrainedChoices();
@@ -3899,6 +3900,123 @@ void GuiSmokeTests::dragsFieldsAndResolvesOverlaps()
 
         makeGeneratedFilesWritable(directory.path());
     }
+}
+
+void GuiSmokeTests::rejectsFieldMoveThatInvalidatesValueContracts()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest =
+        directory.filePath(QStringLiteral("field-contract-drag.regmap.yaml"));
+    createBitfieldDragProject(manifest);
+
+    MainWindow window;
+    window.resize(1200, 760);
+    window.show();
+    window.openProjectPath(manifest);
+    QTest::qWait(50);
+
+    auto* controller = window.findChild<ProjectController*>();
+    auto* registers =
+        window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* fields =
+        window.findChild<QTableView*>(QStringLiteral("fieldView"));
+    auto* bitfield =
+        window.findChild<BitfieldView*>(QStringLiteral("bitfieldView"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+    QVERIFY(bitfield != nullptr);
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Configure constrained Enum Field"),
+        [](regmap::Workspace& workspace) {
+            auto* ready =
+                regmap::findField(workspace, "field-ready");
+            QVERIFY(ready != nullptr);
+            ready->type = regmap::FieldType::enumeration;
+            ready->minimumValue.reset();
+            ready->maximumValue.reset();
+            ready->members.clear();
+            ready->enumValues.clear();
+
+            regmap::EnumValue zero;
+            zero.id = "enum-ready-zero";
+            zero.name = "ZERO";
+            zero.value = regmap::UnsignedValue(0);
+            ready->enumValues.push_back(std::move(zero));
+
+            regmap::EnumValue fifteen;
+            fifteen.id = "enum-ready-fifteen";
+            fifteen.name = "FIFTEEN";
+            fifteen.value = regmap::UnsignedValue(15);
+            ready->enumValues.push_back(std::move(fifteen));
+        }));
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+
+    const QModelIndex openFields =
+        registers->model()->index(0, 5);
+    registers->scrollTo(openFields);
+    QCoreApplication::processEvents();
+    QTest::mouseClick(
+        registers->viewport(), Qt::LeftButton, Qt::NoModifier,
+        registers->visualRect(openFields).center());
+    QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(bitfield->isVisible(), 2000);
+
+    bool dialogHandled = false;
+    QString dialogFailure;
+    const auto handleDialog = [&] {
+        auto* dialog =
+            qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (dialog == nullptr) {
+            dialogFailure =
+                QStringLiteral("Field overlap dialog did not become modal");
+            return;
+        }
+        QAbstractButton* trimMoving = nullptr;
+        for (auto* button : dialog->buttons()) {
+            if (dialog->buttonRole(button) ==
+                QMessageBox::AcceptRole) {
+                trimMoving = button;
+                break;
+            }
+        }
+        if (trimMoving == nullptr) {
+            dialogFailure =
+                QStringLiteral("Trim-moving resolution is unavailable");
+            dialog->reject();
+            return;
+        }
+        dialogHandled = true;
+        QTest::mouseClick(trimMoving, Qt::LeftButton);
+    };
+
+    const std::size_t undoDepth = controller->undoDepth();
+    QTimer::singleShot(0, &window, handleDialog);
+    Q_EMIT bitfield->fieldMoveRequested(
+        QStringLiteral("field-ready"), 8, 11);
+    QCoreApplication::processEvents();
+
+    QVERIFY2(dialogFailure.isEmpty(), qPrintable(dialogFailure));
+    QVERIFY(dialogHandled);
+    const auto* ready =
+        regmap::findField(*controller->workspace(), "field-ready");
+    QVERIFY(ready != nullptr);
+    QCOMPARE(ready->lsb, std::uint32_t{0});
+    QCOMPARE(ready->msb, std::uint32_t{3});
+    QCOMPARE(ready->enumValues.size(), std::size_t{2});
+    QCOMPARE(
+        ready->enumValues.back().value,
+        regmap::UnsignedValue(15));
+    QCOMPARE(controller->undoDepth(), undoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Cannot move Field READY")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Enum value")));
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+
+    makeGeneratedFilesWritable(directory.path());
 }
 
 void GuiSmokeTests::cancelsInterruptedFieldDrag()

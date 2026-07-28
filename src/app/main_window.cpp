@@ -1558,6 +1558,28 @@ addressLayoutIssues(const regmap::Workspace& workspace,
         afterIssues.begin(), afterIssues.end());
 }
 
+[[nodiscard]] std::vector<std::string>
+validationIssueSignatures(const regmap::Workspace& workspace)
+{
+    std::vector<std::string> issues;
+    for (const auto& diagnostic : regmap::validateWorkspace(workspace)) {
+        issues.push_back(
+            diagnostic.code + '\n' + diagnostic.objectId + '\n' +
+            diagnostic.message);
+    }
+    std::ranges::sort(issues);
+    return issues;
+}
+
+[[nodiscard]] bool workspaceEditDoesNotWorsen(
+    const regmap::Workspace& before,
+    const regmap::Workspace& after)
+{
+    return introducesNoNewIssues(
+        validationIssueSignatures(before),
+        validationIssueSignatures(after));
+}
+
 [[nodiscard]] bool addressEditDoesNotWorsen(
     const regmap::Workspace& before, const regmap::Workspace& after,
     std::string_view targetId)
@@ -6360,7 +6382,9 @@ void MainWindow::deleteSelectedRegisterAndShift()
 
 void MainWindow::moveField(const std::string& fieldId, std::uint32_t lsb, std::uint32_t msb)
 {
-    const auto* reg = findRegister(selectedRegisterId_);
+    const auto* workspace = controller_.workspace();
+    const auto* reg =
+        workspace == nullptr ? nullptr : findRegister(selectedRegisterId_);
     if (reg == nullptr || msb < lsb || msb >= reg->width) {
         statusBar()->showMessage(QStringLiteral("Field move is outside the register width"), 5000);
         return;
@@ -6438,40 +6462,55 @@ void MainWindow::moveField(const std::string& fieldId, std::uint32_t lsb, std::u
     }
 
     const std::string registerId = reg->id;
-    if (controller_.editWorkspace(
-            QStringLiteral("Move field"),
-            [registerId, fieldId, lsb, msb, resolution](regmap::Workspace& candidate) {
-                auto* target = regmap::findRegister(candidate, registerId);
-                if (target == nullptr) {
-                    return;
-                }
-                if (resolution == Resolution::trimOthers) {
-                    std::erase_if(target->fields, [&](regmap::Field& field) {
-                        if (field.id == fieldId || field.msb < field.lsb || msb < field.lsb ||
-                            lsb > field.msb) {
-                            return false;
-                        }
-                        const bool hasLeft = field.lsb < lsb;
-                        const bool hasRight = field.msb > msb;
-                        if (!hasLeft && !hasRight) {
-                            return true;
-                        }
-                        const std::uint32_t leftWidth = hasLeft ? lsb - field.lsb : 0;
-                        const std::uint32_t rightWidth = hasRight ? field.msb - msb : 0;
-                        if (leftWidth >= rightWidth) {
-                            field.msb = lsb - 1;
-                        } else {
-                            field.lsb = msb + 1;
-                        }
+    const regmap::WorkspaceStore::Mutation move =
+        [registerId, fieldId, lsb, msb, resolution](
+            regmap::Workspace& candidate) {
+        auto* target = regmap::findRegister(candidate, registerId);
+        if (target == nullptr) {
+            return;
+        }
+        if (resolution == Resolution::trimOthers) {
+            std::erase_if(target->fields, [&](regmap::Field& field) {
+                if (field.id == fieldId || field.msb < field.lsb || msb < field.lsb ||
+                    lsb > field.msb) {
                         return false;
-                    });
                 }
-                if (auto* field = regmap::findField(candidate, fieldId)) {
-                    field->lsb = lsb;
-                    field->msb = msb;
+                const bool hasLeft = field.lsb < lsb;
+                const bool hasRight = field.msb > msb;
+                if (!hasLeft && !hasRight) {
+                    return true;
                 }
-                refreshRegisterFieldResets(*target);
-            })) {
+                const std::uint32_t leftWidth = hasLeft ? lsb - field.lsb : 0;
+                const std::uint32_t rightWidth = hasRight ? field.msb - msb : 0;
+                if (leftWidth >= rightWidth) {
+                    field.msb = lsb - 1;
+                } else {
+                    field.lsb = msb + 1;
+                }
+                return false;
+            });
+        }
+        if (auto* field = regmap::findField(candidate, fieldId)) {
+            field->lsb = lsb;
+            field->msb = msb;
+        }
+        refreshRegisterFieldResets(*target);
+    };
+    regmap::Workspace candidate = *workspace;
+    move(candidate);
+    if (!workspaceEditDoesNotWorsen(*workspace, candidate)) {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Cannot move Field %1: trimming would invalidate an existing "
+                "Reset, Enum value, numeric Range, access rule, or Member Field. "
+                "Edit the affected values or choose another placement; no change "
+                "was made.")
+                .arg(fromUtf8(moving->name)),
+            10000);
+        return;
+    }
+
+    if (controller_.editWorkspace(QStringLiteral("Move field"), move)) {
         selectedFieldId_ = fieldId;
         refreshProject();
         selectRegister(registerId);
