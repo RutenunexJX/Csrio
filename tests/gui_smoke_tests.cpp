@@ -3535,7 +3535,7 @@ void GuiSmokeTests::rejectsOutOfRangeNumericEdits()
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
     const QString manifest = directory.filePath(QStringLiteral("project.regmap.yaml"));
-    createProject(manifest);
+    createTwoRegisterProject(manifest);
 
     MainWindow window;
     window.openProjectPath(manifest);
@@ -3588,6 +3588,73 @@ void GuiSmokeTests::rejectsOutOfRangeNumericEdits()
     QVERIFY(window.statusBar()->currentMessage().contains(
         QStringLiteral("1-bit field")));
 
+    const QModelIndex controlInitial = registers->model()->index(1, 7);
+    QVERIFY(registers->model()->setData(controlInitial, QStringLiteral("0x100")));
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 7).data().toString(),
+                              QStringLiteral("0x100"), 2000);
+    const std::size_t registerWidthUndoDepth = controller->undoDepth();
+    QVERIFY(registers->model()->setData(registers->model()->index(1, 3),
+                                        QStringLiteral("8")));
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 3).data().toString(),
+                              QStringLiteral("32"), 2000);
+    QCOMPARE(regmap::findRegister(*controller->workspace(), "reg-control")->width,
+             std::uint32_t{32});
+    QCOMPARE(controller->undoDepth(), registerWidthUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Initial, Reset, and Enum")));
+
+    QVERIFY(registers->model()->setData(registers->model()->index(1, 4),
+                                        QStringLiteral("uint8")));
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 4).data().toString(),
+                              QStringLiteral("uint32"), 2000);
+    QCOMPARE(regmap::findRegister(*controller->workspace(), "reg-control")->width,
+             std::uint32_t{32});
+    QCOMPARE(controller->undoDepth(), registerWidthUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Initial and Reset")));
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Configure field width fixture"),
+        [](regmap::Workspace& workspace) {
+            auto* field = regmap::findField(workspace, "field-ready");
+            if (field == nullptr) {
+                return;
+            }
+            field->msb = 1;
+            field->type = regmap::FieldType::enumeration;
+            regmap::EnumValue zero;
+            zero.id = "enum-field-zero";
+            zero.name = "ZERO";
+            zero.value = regmap::UnsignedValue(0);
+            regmap::EnumValue three;
+            three.id = "enum-field-three";
+            three.name = "THREE";
+            three.value = regmap::UnsignedValue(3);
+            field->enumValues = {zero, three};
+        }));
+    QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
+    int fieldRow = -1;
+    for (int row = 0; row < fields->model()->rowCount(); ++row) {
+        if (fields->model()->index(row, 0).data(Qt::UserRole + 1).toString() ==
+            QStringLiteral("field-ready")) {
+            fieldRow = row;
+            break;
+        }
+    }
+    QVERIFY(fieldRow >= 0);
+    const std::size_t fieldWidthUndoDepth = controller->undoDepth();
+    QVERIFY(fields->model()->setData(fields->model()->index(fieldRow, 4),
+                                     QStringLiteral("1")));
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(fieldRow, 4).data().toString(),
+                              QStringLiteral("2"), 2000);
+    QCOMPARE(regmap::findField(*controller->workspace(), "field-ready")->width(),
+             std::uint64_t{2});
+    QCOMPARE(regmap::findEnumValue(*controller->workspace(), "enum-field-three")->value,
+             regmap::UnsignedValue(3));
+    QCOMPARE(controller->undoDepth(), fieldWidthUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Reset, Enum, and member Field")));
+
     QVERIFY(controller->editWorkspace(
         QStringLiteral("Configure enum bounds fixture"),
         [](regmap::Workspace& workspace) {
@@ -3606,7 +3673,7 @@ void GuiSmokeTests::rejectsOutOfRangeNumericEdits()
             regmap::EnumValue one;
             one.id = "enum-one";
             one.name = "ONE";
-            one.value = regmap::UnsignedValue(1);
+            one.value = regmap::UnsignedValue(3);
             reg->enumValues = {zero, one};
         }));
     QTRY_VERIFY_WITH_TIMEOUT(enums->isVisible(), 2000);
@@ -3630,6 +3697,27 @@ void GuiSmokeTests::rejectsOutOfRangeNumericEdits()
     QCOMPARE(controller->undoDepth(), enumUndoDepth);
     QVERIFY(window.statusBar()->currentMessage().contains(
         QStringLiteral("2-bit value")));
+
+    const std::size_t enumWidthUndoDepth = controller->undoDepth();
+    QVERIFY(registers->model()->setData(registers->model()->index(0, 3),
+                                        QStringLiteral("1")));
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 3).data().toString(),
+                              QStringLiteral("2"), 2000);
+    QCOMPARE(regmap::findRegister(*controller->workspace(), "reg-status")->width,
+             std::uint32_t{2});
+    QCOMPARE(controller->undoDepth(), enumWidthUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Initial, Reset, and Enum")));
+
+    QVERIFY(registers->model()->setData(registers->model()->index(0, 4),
+                                        QStringLiteral("bool")));
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 4).data().toString(),
+                              QStringLiteral("enum"), 2000);
+    QCOMPARE(regmap::findRegister(*controller->workspace(), "reg-status")->width,
+             std::uint32_t{2});
+    QCOMPARE(controller->undoDepth(), enumWidthUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Initial, Reset, and Enum")));
 
     makeGeneratedFilesWritable(directory.path());
 }

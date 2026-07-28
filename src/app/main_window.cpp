@@ -889,6 +889,38 @@ enumValueOwnerWidth(const regmap::Workspace& workspace, std::string_view enumVal
     return std::nullopt;
 }
 
+[[nodiscard]] bool enumValuesFitWidth(const std::vector<regmap::EnumValue>& values,
+                                      std::size_t width)
+{
+    return std::ranges::all_of(values, [width](const regmap::EnumValue& value) {
+        return value.value.fitsInBits(width);
+    });
+}
+
+[[nodiscard]] bool registerValuesFitWidth(const regmap::Register& reg, std::size_t width,
+                                          bool includeEnumValues)
+{
+    const bool initialFits = !reg.initialValue || reg.initialValue->fitsInBits(width);
+    const bool resetFits = !reg.resetValue || reg.resetValue->fitsInBits(width);
+    return initialFits && resetFits &&
+           (!includeEnumValues || enumValuesFitWidth(reg.enumValues, width));
+}
+
+[[nodiscard]] bool fieldValuesFitWidth(const regmap::Field& field,
+                                       const regmap::Register& owner, std::size_t width,
+                                       bool includeEnumValues)
+{
+    const bool resetFits =
+        owner.resetValue || !field.resetValue || field.resetValue->fitsInBits(width);
+    const bool enumsFit =
+        !includeEnumValues || enumValuesFitWidth(field.enumValues, width);
+    const bool membersFit =
+        std::ranges::all_of(field.members, [width](const regmap::Field& member) {
+            return member.msb < width;
+        });
+    return resetFits && enumsFit && membersFit;
+}
+
 void configureTable(QTableView* view)
 {
     view->setSelectionBehavior(QAbstractItemView::SelectItems);
@@ -2874,9 +2906,16 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
             const auto* current = regmap::findField(*workspace, objectId);
             const auto* owner = findRegisterContainingField(*workspace, objectId);
             if (!parsed || current == nullptr || owner == nullptr || *parsed < current->lsb ||
-                *parsed >= owner->width) {
+                *parsed >= owner->width ||
+                !fieldValuesFitWidth(
+                    *current, *owner,
+                    static_cast<std::size_t>(
+                        static_cast<std::uint64_t>(*parsed) - current->lsb + 1),
+                    true)) {
                 return reject(
-                    QStringLiteral("an MSB between the field LSB and register width"));
+                    QStringLiteral(
+                        "an MSB between the field LSB and register width that preserves "
+                        "Reset, Enum, and member Field values"));
             }
             return commit([=](regmap::Workspace& candidate) {
                 if (auto* field = regmap::findField(candidate, objectId)) {
@@ -2893,9 +2932,12 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
             const auto* owner = findRegisterContainingField(*workspace, objectId);
             if (!parsed || *parsed == 0 || *parsed > maximumEditableWidth || current == nullptr ||
                 owner == nullptr ||
-                static_cast<std::uint64_t>(current->lsb) + *parsed - 1 >= owner->width) {
+                static_cast<std::uint64_t>(current->lsb) + *parsed - 1 >= owner->width ||
+                !fieldValuesFitWidth(*current, *owner, static_cast<std::size_t>(*parsed), true)) {
                 return reject(
-                    QStringLiteral("a positive field width that fits in the register"));
+                    QStringLiteral(
+                        "a positive field width that fits in the register and preserves "
+                        "Reset, Enum, and member Field values"));
             }
             return commit([=](regmap::Workspace& candidate) {
                 if (auto* field = regmap::findField(candidate, objectId)) {
@@ -2967,6 +3009,17 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
             const bool enumerationLike =
                 *parsed == regmap::FieldType::enumeration ||
                 *parsed == regmap::FieldType::boolean;
+            const std::optional<std::uint32_t> targetWidth =
+                numericWidth
+                    ? numericWidth
+                    : (*parsed == regmap::FieldType::boolean
+                           ? std::optional<std::uint32_t>{1}
+                           : std::nullopt);
+            if (targetWidth && currentField != nullptr && owner != nullptr &&
+                !fieldValuesFitWidth(*currentField, *owner, *targetWidth, enumerationLike)) {
+                return reject(QStringLiteral(
+                    "a type width that preserves existing Reset, Enum, and member Field values"));
+            }
             const bool numeric = *parsed == regmap::FieldType::signedInteger ||
                                  *parsed == regmap::FieldType::unsignedInteger;
             const bool clearsEnumValues =
@@ -3135,6 +3188,21 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
             const bool enumerationLike =
                 *parsed == regmap::FieldType::enumeration ||
                 *parsed == regmap::FieldType::boolean;
+            const std::optional<std::uint32_t> targetWidth =
+                numericWidth
+                    ? numericWidth
+                    : (*parsed == regmap::FieldType::boolean
+                           ? std::optional<std::uint32_t>{1}
+                           : std::nullopt);
+            if (targetWidth &&
+                !registerValuesFitWidth(*current, *targetWidth, enumerationLike)) {
+                return reject(
+                    enumerationLike
+                        ? QStringLiteral(
+                              "a type width that fits existing Initial, Reset, and Enum values")
+                        : QStringLiteral(
+                              "a type width that fits existing Initial and Reset values"));
+            }
             const bool numeric = *parsed == regmap::FieldType::signedInteger ||
                                  *parsed == regmap::FieldType::unsignedInteger;
             const bool clearsEnumValues = !enumerationLike && !current->enumValues.empty();
@@ -3207,6 +3275,12 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                 })) {
                 return reject(
                     QStringLiteral("a register width that contains all existing fields"));
+            }
+            if (property == "width" && current != nullptr &&
+                !registerValuesFitWidth(*current, *parsed, true)) {
+                return reject(
+                    QStringLiteral(
+                        "a register width that fits existing Initial, Reset, and Enum values"));
             }
             return commit([=](regmap::Workspace& candidate) {
                 if (auto* reg = regmap::findRegister(candidate, objectId)) {
