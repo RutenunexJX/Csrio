@@ -22,6 +22,9 @@ public:
     [[nodiscard]] bool fitsInBits(std::size_t width) const noexcept;
     [[nodiscard]] bool testBit(std::size_t index) const noexcept;
     [[nodiscard]] UnsignedValue slice(std::size_t lsb, std::size_t width) const;
+    [[nodiscard]] std::optional<UnsignedValue>
+    replacingSlice(std::size_t lsb, std::size_t width,
+                   const UnsignedValue& replacement) const;
 
     [[nodiscard]] std::string toHexString(bool includePrefix = true) const;
     [[nodiscard]] std::string toDecimalString() const;

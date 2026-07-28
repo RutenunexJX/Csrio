@@ -7,6 +7,7 @@
 #include "regmap/core/rtl_sync.hpp"
 #include "regmap/core/serialization.hpp"
 #include "regmap/core/three_way_merge.hpp"
+#include "regmap/core/validation.hpp"
 #include "regmap/core/workspace_store.hpp"
 
 #include <QAction>
@@ -95,6 +96,7 @@ private slots:
     void refreshesSearchResultsAfterModelChanges();
     void copiesAndPastesEditableCells();
     void rejectsOutOfRangeNumericEdits();
+    void synchronizesFieldResetEdits();
     void requiresExplicitCellEditing();
     void keepsUndoRedoInsideActiveEditor();
     void savesActiveEditorWithShortcut();
@@ -3718,6 +3720,110 @@ void GuiSmokeTests::rejectsOutOfRangeNumericEdits()
     QCOMPARE(controller->undoDepth(), enumWidthUndoDepth);
     QVERIFY(window.statusBar()->currentMessage().contains(
         QStringLiteral("Initial, Reset, and Enum")));
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::synchronizesFieldResetEdits()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+
+    auto* controller = window.findChild<ProjectController*>();
+    auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* fields = window.findChild<QTableView*>(QStringLiteral("fieldView"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Configure nested reset fixture"),
+        [](regmap::Workspace& workspace) {
+            auto* reg = regmap::findRegister(workspace, "reg-status");
+            if (reg == nullptr) {
+                return;
+            }
+            regmap::Field member;
+            member.id = "field-member";
+            member.name = "MEMBER";
+            member.msb = 2;
+            member.lsb = 2;
+            member.type = regmap::FieldType::boolean;
+            member.softwareAccess = regmap::AccessMode::readOnly;
+            member.hardwareAccess = regmap::AccessMode::writeOnly;
+            member.resetValue = regmap::UnsignedValue(0);
+            member.writeSideEffect = regmap::WriteSideEffect::none;
+
+            regmap::Field parent;
+            parent.id = "field-parent";
+            parent.name = "PARENT";
+            parent.msb = 15;
+            parent.lsb = 8;
+            parent.type = regmap::FieldType::structure;
+            parent.softwareAccess = regmap::AccessMode::none;
+            parent.hardwareAccess = regmap::AccessMode::none;
+            parent.resetValue = regmap::UnsignedValue(0);
+            parent.writeSideEffect = regmap::WriteSideEffect::none;
+            parent.members.push_back(std::move(member));
+            reg->fields = {std::move(parent)};
+            reg->resetValue = regmap::UnsignedValue(0);
+        }));
+
+    Q_EMIT registers->clicked(registers->model()->index(0, 5));
+    QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
+    int parentRow = -1;
+    int memberRow = -1;
+    for (int row = 0; row < fields->model()->rowCount(); ++row) {
+        const QString id =
+            fields->model()->index(row, 0).data(Qt::UserRole + 1).toString();
+        if (id == QStringLiteral("field-parent")) {
+            parentRow = row;
+        } else if (id == QStringLiteral("field-member")) {
+            memberRow = row;
+        }
+    }
+    QVERIFY(parentRow >= 0);
+    QVERIFY(memberRow >= 0);
+    QCOMPARE(registers->model()->index(0, 8).data().toString(),
+             QStringLiteral("0x0"));
+    QCOMPARE(fields->model()->index(parentRow, 10).data().toString(),
+             QStringLiteral("0x0"));
+    QCOMPARE(fields->model()->index(memberRow, 10).data().toString(),
+             QStringLiteral("0x0"));
+
+    const std::size_t undoDepth = controller->undoDepth();
+    QVERIFY(fields->model()->setData(fields->model()->index(memberRow, 10),
+                                     QStringLiteral("0x1")));
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 8).data().toString(),
+                              QStringLiteral("0x400"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(parentRow, 10).data().toString(),
+                              QStringLiteral("0x4"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(memberRow, 10).data().toString(),
+                              QStringLiteral("0x1"), 2000);
+    QCOMPARE(regmap::findRegister(*controller->workspace(), "reg-status")->resetValue,
+             std::optional(regmap::UnsignedValue(0x400)));
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+    QCOMPARE(controller->undoDepth(), undoDepth + 1);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Register Reset")));
+
+    fields->setFocus(Qt::OtherFocusReason);
+    QTest::keyClick(fields, Qt::Key_Z, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 8).data().toString(),
+                              QStringLiteral("0x0"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(parentRow, 10).data().toString(),
+                              QStringLiteral("0x0"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(memberRow, 10).data().toString(),
+                              QStringLiteral("0x0"), 2000);
+    QCOMPARE(controller->undoDepth(), undoDepth);
 
     makeGeneratedFilesWritable(directory.path());
 }

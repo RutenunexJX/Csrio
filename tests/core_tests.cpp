@@ -32,6 +32,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <string>
 #include <string_view>
 
@@ -112,6 +113,23 @@ void CoreTests::slicesUnsignedValues()
     QCOMPARE(value->slice(8, 16).toHexString(), std::string("0xBCDE"));
     QVERIFY(value->fitsInBits(64));
     QVERIFY(!value->fitsInBits(60));
+
+    const auto base = regmap::UnsignedValue::parse("0xFFFF");
+    const auto replacement = regmap::UnsignedValue::parse("0x5");
+    QVERIFY(base.has_value());
+    QVERIFY(replacement.has_value());
+    const auto replaced = base->replacingSlice(4, 4, *replacement);
+    QVERIFY(replaced.has_value());
+    QCOMPARE(replaced->toHexString(), std::string("0xFF5F"));
+    const auto cleared =
+        base->replacingSlice(4, 4, regmap::UnsignedValue(0));
+    QVERIFY(cleared.has_value());
+    QCOMPARE(cleared->toHexString(), std::string("0xFF0F"));
+    QVERIFY(!base->replacingSlice(4, 2, *replacement).has_value());
+    QVERIFY(!base
+                 ->replacingSlice(std::numeric_limits<std::size_t>::max(), 2,
+                                  regmap::UnsignedValue(0))
+                 .has_value());
 
     regmap::Field field;
     field.msb = 31;

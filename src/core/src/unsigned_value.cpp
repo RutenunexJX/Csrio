@@ -168,6 +168,39 @@ UnsignedValue UnsignedValue::slice(std::size_t lsb, std::size_t width) const
     return result;
 }
 
+std::optional<UnsignedValue>
+UnsignedValue::replacingSlice(std::size_t lsb, std::size_t width,
+                              const UnsignedValue& replacement) const
+{
+    if (!replacement.fitsInBits(width) ||
+        width > std::numeric_limits<std::size_t>::max() - lsb) {
+        return std::nullopt;
+    }
+
+    UnsignedValue result = *this;
+    if (width == 0) {
+        return result;
+    }
+    const std::size_t end = lsb + width;
+    const std::size_t requiredWords = (end - 1) / bitsPerWord + 1;
+    if (result.words_.size() < requiredWords) {
+        result.words_.resize(requiredWords, 0);
+    }
+    for (std::size_t index = 0; index < width; ++index) {
+        const std::size_t target = lsb + index;
+        const std::size_t wordIndex = target / bitsPerWord;
+        const std::size_t bitIndex = target % bitsPerWord;
+        const std::uint32_t mask = std::uint32_t{1} << bitIndex;
+        if (replacement.testBit(index)) {
+            result.words_[wordIndex] |= mask;
+        } else {
+            result.words_[wordIndex] &= ~mask;
+        }
+    }
+    result.normalize();
+    return result;
+}
+
 std::string UnsignedValue::toHexString(bool includePrefix) const
 {
     if (words_.empty()) {

@@ -945,6 +945,25 @@ void configureTable(QTableView* view)
     return false;
 }
 
+[[nodiscard]] std::optional<std::uint64_t>
+fieldAbsoluteLsb(const std::vector<regmap::Field>& fields, std::string_view fieldId,
+                 std::uint64_t parentLsb = 0)
+{
+    for (const auto& field : fields) {
+        std::uint64_t absoluteLsb = 0;
+        if (addOverflow(parentLsb, field.lsb, absoluteLsb)) {
+            continue;
+        }
+        if (field.id == fieldId) {
+            return absoluteLsb;
+        }
+        if (const auto nested = fieldAbsoluteLsb(field.members, fieldId, absoluteLsb)) {
+            return nested;
+        }
+    }
+    return std::nullopt;
+}
+
 [[nodiscard]] regmap::Register* findRegisterContainingField(regmap::Workspace& workspace,
                                                             std::string_view fieldId)
 {
@@ -2951,6 +2970,7 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
         if (property == "reset") {
             std::optional<regmap::UnsignedValue> parsed;
             const auto* current = regmap::findField(*workspace, objectId);
+            const auto* owner = findRegisterContainingField(*workspace, objectId);
             if (!textValue.empty()) {
                 parsed = parseUnsigned();
                 if (!parsed || current == nullptr ||
@@ -2963,11 +2983,42 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                                   .arg(current->width()));
                 }
             }
-            return commit([=](regmap::Workspace& candidate) {
-                if (auto* field = regmap::findField(candidate, objectId)) {
+            const bool updatesRegisterReset =
+                parsed.has_value() && current != nullptr && owner != nullptr &&
+                owner->resetValue.has_value();
+            const PropertyEditResult result =
+                commit([=](regmap::Workspace& candidate) {
+                    auto* field = regmap::findField(candidate, objectId);
+                    if (field == nullptr) {
+                        return;
+                    }
+                    auto* reg = findRegisterContainingField(candidate, objectId);
+                    if (parsed && reg != nullptr && reg->resetValue) {
+                        const auto absoluteLsb =
+                            fieldAbsoluteLsb(reg->fields, objectId);
+                        const auto merged =
+                            absoluteLsb
+                                ? reg->resetValue->replacingSlice(
+                                      static_cast<std::size_t>(*absoluteLsb),
+                                      static_cast<std::size_t>(field->width()), *parsed)
+                                : std::nullopt;
+                        if (merged) {
+                            reg->resetValue = *merged;
+                            refreshRegisterFieldResets(*reg);
+                            return;
+                        }
+                    }
                     field->resetValue = parsed;
-                }
-            });
+                });
+            if (result.status == PropertyEditStatus::changed &&
+                updatesRegisterReset && reportFeedback) {
+                statusBar()->showMessage(
+                    QStringLiteral(
+                        "Field Reset updated the matching Register Reset bits · "
+                        "Ctrl+Z to restore"),
+                    6000);
+            }
+            return result;
         }
         if (property == "type") {
             const QString normalized = value.trimmed().toLower();
