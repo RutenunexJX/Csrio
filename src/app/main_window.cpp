@@ -1349,12 +1349,24 @@ void MainWindow::buildActions()
     undoAction_ = new QAction(QStringLiteral("Undo"), this);
     undoAction_->setShortcut(QKeySequence::Undo);
     undoAction_->setEnabled(false);
-    connect(undoAction_, &QAction::triggered, &controller_, &ProjectController::undo);
+    connect(undoAction_, &QAction::triggered, this, [this] {
+        if (auto* edit = qobject_cast<QLineEdit*>(QApplication::focusWidget())) {
+            edit->undo();
+            return;
+        }
+        controller_.undo();
+    });
 
     redoAction_ = new QAction(QStringLiteral("Redo"), this);
     redoAction_->setShortcut(QKeySequence::Redo);
     redoAction_->setEnabled(false);
-    connect(redoAction_, &QAction::triggered, &controller_, &ProjectController::redo);
+    connect(redoAction_, &QAction::triggered, this, [this] {
+        if (auto* edit = qobject_cast<QLineEdit*>(QApplication::focusWidget())) {
+            edit->redo();
+            return;
+        }
+        controller_.redo();
+    });
 
     generateAction_ = new QAction(QStringLiteral("Generate"), this);
     generateAction_->setShortcut(QKeySequence(QStringLiteral("Ctrl+G")));

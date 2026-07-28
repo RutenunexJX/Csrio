@@ -85,6 +85,7 @@ private slots:
     void showsUnifiedSyncStateAndGeneratedResults();
     void searchesAndNavigatesProblems();
     void copiesAndPastesEditableCells();
+    void keepsUndoRedoInsideActiveEditor();
     void deletesFocusedRegisterAndRestoresIt();
     void editsUndoesAndSavesProject();
     void rejectsInvalidManagedRtl();
@@ -1686,6 +1687,8 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     auto* registerUndo = findUndoAction();
     QVERIFY(registerUndo != nullptr);
     QVERIFY(registerUndo->isEnabled());
+    registers->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
     registerUndo->trigger();
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 4).data().toString(),
                               QStringLiteral("uint16"), 2000);
@@ -1770,6 +1773,8 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     registerUndo = findUndoAction();
     QVERIFY(registerUndo != nullptr);
     QVERIFY(registerUndo->isEnabled());
+    registers->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
     registerUndo->trigger();
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 4).data().toString(),
                               QStringLiteral("enum"), 2000);
@@ -1813,6 +1818,8 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     registerUndo = findUndoAction();
     QVERIFY(registerUndo != nullptr);
     QVERIFY(registerUndo->isEnabled());
+    registers->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
     registerUndo->trigger();
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 4).data().toString(),
                               QStringLiteral("enum"), 2000);
@@ -1921,6 +1928,8 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     registerUndo = findUndoAction();
     QVERIFY(registerUndo != nullptr);
     QVERIFY(registerUndo->isEnabled());
+    enums->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
     registerUndo->trigger();
     QTRY_COMPARE_WITH_TIMEOUT(enums->model()->rowCount(), 3, 2000);
     bool restoredDeletedEnum = false;
@@ -2193,6 +2202,8 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     });
     QVERIFY(undo != actions.end());
     QVERIFY((*undo)->isEnabled());
+    fields->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
     (*undo)->trigger();
     QTRY_VERIFY_WITH_TIMEOUT(fieldRowForId(memberFieldId) >= 0, 2000);
     memberRow = fieldRowForId(memberFieldId);
@@ -3268,6 +3279,77 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 9).data().toString(),
                               QStringLiteral("RW"), 2000);
 
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::keepsUndoRedoInsideActiveEditor()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createTwoRegisterProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+    auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* controller = window.findChild<ProjectController*>();
+    QVERIFY(registers != nullptr);
+    QVERIFY(controller != nullptr);
+
+    QSignalSpy committedEditResetSpy(
+        registers->model(), &QAbstractItemModel::modelReset);
+    const QModelIndex description = registers->model()->index(0, 11);
+    QVERIFY(registers->model()->setData(
+        description, QStringLiteral("Committed description")));
+    QTRY_VERIFY_WITH_TIMEOUT(committedEditResetSpy.count() > 0, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(controller->canUndo(), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        QString::fromStdString(
+            regmap::findRegister(*controller->workspace(), "reg-status")->description),
+        QStringLiteral("Committed description"), 2000);
+    const std::size_t workspaceUndoDepth = controller->undoDepth();
+
+    const QModelIndex name = registers->model()->index(0, 0);
+    registers->setCurrentIndex(name);
+    registers->scrollTo(name);
+    registers->setFocus(Qt::OtherFocusReason);
+    registers->edit(name);
+    QCoreApplication::processEvents();
+    const auto visibleEditor = [registers]() -> QLineEdit* {
+        const auto editors = registers->findChildren<QLineEdit*>();
+        const auto visible = std::ranges::find_if(
+            editors, [](const QLineEdit* editor) { return editor->isVisible(); });
+        return visible == editors.end() ? nullptr : *visible;
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(visibleEditor() != nullptr, 2000);
+    QLineEdit* editor = visibleEditor();
+    const QString originalName = editor->text();
+    editor->setCursorPosition(static_cast<int>(originalName.size()));
+    QTest::keyClicks(editor, QStringLiteral("X"));
+    QCOMPARE(editor->text(), originalName + QStringLiteral("X"));
+
+    QTest::keyClick(editor, Qt::Key_Z, Qt::ControlModifier);
+    QCOMPARE(editor->text(), originalName);
+    QCOMPARE(controller->undoDepth(), workspaceUndoDepth);
+    QCOMPARE(
+        QString::fromStdString(
+            regmap::findRegister(*controller->workspace(), "reg-status")->description),
+        QStringLiteral("Committed description"));
+
+    QTest::keyClick(editor, Qt::Key_Y, Qt::ControlModifier);
+    QCOMPARE(editor->text(), originalName + QStringLiteral("X"));
+    QCOMPARE(controller->undoDepth(), workspaceUndoDepth);
+    QCOMPARE(
+        QString::fromStdString(
+            regmap::findRegister(*controller->workspace(), "reg-status")->description),
+        QStringLiteral("Committed description"));
+
+    QTest::keyClick(editor, Qt::Key_Escape);
+    QCoreApplication::processEvents();
+    QCOMPARE(registers->model()->index(0, 0).data().toString(), originalName);
     makeGeneratedFilesWritable(directory.path());
 }
 
