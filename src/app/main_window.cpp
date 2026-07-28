@@ -4806,8 +4806,10 @@ void MainWindow::pasteSelection()
         QString propertyName;
     };
     std::vector<PasteTarget> targets;
+    std::size_t skipped = 0;
     const auto appendTarget = [&](const QModelIndex& target, const QString& text) {
         if (!target.isValid() || target.data(addRowRole).toBool()) {
+            ++skipped;
             return;
         }
         const std::string objectId =
@@ -4815,6 +4817,7 @@ void MainWindow::pasteSelection()
         const std::string property =
             target.data(propertyRole).toString().toUtf8().toStdString();
         if (objectId.empty() || property.empty()) {
+            ++skipped;
             return;
         }
         const bool duplicate =
@@ -4874,8 +4877,9 @@ void MainWindow::pasteSelection()
 
     if (targets.empty()) {
         statusBar()->showMessage(
-            QStringLiteral("Paste skipped: selected cells do not accept pasted values"),
-            4000);
+            QStringLiteral(
+                "Paste skipped: %1 skipped cell(s) (read-only, action, add row, or outside table)")
+                .arg(skipped), 5000);
         return;
     }
 
@@ -4943,15 +4947,18 @@ void MainWindow::pasteSelection()
     QString message;
     if (changed == 0) {
         message = QStringLiteral(
-                      "Paste made no changes: %1 unchanged, %2 rejected")
+                      "Paste made no changes: %1 unchanged, %2 rejected, %3 skipped")
                       .arg(unchanged)
-                      .arg(rejected);
+                      .arg(rejected)
+                      .arg(skipped);
     } else {
         message =
-            QStringLiteral("Paste complete: %1 changed, %2 unchanged, %3 rejected")
+            QStringLiteral(
+                "Paste complete: %1 changed, %2 unchanged, %3 rejected, %4 skipped")
                 .arg(changed)
                 .arg(unchanged)
-                .arg(rejected);
+                .arg(rejected)
+                .arg(skipped);
     }
     if (!firstRejected.isEmpty()) {
         message += QStringLiteral("; first rejected: ") + firstRejected;

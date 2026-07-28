@@ -3061,6 +3061,7 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
     QVERIFY(mixedPasteMessage.contains(QStringLiteral("1 changed")));
     QVERIFY(mixedPasteMessage.contains(QStringLiteral("1 unchanged")));
     QVERIFY(mixedPasteMessage.contains(QStringLiteral("1 rejected")));
+    QVERIFY(mixedPasteMessage.contains(QStringLiteral("1 skipped")));
     QVERIFY(mixedPasteMessage.contains(QStringLiteral("STATUS")));
     QVERIFY(mixedPasteMessage.contains(QStringLiteral("Width")));
     QVERIFY(mixedPasteMessage.contains(QStringLiteral("invalid-width")));
@@ -3070,6 +3071,20 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 0).data().toString(),
                               QStringLiteral("STATUS"), 2000);
     QCOMPARE(controller->undoDepth(), mixedPasteUndoDepth);
+
+    const QModelIndex readOnlyAddress = registers->model()->index(0, 2);
+    const QString originalAddress = readOnlyAddress.data().toString();
+    const std::size_t readOnlyPasteUndoDepth = controller->undoDepth();
+    registers->setCurrentIndex(readOnlyAddress);
+    registers->selectionModel()->select(
+        readOnlyAddress, QItemSelectionModel::ClearAndSelect);
+    QApplication::clipboard()->setText(QStringLiteral("0xDEADBEEF"));
+    QTest::keyClick(registers, Qt::Key_V, Qt::ControlModifier);
+    QCoreApplication::processEvents();
+    QCOMPARE(controller->undoDepth(), readOnlyPasteUndoDepth);
+    QCOMPARE(readOnlyAddress.data().toString(), originalAddress);
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("1 skipped")));
+    QVERIFY(registers->selectionModel()->isSelected(readOnlyAddress));
 
     const QModelIndex sourceTags = registers->model()->index(1, 10);
     registers->scrollTo(sourceTags);
