@@ -1742,6 +1742,7 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
         }
     }
     QVERIFY(!guardedEnumId.isEmpty());
+    QCOMPARE(registers->currentIndex().row(), 1);
     registers->setCurrentIndex(registers->model()->index(0, 0));
     QCoreApplication::processEvents();
     QVERIFY(visibleEnumEditor() == nullptr);
@@ -3007,12 +3008,20 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
                               QStringLiteral("CONTROL_RENAMED"), 2000);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 1).data().toString(),
                               QStringLiteral("0x8"), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        registers->selectionModel()->isSelected(registers->model()->index(1, 0)) &&
+            registers->selectionModel()->isSelected(registers->model()->index(1, 1)),
+        2000);
 
     QTest::keyClick(&window, Qt::Key_Z, Qt::ControlModifier);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 0).data().toString(),
                               QStringLiteral("CONTROL"), 2000);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 1).data().toString(),
                               QStringLiteral("0x4"), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        registers->selectionModel()->isSelected(registers->model()->index(1, 0)) &&
+            registers->selectionModel()->isSelected(registers->model()->index(1, 1)),
+        2000);
 
     QTest::keyClick(&window, Qt::Key_Y, Qt::ControlModifier);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 0).data().toString(),
@@ -3062,6 +3071,10 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
                               QStringLiteral("control"), 2000);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 10).data().toString(),
                               QStringLiteral("control"), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        registers->selectionModel()->isSelected(registers->model()->index(0, 10)) &&
+            registers->selectionModel()->isSelected(registers->model()->index(1, 10)),
+        2000);
     const auto* status =
         regmap::findRegister(*controller->workspace(), "reg-status");
     QVERIFY(status != nullptr);
@@ -3080,6 +3093,10 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
                               QStringLiteral("shared"), 2000);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 10).data().toString(),
                               QStringLiteral("shared"), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        registers->selectionModel()->isSelected(registers->model()->index(0, 10)) &&
+            registers->selectionModel()->isSelected(registers->model()->index(1, 10)),
+        2000);
 
     QTest::keyClick(&window, Qt::Key_Z, Qt::ControlModifier);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 10).data().toString(),
@@ -3121,6 +3138,10 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
                               QStringLiteral("WO"), 2000);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 9).data().toString(),
                               QStringLiteral("WO"), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        registers->selectionModel()->isSelected(registers->model()->index(0, 9)) &&
+            registers->selectionModel()->isSelected(registers->model()->index(1, 9)),
+        2000);
     QCOMPARE(regmap::findRegister(*controller->workspace(), "reg-status")->access,
              regmap::AccessMode::writeOnly);
 
@@ -3129,6 +3150,10 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
                               QStringLiteral("RO"), 2000);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 9).data().toString(),
                               QStringLiteral("RW"), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        registers->selectionModel()->isSelected(registers->model()->index(0, 9)) &&
+            registers->selectionModel()->isSelected(registers->model()->index(1, 9)),
+        2000);
     QTest::keyClick(&window, Qt::Key_Y, Qt::ControlModifier);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 9).data().toString(),
                               QStringLiteral("WO"), 2000);

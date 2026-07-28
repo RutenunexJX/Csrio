@@ -318,6 +318,87 @@ enum EnumColumn {
     return result;
 }
 
+struct TableCellReference {
+    std::string objectId;
+    std::string property;
+
+    bool operator==(const TableCellReference&) const = default;
+};
+
+struct TableSelectionSnapshot {
+    std::vector<TableCellReference> selected;
+    std::optional<TableCellReference> current;
+};
+
+[[nodiscard]] std::optional<TableCellReference>
+tableCellReference(const QModelIndex& index, int objectRole, int propertyRole)
+{
+    if (!index.isValid()) {
+        return std::nullopt;
+    }
+    TableCellReference reference{
+        index.data(objectRole).toString().toUtf8().toStdString(),
+        index.data(propertyRole).toString().toUtf8().toStdString(),
+    };
+    if (reference.objectId.empty() || reference.property.empty()) {
+        return std::nullopt;
+    }
+    return reference;
+}
+
+[[nodiscard]] TableSelectionSnapshot
+captureTableSelection(QTableView* view, int objectRole, int propertyRole)
+{
+    TableSelectionSnapshot snapshot;
+    if (view == nullptr || view->selectionModel() == nullptr) {
+        return snapshot;
+    }
+    for (const QModelIndex& index : view->selectionModel()->selectedIndexes()) {
+        if (const auto reference = tableCellReference(index, objectRole, propertyRole);
+            reference &&
+            std::ranges::find(snapshot.selected, *reference) == snapshot.selected.end()) {
+            snapshot.selected.push_back(*reference);
+        }
+    }
+    snapshot.current =
+        tableCellReference(view->currentIndex(), objectRole, propertyRole);
+    return snapshot;
+}
+
+void restoreTableSelection(QTableView* view, const TableSelectionSnapshot& snapshot,
+                           int objectRole, int propertyRole)
+{
+    if (view == nullptr || view->model() == nullptr || view->selectionModel() == nullptr ||
+        snapshot.selected.empty()) {
+        return;
+    }
+    QModelIndex first;
+    QModelIndex current;
+    view->selectionModel()->clearSelection();
+    for (int row = 0; row < view->model()->rowCount(); ++row) {
+        for (int column = 0; column < view->model()->columnCount(); ++column) {
+            const QModelIndex index = view->model()->index(row, column);
+            const auto reference = tableCellReference(index, objectRole, propertyRole);
+            if (!reference ||
+                std::ranges::find(snapshot.selected, *reference) == snapshot.selected.end()) {
+                continue;
+            }
+            view->selectionModel()->select(index, QItemSelectionModel::Select);
+            if (!first.isValid()) {
+                first = index;
+            }
+            if (snapshot.current && *reference == *snapshot.current) {
+                current = index;
+            }
+        }
+    }
+    const QModelIndex restoredCurrent = current.isValid() ? current : first;
+    if (restoredCurrent.isValid()) {
+        view->selectionModel()->setCurrentIndex(
+            restoredCurrent, QItemSelectionModel::NoUpdate);
+    }
+}
+
 [[nodiscard]] QString tagsText(const std::vector<std::string>& tags)
 {
     QStringList values;
@@ -1946,6 +2027,8 @@ void MainWindow::updateHierarchyAddAction()
 void MainWindow::populateRegisters()
 {
     QScopedValueRollback guard(refreshing_, true);
+    const TableSelectionSnapshot previousSelection =
+        captureTableSelection(registerView_, objectIdRole, propertyRole);
     const std::string preferredRegister = selectedRegisterId_;
     registerModel_->clear();
     registerModel_->setHorizontalHeaderLabels(
@@ -2082,12 +2165,19 @@ void MainWindow::populateRegisters()
         populateFields(nullptr);
         setCurrentSource({});
     }
+    if (previousSelection.current &&
+        previousSelection.current->objectId == selectedRegisterId_) {
+        restoreTableSelection(
+            registerView_, previousSelection, objectIdRole, propertyRole);
+    }
     updateContextBar();
 }
 
 void MainWindow::populateFields(const regmap::Register* reg)
 {
     QScopedValueRollback guard(refreshing_, true);
+    const TableSelectionSnapshot previousSelection =
+        captureTableSelection(fieldView_, objectIdRole, propertyRole);
     const std::string preferredField = selectedFieldId_;
     fieldModel_->clear();
     fieldModel_->setHorizontalHeaderLabels(
@@ -2109,6 +2199,8 @@ void MainWindow::populateFields(const regmap::Register* reg)
     fieldView_->setVisible(showFieldEditor);
     if (!showFieldEditor) {
         selectedFieldId_.clear();
+        restoreTableSelection(
+            fieldView_, previousSelection, objectIdRole, propertyRole);
         populateEnumValues(reg, nullptr);
         applyFieldColumnVisibility();
         return;
@@ -2191,11 +2283,19 @@ void MainWindow::populateFields(const regmap::Register* reg)
         setCurrentSource(reg->source);
     }
     applyFieldColumnVisibility();
+    if (previousSelection.current &&
+        previousSelection.current->objectId == selectedFieldId_) {
+        restoreTableSelection(
+            fieldView_, previousSelection, objectIdRole, propertyRole);
+    }
 }
 
 void MainWindow::populateEnumValues(const regmap::Register* reg, const regmap::Field* field)
 {
     QScopedValueRollback guard(refreshing_, true);
+    const TableSelectionSnapshot previousSelection =
+        captureTableSelection(enumView_, objectIdRole, propertyRole);
+    enumView_->reset();
     enumModel_->clear();
     enumModel_->setHorizontalHeaderLabels(
         {QStringLiteral("Name"), QStringLiteral("Value"), QStringLiteral("Description")});
@@ -2225,6 +2325,8 @@ void MainWindow::populateEnumValues(const regmap::Register* reg, const regmap::F
         openFieldsRegisterId_ == reg->id;
     fieldPanel_->setVisible(hasOpenFieldEditor || visible);
     if (!visible) {
+        restoreTableSelection(
+            enumView_, previousSelection, objectIdRole, propertyRole);
         return;
     }
 
@@ -2255,6 +2357,8 @@ void MainWindow::populateEnumValues(const regmap::Register* reg, const regmap::F
         enumModel_->appendRow(addRow);
     }
     enumView_->resizeColumnsToContents();
+    restoreTableSelection(
+        enumView_, previousSelection, objectIdRole, propertyRole);
 }
 void MainWindow::refreshDiagnostics()
 {
@@ -4713,6 +4817,8 @@ void MainWindow::pasteSelection()
         std::string objectId;
         std::string property;
         QString value;
+        int row{0};
+        int column{0};
     };
     std::vector<PasteTarget> targets;
     const auto appendTarget = [&](const QModelIndex& target, const QString& text) {
@@ -4731,7 +4837,8 @@ void MainWindow::pasteSelection()
                 return existing.objectId == objectId && existing.property == property;
             });
         if (!duplicate) {
-            targets.push_back(PasteTarget{objectId, property, text});
+            targets.push_back(
+                PasteTarget{objectId, property, text, target.row(), target.column()});
         }
     };
 
@@ -4764,6 +4871,23 @@ void MainWindow::pasteSelection()
             4000);
         return;
     }
+
+    const QModelIndex previousCurrent = view->currentIndex();
+    QModelIndex restoredCurrent;
+    view->selectionModel()->clearSelection();
+    for (const auto& target : targets) {
+        const QModelIndex index = view->model()->index(target.row, target.column);
+        view->selectionModel()->select(index, QItemSelectionModel::Select);
+        if (target.row == previousCurrent.row() &&
+            target.column == previousCurrent.column()) {
+            restoredCurrent = index;
+        }
+    }
+    if (!restoredCurrent.isValid()) {
+        restoredCurrent = view->model()->index(targets.front().row, targets.front().column);
+    }
+    view->selectionModel()->setCurrentIndex(
+        restoredCurrent, QItemSelectionModel::NoUpdate);
 
     const std::size_t undoDepth = controller_.undoDepth();
     const QScopedValueRollback editGuard(modelEditInProgress_, true);
