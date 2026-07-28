@@ -92,6 +92,7 @@ private slots:
     void confirmsCompoundTypeChangesBeforeRemovingChildren();
     void confirmsEnumTypeChangesBeforeRemovingValues();
     void keepsCompoundFieldsUsableDuringConversionAndDeletion();
+    void confirmsFieldDeletionImpactAndRestoresIt();
     void dragsFieldsAndResolvesOverlaps();
     void rejectsFieldMoveThatInvalidatesValueContracts();
     void confirmsDeletionOfFullyCoveredFieldsDuringDrag();
@@ -3936,6 +3937,208 @@ void GuiSmokeTests::keepsCompoundFieldsUsableDuringConversionAndDeletion()
     QVERIFY(regmap::findField(*controller->workspace(), secondMemberId) != nullptr);
     QCOMPARE(regmap::findField(*controller->workspace(), "field-ready")->members.size(),
              1U);
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::confirmsFieldDeletionImpactAndRestoresIt()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest =
+        directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+
+    auto* controller = window.findChild<ProjectController*>();
+    auto* registers =
+        window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* fields =
+        window.findChild<QTableView*>(QStringLiteral("fieldView"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Configure Field deletion fixture"),
+        [](regmap::Workspace& workspace) {
+            auto* status = regmap::findRegister(workspace, "reg-status");
+            auto* ready = regmap::findField(workspace, "field-ready");
+            QVERIFY(status != nullptr);
+            QVERIFY(ready != nullptr);
+            status->resetValue = regmap::UnsignedValue(1);
+            ready->type = regmap::FieldType::enumeration;
+            ready->resetValue = regmap::UnsignedValue(1);
+            ready->description = "Ready field definition.";
+            regmap::EnumValue clear;
+            clear.id = "enum-ready-clear";
+            clear.name = "CLEAR";
+            clear.value = regmap::UnsignedValue(0);
+            regmap::EnumValue set;
+            set.id = "enum-ready-set";
+            set.name = "SET";
+            set.value = regmap::UnsignedValue(1);
+            ready->enumValues = {clear, set};
+
+            regmap::Field auxiliary;
+            auxiliary.id = "field-auxiliary";
+            auxiliary.name = "AUXILIARY";
+            auxiliary.msb = 1;
+            auxiliary.lsb = 1;
+            auxiliary.type = regmap::FieldType::bits;
+            auxiliary.softwareAccess = regmap::AccessMode::readOnly;
+            auxiliary.hardwareAccess = regmap::AccessMode::writeOnly;
+            auxiliary.resetValue = regmap::UnsignedValue(0);
+            auxiliary.readSideEffect = regmap::ReadSideEffect::none;
+            auxiliary.writeSideEffect = regmap::WriteSideEffect::none;
+            status->fields.push_back(std::move(auxiliary));
+        }));
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+
+    Q_EMIT registers->clicked(registers->model()->index(0, 5));
+    QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->rowCount(), 3, 2000);
+    const auto rowForId = [fields](const QString& id) {
+        for (int row = 0; row < fields->model()->rowCount(); ++row) {
+            if (fields->model()
+                    ->index(row, 0)
+                    .data(Qt::UserRole + 1)
+                    .toString() == id) {
+                return row;
+            }
+        }
+        return -1;
+    };
+
+    struct DeleteInvocation {
+        bool dialogSeen{false};
+        bool impactDescribed{false};
+    };
+    const auto invokeDelete =
+        [&](const QString& fieldId,
+            QMessageBox::StandardButton response) {
+            DeleteInvocation result;
+            const int row = rowForId(fieldId);
+            if (row < 0) {
+                return result;
+            }
+            window.activateWindow();
+            fields->setCurrentIndex(fields->model()->index(row, 0));
+            fields->scrollTo(fields->currentIndex());
+            fields->setFocus(Qt::OtherFocusReason);
+            QCoreApplication::processEvents();
+            QTest::qWait(10);
+            QTimer::singleShot(0, &window, [&] {
+                auto* dialog =
+                    qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+                if (dialog == nullptr) {
+                    return;
+                }
+                result.dialogSeen = true;
+                result.impactDescribed =
+                    dialog->windowTitle() ==
+                        QStringLiteral("Delete Register-Map Objects") &&
+                    dialog->text().contains(QStringLiteral("field READY")) &&
+                    dialog->text().contains(QStringLiteral("2 Enum values")) &&
+                    dialog->text().contains(
+                        QStringLiteral("1 non-zero Initial/Reset value")) &&
+                    dialog->text().contains(QStringLiteral("1 description")) &&
+                    dialog->text().contains(QStringLiteral("Ctrl+Z")) &&
+                    dialog->defaultButton() ==
+                        dialog->button(QMessageBox::No);
+                if (auto* button = dialog->button(response)) {
+                    QTest::mouseClick(button, Qt::LeftButton);
+                } else {
+                    dialog->reject();
+                }
+            });
+            QTest::keyClick(fields, Qt::Key_Delete);
+            return result;
+        };
+
+    const std::size_t initialUndoDepth = controller->undoDepth();
+    const DeleteInvocation cancelled =
+        invokeDelete(QStringLiteral("field-ready"), QMessageBox::No);
+    QVERIFY(cancelled.dialogSeen);
+    QVERIFY(cancelled.impactDescribed);
+    const auto* retained =
+        regmap::findField(*controller->workspace(), "field-ready");
+    QVERIFY(retained != nullptr);
+    QCOMPARE(retained->enumValues.size(), std::size_t{2});
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Delete cancelled")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("field READY kept")));
+
+    const DeleteInvocation confirmed =
+        invokeDelete(QStringLiteral("field-ready"), QMessageBox::Yes);
+    QVERIFY(confirmed.dialogSeen);
+    QVERIFY(confirmed.impactDescribed);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findField(*controller->workspace(), "field-ready") == nullptr,
+        2000);
+    QVERIFY(regmap::findField(
+                *controller->workspace(), "field-auxiliary") != nullptr);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth + 1);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Deleted field READY")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Ctrl+Z")));
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+
+    controller->undo();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findField(*controller->workspace(), "field-ready") != nullptr,
+        2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+    const auto* restored =
+        regmap::findField(*controller->workspace(), "field-ready");
+    QVERIFY(restored != nullptr);
+    QCOMPARE(restored->type, regmap::FieldType::enumeration);
+    QCOMPARE(restored->enumValues.size(), std::size_t{2});
+    QVERIFY(restored->resetValue ==
+            std::optional(regmap::UnsignedValue(1)));
+    QCOMPARE(restored->description,
+             std::string("Ready field definition."));
+
+    const int simpleRow = rowForId(QStringLiteral("field-auxiliary"));
+    QVERIFY(simpleRow >= 0);
+    window.activateWindow();
+    fields->setCurrentIndex(fields->model()->index(simpleRow, 0));
+    fields->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
+    bool unexpectedConfirmation = false;
+    QTimer::singleShot(0, &window, [&] {
+        if (auto* dialog =
+                qobject_cast<QMessageBox*>(
+                    QApplication::activeModalWidget())) {
+            unexpectedConfirmation = true;
+            dialog->reject();
+        }
+    });
+    QTest::keyClick(fields, Qt::Key_Delete);
+    QCoreApplication::processEvents();
+    QVERIFY(!unexpectedConfirmation);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findField(
+            *controller->workspace(), "field-auxiliary") == nullptr,
+        2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth + 1);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Deleted field AUXILIARY")));
+
+    controller->undo();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findField(
+            *controller->workspace(), "field-auxiliary") != nullptr,
+        2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
     QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
 
     makeGeneratedFilesWritable(directory.path());

@@ -1339,23 +1339,32 @@ struct RegisterDeletionImpact {
 };
 
 void accumulateFieldDeletionImpact(const std::vector<regmap::Field>& fields,
+                                   RegisterDeletionImpact& impact);
+
+void accumulateFieldContentsDeletionImpact(const regmap::Field& field,
+                                           RegisterDeletionImpact& impact)
+{
+    impact.enumValueCount += field.enumValues.size();
+    impact.rangeBoundCount +=
+        static_cast<std::size_t>(field.minimumValue.has_value()) +
+        field.maximumValue.has_value();
+    impact.nonZeroValueCount += static_cast<std::size_t>(
+        field.resetValue.has_value() && !field.resetValue->isZero());
+    impact.descriptionCount +=
+        static_cast<std::size_t>(!field.description.empty());
+    impact.descriptionCount += static_cast<std::size_t>(
+        std::ranges::count_if(field.enumValues, [](const regmap::EnumValue& value) {
+            return !value.description.empty();
+        }));
+    accumulateFieldDeletionImpact(field.members, impact);
+}
+
+void accumulateFieldDeletionImpact(const std::vector<regmap::Field>& fields,
                                    RegisterDeletionImpact& impact)
 {
     for (const auto& field : fields) {
         ++impact.fieldCount;
-        impact.enumValueCount += field.enumValues.size();
-        impact.rangeBoundCount +=
-            static_cast<std::size_t>(field.minimumValue.has_value()) +
-            field.maximumValue.has_value();
-        impact.nonZeroValueCount += static_cast<std::size_t>(
-            field.resetValue.has_value() && !field.resetValue->isZero());
-        impact.descriptionCount +=
-            static_cast<std::size_t>(!field.description.empty());
-        impact.descriptionCount += static_cast<std::size_t>(
-            std::ranges::count_if(field.enumValues, [](const regmap::EnumValue& value) {
-                return !value.description.empty();
-            }));
-        accumulateFieldDeletionImpact(field.members, impact);
+        accumulateFieldContentsDeletionImpact(field, impact);
     }
 }
 
@@ -6753,6 +6762,13 @@ void MainWindow::deleteObject(const std::string& id, bool deletingEnumValue)
             return;
         }
         label = QStringLiteral("field %1").arg(fromUtf8(field->name));
+        RegisterDeletionImpact impact;
+        accumulateFieldContentsDeletionImpact(*field, impact);
+        const QStringList removedContent = configuredDeletionItems(impact);
+        if (!removedContent.empty()) {
+            compositeImpact = QStringLiteral("This also removes: %1.")
+                                  .arg(removedContent.join(QStringLiteral(", ")));
+        }
     } else if (const auto* enumValue = regmap::findEnumValue(*workspace, id)) {
         deletingEnumValue = true;
         label = QStringLiteral("enum value %1").arg(fromUtf8(enumValue->name));

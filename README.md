@@ -130,6 +130,11 @@ members are added from the compound Field context menu. The final Member cannot 
 until another Member exists; Workbench reports how to recover instead of leaving an invalid
 compound Field. Boolean fields retain the visible type `bool` and have implicit
 `FALSE=0`/`TRUE=1` values.
+Deleting a Field that owns Members, Enum values, Range bounds, a non-zero Reset, or descriptions
+first reports the attached content and defaults to cancel. Cancellation explicitly reports that
+the Field was kept, while a confirmed deletion remains one undoable edit. A simple Field without
+attached content deletes directly and still supports `Ctrl+Z`, so the common operation does not
+gain an unnecessary confirmation.
 Changing a populated structure Register or compound Field back to a scalar type first reports
 how many child Fields or Members will be removed and defaults to cancel. A confirmed conversion
 is one undoable transaction, so `Ctrl+Z` restores the complete hierarchy. Multi-cell paste never
