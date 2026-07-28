@@ -1202,6 +1202,42 @@ void assignFieldReset(regmap::Workspace& workspace, std::string_view fieldId,
                value;
 }
 
+[[nodiscard]] bool
+resetMatchesFieldEnums(const std::vector<regmap::Field>& fields,
+                       const regmap::UnsignedValue& reset,
+                       std::uint64_t containerWidth,
+                       std::uint64_t parentLsb = 0)
+{
+    for (const auto& field : fields) {
+        if (field.msb < field.lsb || field.msb >= containerWidth) {
+            continue;
+        }
+        std::uint64_t absoluteLsb = 0;
+        if (addOverflow(parentLsb, field.lsb, absoluteLsb)) {
+            continue;
+        }
+        const std::size_t width = static_cast<std::size_t>(field.width());
+        const bool enumerationLike =
+            field.type == regmap::FieldType::enumeration ||
+            field.type == regmap::FieldType::boolean;
+        if (enumerationLike && !field.enumValues.empty()) {
+            const regmap::UnsignedValue fieldReset =
+                reset.slice(static_cast<std::size_t>(absoluteLsb), width);
+            if (std::ranges::none_of(
+                    field.enumValues, [&](const regmap::EnumValue& enumValue) {
+                        return enumValue.value == fieldReset;
+                    })) {
+                return false;
+            }
+        }
+        if (!resetMatchesFieldEnums(field.members, reset, field.width(),
+                                    absoluteLsb)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 MainWindow::MainWindow(QWidget* parent)
@@ -3483,6 +3519,15 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                         })) {
                     return reject(
                         QStringLiteral("an existing Enum value for this register, or empty"));
+                }
+                if (property == "reset" &&
+                    !resetMatchesFieldEnums(
+                        current->fields, *parsed,
+                        static_cast<std::uint64_t>(current->width))) {
+                    return reject(
+                        QStringLiteral(
+                            "a Reset value whose Enum/Bool Field slices match "
+                            "existing Enum values, or empty"));
                 }
             }
             return commit([=](regmap::Workspace& candidate) {

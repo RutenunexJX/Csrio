@@ -98,6 +98,7 @@ private slots:
     void rejectsOutOfRangeNumericEdits();
     void synchronizesFieldResetEdits();
     void protectsEnumContractsDuringEditing();
+    void rejectsRegisterResetsOutsideFieldEnums();
     void requiresExplicitCellEditing();
     void keepsUndoRedoInsideActiveEditor();
     void savesActiveEditorWithShortcut();
@@ -4033,6 +4034,126 @@ void GuiSmokeTests::protectsEnumContractsDuringEditing()
     QCOMPARE(controller->undoDepth(), fieldEnumUndoDepth);
 
     QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::rejectsRegisterResetsOutsideFieldEnums()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+
+    auto* controller = window.findChild<ProjectController*>();
+    auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* fields = window.findChild<QTableView*>(QStringLiteral("fieldView"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Configure nested Enum reset fixture"),
+        [](regmap::Workspace& workspace) {
+            auto* reg = regmap::findRegister(workspace, "reg-status");
+            if (reg == nullptr) {
+                return;
+            }
+            reg->width = 32;
+            reg->type = regmap::FieldType::structure;
+            reg->array.stride = 4;
+            reg->enumValues.clear();
+            reg->resetValue = regmap::UnsignedValue(0);
+
+            regmap::EnumValue zero;
+            zero.id = "enum-member-zero";
+            zero.name = "ZERO";
+            zero.value = regmap::UnsignedValue(0);
+            regmap::EnumValue three;
+            three.id = "enum-member-three";
+            three.name = "THREE";
+            three.value = regmap::UnsignedValue(3);
+
+            regmap::Field member;
+            member.id = "field-enum-member";
+            member.name = "MODE";
+            member.msb = 2;
+            member.lsb = 1;
+            member.type = regmap::FieldType::enumeration;
+            member.softwareAccess = regmap::AccessMode::readOnly;
+            member.hardwareAccess = regmap::AccessMode::writeOnly;
+            member.resetValue = regmap::UnsignedValue(0);
+            member.writeSideEffect = regmap::WriteSideEffect::none;
+            member.enumValues = {std::move(zero), std::move(three)};
+
+            regmap::Field parent;
+            parent.id = "field-structure-parent";
+            parent.name = "CONTROL";
+            parent.msb = 15;
+            parent.lsb = 8;
+            parent.type = regmap::FieldType::structure;
+            parent.softwareAccess = regmap::AccessMode::none;
+            parent.hardwareAccess = regmap::AccessMode::none;
+            parent.resetValue = regmap::UnsignedValue(0);
+            parent.writeSideEffect = regmap::WriteSideEffect::none;
+            parent.members = {std::move(member)};
+            reg->fields = {std::move(parent)};
+        }));
+    Q_EMIT registers->clicked(registers->model()->index(0, 5));
+    QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
+
+    const auto fieldRow = [fields](const QString& id) {
+        for (int row = 0; row < fields->model()->rowCount(); ++row) {
+            if (fields->model()->index(row, 0).data(Qt::UserRole + 1).toString() == id) {
+                return row;
+            }
+        }
+        return -1;
+    };
+    const int parentRow = fieldRow(QStringLiteral("field-structure-parent"));
+    const int memberRow = fieldRow(QStringLiteral("field-enum-member"));
+    QVERIFY(parentRow >= 0);
+    QVERIFY(memberRow >= 0);
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+    const std::size_t undoDepth = controller->undoDepth();
+
+    QVERIFY(registers->model()->setData(registers->model()->index(0, 8),
+                                        QStringLiteral("0x200")));
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 8).data().toString(),
+                              QStringLiteral("0x0"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(parentRow, 10).data().toString(),
+                              QStringLiteral("0x0"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(memberRow, 10).data().toString(),
+                              QStringLiteral("0x0"), 2000);
+    QCOMPARE(controller->undoDepth(), undoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Enum/Bool Field slices")));
+
+    QVERIFY(registers->model()->setData(registers->model()->index(0, 8),
+                                        QStringLiteral("0x600")));
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 8).data().toString(),
+                              QStringLiteral("0x600"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(parentRow, 10).data().toString(),
+                              QStringLiteral("0x6"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(memberRow, 10).data().toString(),
+                              QStringLiteral("0x3"), 2000);
+    QCOMPARE(controller->undoDepth(), undoDepth + 1);
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+
+    QTest::keyClick(&window, Qt::Key_Z, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 8).data().toString(),
+                              QStringLiteral("0x0"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(parentRow, 10).data().toString(),
+                              QStringLiteral("0x0"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(memberRow, 10).data().toString(),
+                              QStringLiteral("0x0"), 2000);
+    QCOMPARE(controller->undoDepth(), undoDepth);
+
     makeGeneratedFilesWritable(directory.path());
 }
 
