@@ -100,6 +100,7 @@ private slots:
     void protectsEnumContractsDuringEditing();
     void rejectsRegisterResetsOutsideFieldEnums();
     void rejectsDuplicateObjectNamesDuringEditing();
+    void rejectsEmptyWorkspaceNameDuringEditing();
     void requiresExplicitCellEditing();
     void keepsUndoRedoInsideActiveEditor();
     void savesActiveEditorWithShortcut();
@@ -4557,6 +4558,56 @@ void GuiSmokeTests::rejectsDuplicateObjectNamesDuringEditing()
     QCOMPARE(controller->undoDepth(), undoDepth);
     QVERIFY(window.statusBar()->currentMessage().contains(
         QStringLiteral("unique Field name")));
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::rejectsEmptyWorkspaceNameDuringEditing()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(900, 620);
+    window.show();
+    QTest::qWait(50);
+
+    auto* controller = window.findChild<ProjectController*>();
+    auto* hierarchy = window.findChild<QTreeView*>(QStringLiteral("hierarchyView"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(hierarchy != nullptr);
+
+    const std::size_t undoDepth = controller->undoDepth();
+    QModelIndex workspaceIndex =
+        hierarchyIndexByObjectId(hierarchy->model(), QStringLiteral("gui-workspace"));
+    QVERIFY(workspaceIndex.isValid());
+    QCOMPARE(workspaceIndex.data().toString(), QStringLiteral("GUI Workspace"));
+
+    QVERIFY(hierarchy->model()->setData(workspaceIndex, QString{}));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        hierarchyIndexByObjectId(hierarchy->model(), QStringLiteral("gui-workspace"))
+            .data()
+            .toString(),
+        QStringLiteral("GUI Workspace"), 2000);
+    QCOMPARE(controller->undoDepth(), undoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("non-empty Workspace name")));
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+
+    workspaceIndex =
+        hierarchyIndexByObjectId(hierarchy->model(), QStringLiteral("gui-workspace"));
+    QVERIFY(hierarchy->model()->setData(
+        workspaceIndex, QStringLiteral("Renamed Workspace")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        hierarchyIndexByObjectId(hierarchy->model(), QStringLiteral("gui-workspace"))
+            .data()
+            .toString(),
+        QStringLiteral("Renamed Workspace"), 2000);
+    QCOMPARE(controller->undoDepth(), undoDepth + 1);
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
 
     makeGeneratedFilesWritable(directory.path());
 }

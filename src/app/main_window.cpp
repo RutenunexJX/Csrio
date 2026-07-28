@@ -3131,6 +3131,9 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
     };
 
     if (workspace->id == objectId && property == "name") {
+        if (textValue.empty()) {
+            return reject(QStringLiteral("a non-empty Workspace name"));
+        }
         return commit(
             [=](regmap::Workspace& candidate) { candidate.name = textValue; });
     }
