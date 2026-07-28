@@ -2365,12 +2365,12 @@ void MainWindow::buildActions()
 
     useWorkbenchAction_ = new QAction(QStringLiteral("Resolve Conflicts Using Workbench"), this);
     useWorkbenchAction_->setEnabled(false);
-    connect(useWorkbenchAction_, &QAction::triggered, &controller_,
-            &ProjectController::useWorkbenchForConflicts);
+    connect(useWorkbenchAction_, &QAction::triggered, this,
+            [this] { resolveConflictsWithConfirmation(false); });
     useRtlAction_ = new QAction(QStringLiteral("Resolve Conflicts Using RTL"), this);
     useRtlAction_->setEnabled(false);
-    connect(useRtlAction_, &QAction::triggered, &controller_,
-            &ProjectController::useRtlForConflicts);
+    connect(useRtlAction_, &QAction::triggered, this,
+            [this] { resolveConflictsWithConfirmation(true); });
 
     openSourceAction_ = new QAction(QStringLiteral("Open Source"), this);
     openSourceAction_->setShortcut(QKeySequence(QStringLiteral("Ctrl+L")));
@@ -2488,10 +2488,10 @@ void MainWindow::buildActions()
             [this] { runSearch(false); });
     connect(retryOutputsButton_, &QPushButton::clicked, &controller_,
             &ProjectController::generateNow);
-    connect(keepWorkbenchButton_, &QPushButton::clicked, &controller_,
-            &ProjectController::useWorkbenchForConflicts);
-    connect(useRtlButton_, &QPushButton::clicked, &controller_,
-            &ProjectController::useRtlForConflicts);
+    connect(keepWorkbenchButton_, &QPushButton::clicked, this,
+            [this] { resolveConflictsWithConfirmation(false); });
+    connect(useRtlButton_, &QPushButton::clicked, this,
+            [this] { resolveConflictsWithConfirmation(true); });
 }
 
 void MainWindow::connectSignals()
@@ -3636,6 +3636,101 @@ void MainWindow::updateSyncPresentation(const QString& message)
         syncStateLabel_->setProperty("state", state);
         syncStateLabel_->style()->unpolish(syncStateLabel_);
         syncStateLabel_->style()->polish(syncStateLabel_);
+    }
+}
+
+void MainWindow::resolveConflictsWithConfirmation(bool useRtl)
+{
+    if (!commitActiveEditor() || !controller_.hasConflicts()) {
+        return;
+    }
+
+    const bool initialChoice = controller_.requiresInitialSyncChoice();
+    const std::size_t impactCount =
+        initialChoice
+            ? std::max<std::size_t>(controller_.changes().size(), 1)
+            : controller_.conflicts().size();
+    QMessageBox dialog(this);
+    dialog.setIcon(QMessageBox::Warning);
+    dialog.setWindowTitle(
+        initialChoice
+            ? QStringLiteral("Choose Initial Synchronization Source")
+            : QStringLiteral("Resolve RTL Conflicts"));
+
+    if (initialChoice) {
+        dialog.setText(
+            useRtl
+                ? QStringLiteral(
+                      "Use the complete managed RTL model as the initial "
+                      "synchronization source?")
+                : QStringLiteral(
+                      "Use the complete Workbench model as the initial "
+                      "synchronization source?"));
+        dialog.setInformativeText(
+            useRtl
+                ? QStringLiteral(
+                      "This resolves %1 detected model difference(s). The "
+                      "current Workbench model and project file will be replaced "
+                      "from managed RTL, then the synchronization baseline and "
+                      "read-only outputs will be created.\n\nNo file is changed "
+                      "if you cancel.")
+                      .arg(impactCount)
+                : QStringLiteral(
+                      "This resolves %1 detected model difference(s). The "
+                      "managed RTL region will be replaced from Workbench, then "
+                      "the project file, synchronization baseline, and read-only "
+                      "outputs will be updated.\n\nNo file is changed if you "
+                      "cancel.")
+                      .arg(impactCount));
+    } else {
+        dialog.setText(
+            QStringLiteral("Resolve %1 RTL conflict(s) using %2 values?")
+                .arg(impactCount)
+                .arg(useRtl ? QStringLiteral("RTL")
+                            : QStringLiteral("Workbench")));
+        dialog.setInformativeText(
+            useRtl
+                ? QStringLiteral(
+                      "The current Workbench value for every listed conflict "
+                      "will be replaced by its RTL value. Non-conflicting "
+                      "Workbench edits remain merged. The project, managed RTL, "
+                      "baseline, and outputs will then be saved.\n\nNo file is "
+                      "changed if you cancel.")
+                : QStringLiteral(
+                      "The managed RTL value for every listed conflict will be "
+                      "replaced by its Workbench value. Non-conflicting RTL "
+                      "edits remain merged. The project, managed RTL, baseline, "
+                      "and outputs will then be saved.\n\nNo file is changed if "
+                      "you cancel."));
+    }
+
+    auto* resolve = dialog.addButton(
+        initialChoice
+            ? (useRtl ? QStringLiteral("Use complete RTL")
+                      : QStringLiteral("Use complete Workbench"))
+            : (useRtl ? QStringLiteral("Use RTL values")
+                      : QStringLiteral("Use Workbench values")),
+        QMessageBox::DestructiveRole);
+    resolve->setObjectName(QStringLiteral("confirmConflictResolutionButton"));
+    auto* cancel = dialog.addButton(QMessageBox::Cancel);
+    dialog.setDefaultButton(cancel);
+    dialog.setEscapeButton(cancel);
+    dialog.exec();
+    if (dialog.clickedButton() != resolve) {
+        statusBar()->showMessage(
+            initialChoice
+                ? QStringLiteral(
+                      "Initial synchronization choice cancelled · no file changed")
+                : QStringLiteral(
+                      "Conflict resolution cancelled · no file changed"),
+            7000);
+        return;
+    }
+
+    if (useRtl) {
+        controller_.useRtlForConflicts();
+    } else {
+        controller_.useWorkbenchForConflicts();
     }
 }
 

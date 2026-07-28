@@ -138,6 +138,7 @@ private:
     void refreshDiff();
     void updateBottomPanelVisibility();
     void updateSyncPresentation(const QString& message = {});
+    void resolveConflictsWithConfirmation(bool useRtl);
     void applyFieldColumnVisibility();
     void populateHierarchy();
     void updateHierarchyAddAction();

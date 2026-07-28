@@ -72,7 +72,10 @@ Workspace -> Page (Address Space) -> Register Block -> Register -> Field -> Enum
 - Managed RTL generation and reverse synchronization through an explicitly marked region.
 - Stable-ID, property-level three-way merge using the last synchronized model as the base.
 - Automatic merge for independent changes and explicit Workbench/RTL conflict resolution from
-  the Diff panel; no conflicting file is overwritten before the user chooses a side.
+  the Diff panel; no conflicting file is overwritten before the user chooses a side. Resolving
+  conflicts reports the affected count and direction, explains which values will be replaced,
+  preserves non-conflicting edits, and defaults to cancel. The same confirmation distinguishes
+  the complete-source choice required when no initial synchronization baseline exists.
 - Deterministic, read-only XLSX, C header, and Markdown generation. XLSX uses one worksheet per
   Page, separates Blocks with section bands, and embeds collapsible bitfield details only for
   structure registers.

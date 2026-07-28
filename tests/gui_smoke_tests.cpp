@@ -561,6 +561,45 @@ void GuiSmokeTests::blocksDivergentSourcesWithoutBaseline()
     QVERIFY(!QFileInfo::exists(
         directory.filePath(QStringLiteral("generated/register-map.xlsx"))));
 
+    bool choiceDialogSeen = false;
+    bool choiceImpactDescribed = false;
+    QTimer::singleShot(0, &window, [&] {
+        auto* dialog =
+            qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (dialog == nullptr) {
+            return;
+        }
+        choiceDialogSeen = true;
+        auto* resolve = dialog->findChild<QPushButton*>(
+            QStringLiteral("confirmConflictResolutionButton"));
+        choiceImpactDescribed =
+            dialog->windowTitle() ==
+                QStringLiteral("Choose Initial Synchronization Source") &&
+            dialog->text().contains(
+                QStringLiteral("complete managed RTL model")) &&
+            dialog->informativeText().contains(
+                QStringLiteral(
+                    "current Workbench model and project file will be replaced")) &&
+            dialog->informativeText().contains(
+                QStringLiteral("detected model difference(s)")) &&
+            dialog->informativeText().contains(
+                QStringLiteral("No file is changed if you cancel")) &&
+            resolve != nullptr &&
+            resolve->text() == QStringLiteral("Use complete RTL") &&
+            dialog->defaultButton() ==
+                dialog->button(QMessageBox::Cancel);
+        QTest::mouseClick(
+            dialog->button(QMessageBox::Cancel), Qt::LeftButton);
+    });
+    QTest::mouseClick(useRtl, Qt::LeftButton);
+    QVERIFY(choiceDialogSeen);
+    QVERIFY(choiceImpactDescribed);
+    QVERIFY(controller->requiresInitialSyncChoice());
+    QVERIFY(controller->hasConflicts());
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("choice cancelled · no file changed")));
+    QVERIFY(!QFileInfo::exists(baselinePath));
+
     controller->save();
     controller->synchronizeNow();
     QCoreApplication::processEvents();
@@ -9505,6 +9544,7 @@ void GuiSmokeTests::resolvesRtlConflictFromDiffPanel()
         window.findChild<QPushButton*>(QStringLiteral("keepWorkbenchButton"));
     auto* useRtl = window.findChild<QPushButton*>(QStringLiteral("useRtlButton"));
     auto* state = window.findChild<QLabel*>(QStringLiteral("syncStateBadge"));
+    auto* controller = window.findChild<ProjectController*>();
     QVERIFY(registers != nullptr);
     QVERIFY(diff != nullptr);
     QVERIFY(conflictBar != nullptr);
@@ -9512,6 +9552,7 @@ void GuiSmokeTests::resolvesRtlConflictFromDiffPanel()
     QVERIFY(keepWorkbench != nullptr);
     QVERIFY(useRtl != nullptr);
     QVERIFY(state != nullptr);
+    QVERIFY(controller != nullptr);
     QVERIFY(!conflictBar->isVisible());
 
     QVERIFY(registers->model()->setData(registers->model()->index(0, 1),
@@ -9527,7 +9568,78 @@ void GuiSmokeTests::resolvesRtlConflictFromDiffPanel()
     QVERIFY(diff->model()->rowCount() >= 1);
     QTRY_VERIFY_WITH_TIMEOUT(state->text().startsWith(QStringLiteral("Conflict")), 2000);
 
+    bool cancelDialogSeen = false;
+    bool cancelImpactDescribed = false;
+    QTimer::singleShot(0, &window, [&] {
+        auto* dialog =
+            qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (dialog == nullptr) {
+            return;
+        }
+        cancelDialogSeen = true;
+        auto* resolve = dialog->findChild<QPushButton*>(
+            QStringLiteral("confirmConflictResolutionButton"));
+        cancelImpactDescribed =
+            dialog->windowTitle() ==
+                QStringLiteral("Resolve RTL Conflicts") &&
+            dialog->text().contains(
+                QStringLiteral("Resolve 1 RTL conflict(s) using RTL values")) &&
+            dialog->informativeText().contains(
+                QStringLiteral(
+                    "Workbench value for every listed conflict will be replaced")) &&
+            dialog->informativeText().contains(
+                QStringLiteral("Non-conflicting Workbench edits remain merged")) &&
+            dialog->informativeText().contains(
+                QStringLiteral("No file is changed if you cancel")) &&
+            resolve != nullptr &&
+            resolve->text() == QStringLiteral("Use RTL values") &&
+            dialog->defaultButton() ==
+                dialog->button(QMessageBox::Cancel);
+        QTest::mouseClick(
+            dialog->button(QMessageBox::Cancel), Qt::LeftButton);
+    });
     QTest::mouseClick(useRtl, Qt::LeftButton);
+    QVERIFY(cancelDialogSeen);
+    QVERIFY(cancelImpactDescribed);
+    QVERIFY(conflictBar->isVisible());
+    QVERIFY(controller->hasConflicts());
+    QCOMPARE(registers->model()->index(0, 1).data().toString(),
+             QStringLiteral("0x4"));
+    QVERIFY(state->text().startsWith(QStringLiteral("Conflict")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Conflict resolution cancelled")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("no file changed")));
+
+    bool confirmDialogSeen = false;
+    bool confirmImpactDescribed = false;
+    QTimer::singleShot(0, &window, [&] {
+        auto* dialog =
+            qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (dialog == nullptr) {
+            return;
+        }
+        confirmDialogSeen = true;
+        auto* resolve = dialog->findChild<QPushButton*>(
+            QStringLiteral("confirmConflictResolutionButton"));
+        confirmImpactDescribed =
+            dialog->windowTitle() ==
+                QStringLiteral("Resolve RTL Conflicts") &&
+            dialog->text().contains(
+                QStringLiteral("1 RTL conflict(s)")) &&
+            resolve != nullptr &&
+            resolve->text() == QStringLiteral("Use RTL values") &&
+            dialog->defaultButton() ==
+                dialog->button(QMessageBox::Cancel);
+        if (resolve != nullptr) {
+            QTest::mouseClick(resolve, Qt::LeftButton);
+        } else {
+            dialog->reject();
+        }
+    });
+    QTest::mouseClick(useRtl, Qt::LeftButton);
+    QVERIFY(confirmDialogSeen);
+    QVERIFY(confirmImpactDescribed);
     QTRY_VERIFY_WITH_TIMEOUT(!conflictBar->isVisible(), 8000);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 1).data().toString(),
                               QStringLiteral("0x8"), 8000);
