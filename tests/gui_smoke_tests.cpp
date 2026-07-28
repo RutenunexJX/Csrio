@@ -86,6 +86,7 @@ private slots:
     void navigatesEnumValuesFromSearchAndProblems();
     void supportsTrailingRowsAndFieldMovement();
     void keepsRegisterFieldConversionImmediatelyUsable();
+    void confirmsCompoundTypeChangesBeforeRemovingChildren();
     void keepsCompoundFieldsUsableDuringConversionAndDeletion();
     void dragsFieldsAndResolvesOverlaps();
     void cancelsInterruptedFieldDrag();
@@ -2527,12 +2528,34 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
 
     const int parentRowBeforeRejectedType = fieldRowForId(parentFieldId);
     QVERIFY(parentRowBeforeRejectedType >= 0);
+    bool compoundCancelSeen = false;
+    QString compoundCancelFailure;
+    QTimer::singleShot(0, &window, [&] {
+        auto* dialog = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (dialog == nullptr) {
+            compoundCancelFailure = QStringLiteral("Compound confirmation did not open");
+            return;
+        }
+        compoundCancelSeen = true;
+        if (dialog->windowTitle() != QStringLiteral("Change Compound Field Type")) {
+            compoundCancelFailure = QStringLiteral("Unexpected compound confirmation");
+        }
+        if (auto* cancel = dialog->button(QMessageBox::No)) {
+            QTest::mouseClick(cancel, Qt::LeftButton);
+        } else {
+            dialog->reject();
+        }
+    });
     QVERIFY(fields->model()->setData(fields->model()->index(parentRowBeforeRejectedType, 5),
                                      QStringLiteral("bits")));
+    QCoreApplication::processEvents();
+    QVERIFY2(compoundCancelFailure.isEmpty(), qPrintable(compoundCancelFailure));
+    QVERIFY(compoundCancelSeen);
     QTRY_COMPARE_WITH_TIMEOUT(
         fields->model()->index(fieldRowForId(parentFieldId), 5).data().toString(),
         QStringLiteral("field"), 2000);
-    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("members")));
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("cancelled")));
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("kept")));
 
     memberRow = fieldRowForId(memberFieldId);
     QVERIFY(memberRow >= 0);
@@ -2656,6 +2679,192 @@ void GuiSmokeTests::keepsRegisterFieldConversionImmediatelyUsable()
              QStringLiteral("NEW_FIELD"));
     QCOMPARE(fields->model()->index(0, 0).data(Qt::UserRole + 1).toString(),
              QString::fromStdString(firstFieldId));
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::confirmsCompoundTypeChangesBeforeRemovingChildren()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+
+    auto* controller = window.findChild<ProjectController*>();
+    auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* fields = window.findChild<QTableView*>(QStringLiteral("fieldView"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+
+    const std::size_t initialUndoDepth = controller->undoDepth();
+    const QModelIndex registerType = registers->model()->index(0, 4);
+    bool registerCancelSeen = false;
+    QString registerCancelFailure;
+    QTimer::singleShot(0, &window, [&] {
+        auto* dialog = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (dialog == nullptr) {
+            registerCancelFailure = QStringLiteral("Register confirmation did not open");
+            return;
+        }
+        registerCancelSeen = true;
+        if (dialog->windowTitle() != QStringLiteral("Change Field Register Type") ||
+            !dialog->text().contains(QStringLiteral("STATUS")) ||
+            !dialog->text().contains(QStringLiteral("1 Field")) ||
+            !dialog->text().contains(QStringLiteral("Ctrl+Z"))) {
+            registerCancelFailure = QStringLiteral("Register confirmation lacks impact details");
+        }
+        if (auto* cancel = dialog->button(QMessageBox::No)) {
+            QTest::mouseClick(cancel, Qt::LeftButton);
+        } else {
+            dialog->reject();
+        }
+    });
+    QVERIFY(registers->model()->setData(registerType, QStringLiteral("uint32")));
+    QCoreApplication::processEvents();
+    QVERIFY2(registerCancelFailure.isEmpty(), qPrintable(registerCancelFailure));
+    QVERIFY(registerCancelSeen);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 4).data().toString(),
+                              QStringLiteral("field"), 2000);
+    QVERIFY(regmap::findField(*controller->workspace(), "field-ready") != nullptr);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("cancelled")));
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("kept")));
+
+    auto* clipboardData = new QMimeData;
+    clipboardData->setText(QStringLiteral("uint32"));
+    QApplication::clipboard()->setMimeData(clipboardData);
+    registers->setCurrentIndex(registers->model()->index(0, 4));
+    registers->selectionModel()->select(
+        registers->model()->index(0, 4),
+        QItemSelectionModel::ClearAndSelect);
+    window.activateWindow();
+    registers->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
+    const auto actions = window.findChildren<QAction*>();
+    const auto paste = std::ranges::find_if(actions, [](const QAction* action) {
+        return action->shortcut().matches(QKeySequence::Paste) ==
+               QKeySequence::ExactMatch;
+    });
+    QVERIFY(paste != actions.end());
+    window.statusBar()->clearMessage();
+    (*paste)->trigger();
+    QCoreApplication::processEvents();
+    QCOMPARE(regmap::findRegister(*controller->workspace(), "reg-status")->type,
+             regmap::FieldType::structure);
+    QVERIFY(regmap::findField(*controller->workspace(), "field-ready") != nullptr);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("individually confirmed")));
+
+    bool registerAcceptSeen = false;
+    QString registerAcceptFailure;
+    QTimer::singleShot(0, &window, [&] {
+        auto* dialog = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (dialog == nullptr) {
+            registerAcceptFailure = QStringLiteral("Register confirmation did not reopen");
+            return;
+        }
+        registerAcceptSeen = true;
+        if (auto* confirm = dialog->button(QMessageBox::Yes)) {
+            QTest::mouseClick(confirm, Qt::LeftButton);
+        } else {
+            registerAcceptFailure = QStringLiteral("Register confirmation has no Yes button");
+            dialog->reject();
+        }
+    });
+    QVERIFY(registers->model()->setData(registers->model()->index(0, 4),
+                                        QStringLiteral("uint32")));
+    QCoreApplication::processEvents();
+    QVERIFY2(registerAcceptFailure.isEmpty(), qPrintable(registerAcceptFailure));
+    QVERIFY(registerAcceptSeen);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findRegister(*controller->workspace(), "reg-status")->type ==
+            regmap::FieldType::unsignedInteger,
+        2000);
+    QVERIFY(regmap::findRegister(*controller->workspace(), "reg-status")->fields.empty());
+    QCOMPARE(controller->undoDepth(), initialUndoDepth + 1);
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("1 Field removed")));
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("Ctrl+Z")));
+
+    controller->undo();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findField(*controller->workspace(), "field-ready") != nullptr, 2000);
+    QCOMPARE(regmap::findRegister(*controller->workspace(), "reg-status")->type,
+             regmap::FieldType::structure);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+
+    Q_EMIT registers->clicked(registers->model()->index(0, 5));
+    QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->rowCount(), 2, 2000);
+    QVERIFY(fields->model()->setData(fields->model()->index(0, 5),
+                                     QStringLiteral("field")));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findField(*controller->workspace(), "field-ready")->members.size() == 1,
+        2000);
+    const std::string memberId =
+        regmap::findField(*controller->workspace(), "field-ready")->members.front().id;
+    const std::size_t compoundUndoDepth = controller->undoDepth();
+
+    bool fieldAcceptSeen = false;
+    QString fieldAcceptFailure;
+    QTimer::singleShot(0, &window, [&] {
+        auto* dialog = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (dialog == nullptr) {
+            fieldAcceptFailure = QStringLiteral("Field confirmation did not open");
+            return;
+        }
+        fieldAcceptSeen = true;
+        if (dialog->windowTitle() != QStringLiteral("Change Compound Field Type") ||
+            !dialog->text().contains(QStringLiteral("READY")) ||
+            !dialog->text().contains(QStringLiteral("1 Member")) ||
+            !dialog->text().contains(QStringLiteral("Ctrl+Z"))) {
+            fieldAcceptFailure = QStringLiteral("Field confirmation lacks impact details");
+        }
+        if (auto* confirm = dialog->button(QMessageBox::Yes)) {
+            QTest::mouseClick(confirm, Qt::LeftButton);
+        } else {
+            fieldAcceptFailure = QStringLiteral("Field confirmation has no Yes button");
+            dialog->reject();
+        }
+    });
+    QVERIFY(fields->model()->setData(fields->model()->index(0, 5),
+                                     QStringLiteral("bits")));
+    QCoreApplication::processEvents();
+    QVERIFY2(fieldAcceptFailure.isEmpty(), qPrintable(fieldAcceptFailure));
+    QVERIFY(fieldAcceptSeen);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findField(*controller->workspace(), "field-ready")->type ==
+            regmap::FieldType::bits,
+        2000);
+    const auto* scalar =
+        regmap::findField(*controller->workspace(), "field-ready");
+    QVERIFY(scalar != nullptr);
+    QVERIFY(scalar->members.empty());
+    QCOMPARE(scalar->softwareAccess, regmap::AccessMode::readOnly);
+    QCOMPARE(scalar->hardwareAccess, regmap::AccessMode::none);
+    QCOMPARE(scalar->readSideEffect, regmap::ReadSideEffect::none);
+    QCOMPARE(scalar->writeSideEffect, regmap::WriteSideEffect::none);
+    QCOMPARE(controller->undoDepth(), compoundUndoDepth + 1);
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("1 Member Field removed")));
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("Ctrl+Z")));
+
+    controller->undo();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findField(*controller->workspace(), memberId) != nullptr, 2000);
+    QCOMPARE(regmap::findField(*controller->workspace(), "field-ready")->type,
+             regmap::FieldType::structure);
+    QCOMPARE(controller->undoDepth(), compoundUndoDepth);
 
     makeGeneratedFilesWritable(directory.path());
 }

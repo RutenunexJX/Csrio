@@ -1169,6 +1169,15 @@ makeDefaultRegisterField(const regmap::Workspace& workspace,
     return field;
 }
 
+[[nodiscard]] std::size_t fieldTreeSize(const std::vector<regmap::Field>& fields)
+{
+    std::size_t result = fields.size();
+    for (const auto& field : fields) {
+        result += fieldTreeSize(field.members);
+    }
+    return result;
+}
+
 template <typename Value>
 [[nodiscard]] bool
 isUniqueSiblingName(const std::vector<Value>& values, std::string_view objectId,
@@ -2457,8 +2466,19 @@ void MainWindow::connectSignals()
         const std::string property =
             changedItem->data(propertyRole).toString().toUtf8().toStdString();
         if (!objectId.empty() && !property.empty()) {
-            const QScopedValueRollback editGuard(modelEditInProgress_, true);
-            applyPropertyEdit(objectId, property, changedItem->text());
+            {
+                const QScopedValueRollback editGuard(modelEditInProgress_, true);
+                applyPropertyEdit(objectId, property, changedItem->text());
+            }
+            if (refreshPending_) {
+                QTimer::singleShot(0, this, [this] {
+                    if (modelEditInProgress_ || !refreshPending_) {
+                        return;
+                    }
+                    refreshPending_ = false;
+                    refreshProject();
+                });
+            }
         }
     };
     connect(hierarchyModel_, &QStandardItemModel::itemChanged, this, handleModelEdit);
@@ -2504,6 +2524,7 @@ void MainWindow::openProjectPath(const QString& path) { controller_.openProject(
 void MainWindow::requestProjectRefresh()
 {
     if (!modelEditInProgress_) {
+        refreshPending_ = false;
         refreshProject();
         return;
     }
@@ -2512,6 +2533,9 @@ void MainWindow::requestProjectRefresh()
     }
     refreshPending_ = true;
     QTimer::singleShot(0, this, [this] {
+        if (modelEditInProgress_ || !refreshPending_) {
+            return;
+        }
         refreshPending_ = false;
         refreshProject();
     });
@@ -3351,6 +3375,16 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
         }
         return PropertyEditResult{PropertyEditStatus::rejected, expectation};
     };
+    const auto cancelEdit =
+        [this](const QString& expectation, const QString& message) {
+            if (committingActiveEditor_) {
+                activeEditorCommitRejected_ = true;
+            }
+            statusBar()->showMessage(message, 6000);
+            requestProjectRefresh();
+            return PropertyEditResult{
+                PropertyEditStatus::rejected, expectation};
+        };
     const auto acceptsNumericRange =
         [workspace](std::string_view targetId,
                     const std::optional<std::string>& minimum,
@@ -3686,11 +3720,12 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
             }
             const auto* currentField = regmap::findField(*workspace, objectId);
             const auto* owner = findRegisterContainingField(*workspace, objectId);
-            if (currentField != nullptr && *parsed != regmap::FieldType::structure &&
-                !currentField->members.empty()) {
-                return reject(
-                    QStringLiteral("field/compound type while the field contains members"));
-            }
+            const bool removesMembers =
+                currentField != nullptr &&
+                *parsed != regmap::FieldType::structure &&
+                !currentField->members.empty();
+            const std::size_t removedMemberCount =
+                removesMembers ? fieldTreeSize(currentField->members) : 0;
             if (numericWidth &&
                 (currentField == nullptr || owner == nullptr ||
                  *numericWidth > maximumEditableWidth ||
@@ -3708,10 +3743,16 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                     : (*parsed == regmap::FieldType::boolean
                            ? std::optional<std::uint32_t>{1}
                            : std::nullopt);
-            if (targetWidth && currentField != nullptr && owner != nullptr &&
-                !fieldValuesFitWidth(*currentField, *owner, *targetWidth, enumerationLike)) {
-                return reject(QStringLiteral(
-                    "a type width that preserves existing Reset, Enum, and member Field values"));
+            if (targetWidth && currentField != nullptr && owner != nullptr) {
+                regmap::Field valueShape = *currentField;
+                if (removesMembers) {
+                    valueShape.members.clear();
+                }
+                if (!fieldValuesFitWidth(
+                        valueShape, *owner, *targetWidth, enumerationLike)) {
+                    return reject(QStringLiteral(
+                        "a type width that preserves existing Reset and Enum values"));
+                }
             }
             const bool numeric = *parsed == regmap::FieldType::signedInteger ||
                                  *parsed == regmap::FieldType::unsignedInteger;
@@ -3747,6 +3788,9 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                 }
                 defaultMember = std::move(member);
             }
+            const regmap::AccessMode scalarAccess =
+                owner == nullptr ? regmap::AccessMode::none
+                                 : owner->access;
             const regmap::WorkspaceStore::Mutation mutation =
                 [=](regmap::Workspace& candidate) {
                 if (auto* field = regmap::findField(candidate, objectId)) {
@@ -3772,6 +3816,18 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                     if (defaultMember && field->members.empty()) {
                         field->members.push_back(*defaultMember);
                     }
+                    if (removesMembers) {
+                        field->members.clear();
+                        if (*parsed != regmap::FieldType::reserved) {
+                            field->softwareAccess = scalarAccess;
+                            field->hardwareAccess = regmap::AccessMode::none;
+                            field->readSideEffect = regmap::ReadSideEffect::none;
+                            field->writeSideEffect =
+                                accessCanWrite(scalarAccess)
+                                    ? regmap::WriteSideEffect::write
+                                    : regmap::WriteSideEffect::none;
+                        }
+                    }
                     if (auto* reg = findRegisterContainingField(candidate, objectId)) {
                         refreshRegisterFieldResets(*reg);
                     }
@@ -3782,9 +3838,47 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                     QStringLiteral(
                         "a Type whose width preserves a valid, non-overlapping Field layout"));
             }
+            if (removesMembers) {
+                const QString memberLabel =
+                    removedMemberCount == 1
+                        ? QStringLiteral("1 Member Field")
+                        : QStringLiteral("%1 Member Fields").arg(removedMemberCount);
+                const QString expectation =
+                    QStringLiteral(
+                        "an individually confirmed Type change before removing %1")
+                        .arg(memberLabel);
+                if (!reportFeedback) {
+                    return reject(expectation);
+                }
+                const auto answer = QMessageBox::warning(
+                    this, QStringLiteral("Change Compound Field Type"),
+                    QStringLiteral(
+                        "Change Field %1 to %2?\n\n"
+                        "This removes %3 and all nested data.\n\n"
+                        "Ctrl+Z can restore the complete compound Field.")
+                        .arg(fromUtf8(currentField->name), value.trimmed(), memberLabel),
+                    QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+                if (answer != QMessageBox::Yes) {
+                    return cancelEdit(
+                        expectation,
+                        QStringLiteral(
+                            "Type change cancelled · %1 kept")
+                            .arg(memberLabel));
+                }
+            }
             const PropertyEditResult result = commit(mutation);
             if (result.status == PropertyEditStatus::changed && reportFeedback) {
-                if (defaultMember && (clearsEnumValues || clearsRange)) {
+                if (removesMembers) {
+                    const QString removedLabel =
+                        removedMemberCount == 1
+                            ? QStringLiteral("1 Member Field removed")
+                            : QStringLiteral("%1 Member Fields removed")
+                                  .arg(removedMemberCount);
+                    statusBar()->showMessage(
+                        QStringLiteral("Type changed · %1 · Ctrl+Z to restore")
+                            .arg(removedLabel),
+                        6000);
+                } else if (defaultMember && (clearsEnumValues || clearsRange)) {
                     statusBar()->showMessage(
                         QStringLiteral(
                             "Type changed · NEW_MEMBER created · incompatible Enum/Range "
@@ -4012,10 +4106,11 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                 return reject(
                     QStringLiteral("bits, bool, intN, uintN, enum, field, or reserved"));
             }
-            if (*parsed != regmap::FieldType::structure && !current->fields.empty()) {
-                return reject(
-                    QStringLiteral("field type while the register contains fields"));
-            }
+            const bool removesFields =
+                *parsed != regmap::FieldType::structure &&
+                !current->fields.empty();
+            const std::size_t removedFieldCount =
+                removesFields ? fieldTreeSize(current->fields) : 0;
             const bool enumerationLike =
                 *parsed == regmap::FieldType::enumeration ||
                 *parsed == regmap::FieldType::boolean;
@@ -4076,6 +4171,9 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                     if (defaultField && reg->fields.empty()) {
                         reg->fields.push_back(*defaultField);
                     }
+                    if (removesFields) {
+                        reg->fields.clear();
+                    }
                 }
             };
             if (!acceptsAddressEdit(objectId, mutation)) {
@@ -4083,11 +4181,48 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                     QStringLiteral(
                         "a Register Type whose width preserves the address layout"));
             }
+            if (removesFields) {
+                const QString fieldLabel =
+                    removedFieldCount == 1
+                        ? QStringLiteral("1 Field")
+                        : QStringLiteral("%1 Fields").arg(removedFieldCount);
+                const QString expectation =
+                    QStringLiteral(
+                        "an individually confirmed Type change before removing %1")
+                        .arg(fieldLabel);
+                if (!reportFeedback) {
+                    return reject(expectation);
+                }
+                const auto answer = QMessageBox::warning(
+                    this, QStringLiteral("Change Field Register Type"),
+                    QStringLiteral(
+                        "Change Register %1 to %2?\n\n"
+                        "This removes %3, including nested Members and Enum values.\n\n"
+                        "Ctrl+Z can restore the complete field Register.")
+                        .arg(fromUtf8(current->name), value.trimmed(), fieldLabel),
+                    QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+                if (answer != QMessageBox::Yes) {
+                    return cancelEdit(
+                        expectation,
+                        QStringLiteral("Type change cancelled · %1 kept")
+                            .arg(fieldLabel));
+                }
+            }
             const PropertyEditResult result = commit(mutation);
             if (result.status == PropertyEditStatus::changed && reportFeedback) {
                 const bool normalized =
                     clearsEnumValues || clearsRange || normalizesReserved;
-                if (defaultField && normalized) {
+                if (removesFields) {
+                    const QString removedLabel =
+                        removedFieldCount == 1
+                            ? QStringLiteral("1 Field removed")
+                            : QStringLiteral("%1 Fields removed")
+                                  .arg(removedFieldCount);
+                    statusBar()->showMessage(
+                        QStringLiteral("Type changed · %1 · Ctrl+Z to restore")
+                            .arg(removedLabel),
+                        6000);
+                } else if (defaultField && normalized) {
                     statusBar()->showMessage(
                         QStringLiteral(
                             "Type changed · NEW_FIELD created · incompatible data cleared "
