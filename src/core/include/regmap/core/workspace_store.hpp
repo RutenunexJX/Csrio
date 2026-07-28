@@ -3,6 +3,7 @@
 #include "regmap/core/diagnostic.hpp"
 #include "regmap/core/model.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -28,9 +29,13 @@ public:
     [[nodiscard]] bool canRedo() const noexcept;
     [[nodiscard]] std::string_view undoText() const noexcept;
     [[nodiscard]] std::string_view redoText() const noexcept;
+    [[nodiscard]] std::size_t undoDepth() const noexcept;
     [[nodiscard]] std::uint64_t revision() const noexcept;
 
     [[nodiscard]] bool transact(std::string description, const Mutation& mutation);
+    [[nodiscard]] bool squashUndoSince(
+        std::size_t startingDepth,
+        std::string description);
     [[nodiscard]] bool undo();
     [[nodiscard]] bool redo();
     void markSaved();

@@ -49,6 +49,7 @@ private slots:
     void roundTripsProjectFile();
     void roundTripsExtendedModel();
     void tracksTransactionsAndStableIds();
+    void squashesTransactionsIntoSingleUndoStep();
     void roundTripsManagedRtl();
     void rejectsInvalidManagedRtlStructure();
     void preservesUnmanagedRtlText();
@@ -495,6 +496,56 @@ void CoreTests::tracksTransactionsAndStableIds()
     QVERIFY(store.dirty());
     QCOMPARE(store.workspace()->addressSpaces.front().blocks.front().registers.front().id,
              savedLastId);
+}
+
+void CoreTests::squashesTransactionsIntoSingleUndoStep()
+{
+    auto opened = openCheckedInProject();
+    QVERIFY(opened.workspace.has_value());
+    regmap::WorkspaceStore store(*opened.workspace);
+
+    const std::string registerId = "reg-control";
+    const auto* original = regmap::findRegister(*store.workspace(), registerId);
+    QVERIFY(original != nullptr);
+    const std::uint64_t originalOffset = original->offset;
+    const std::string originalDescription = original->description;
+
+    const std::size_t startingDepth = store.undoDepth();
+    QVERIFY(!store.squashUndoSince(startingDepth, "Empty group"));
+    QVERIFY(!store.squashUndoSince(startingDepth + 1U, "Out of bounds"));
+
+    QVERIFY(store.transact("Move CONTROL", [&](regmap::Workspace& workspace) {
+        regmap::findRegister(workspace, registerId)->offset = 0x20;
+    }));
+    QVERIFY(store.transact("Describe CONTROL", [&](regmap::Workspace& workspace) {
+        regmap::findRegister(workspace, registerId)->description = "Grouped edit";
+    }));
+    QCOMPARE(store.undoDepth(), startingDepth + 2U);
+
+    QVERIFY(store.squashUndoSince(startingDepth, "Edit CONTROL"));
+    QCOMPARE(store.undoDepth(), startingDepth + 1U);
+    QCOMPARE(store.undoText(), std::string_view{"Edit CONTROL"});
+
+    const auto* edited = regmap::findRegister(*store.workspace(), registerId);
+    QVERIFY(edited != nullptr);
+    QCOMPARE(edited->offset, std::uint64_t{0x20});
+    QCOMPARE(edited->description, std::string{"Grouped edit"});
+
+    QVERIFY(store.undo());
+    QCOMPARE(store.undoDepth(), startingDepth);
+    QVERIFY(!store.canUndo());
+    const auto* undone = regmap::findRegister(*store.workspace(), registerId);
+    QVERIFY(undone != nullptr);
+    QCOMPARE(undone->offset, originalOffset);
+    QCOMPARE(undone->description, originalDescription);
+
+    QVERIFY(store.redo());
+    QCOMPARE(store.undoDepth(), startingDepth + 1U);
+    QVERIFY(!store.canRedo());
+    const auto* redone = regmap::findRegister(*store.workspace(), registerId);
+    QVERIFY(redone != nullptr);
+    QCOMPARE(redone->offset, std::uint64_t{0x20});
+    QCOMPARE(redone->description, std::string{"Grouped edit"});
 }
 
 void CoreTests::roundTripsManagedRtl()

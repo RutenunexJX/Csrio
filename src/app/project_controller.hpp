@@ -16,6 +16,7 @@
 #include <QString>
 #include <QTimer>
 
+#include <cstddef>
 #include <filesystem>
 #include <optional>
 #include <utility>
@@ -40,6 +41,7 @@ public:
     [[nodiscard]] bool canRedo() const noexcept;
     [[nodiscard]] QString undoText() const;
     [[nodiscard]] QString redoText() const;
+    [[nodiscard]] std::size_t undoDepth() const noexcept;
     [[nodiscard]] const std::vector<regmap::MergeConflict>& conflicts() const noexcept;
     [[nodiscard]] bool hasConflicts() const noexcept;
     [[nodiscard]] bool requiresInitialSyncChoice() const noexcept;
@@ -47,6 +49,7 @@ public:
     bool editWorkspace(
         const QString& description,
         const regmap::WorkspaceStore::Mutation& mutation);
+    bool squashUndoSince(std::size_t startingDepth, const QString& description);
 
 public slots:
     void openProject(const QString& manifestPath);

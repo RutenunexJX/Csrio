@@ -2988,7 +2988,9 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
     window.show();
     QTest::qWait(50);
     auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* controller = window.findChild<ProjectController*>();
     QVERIFY(registers != nullptr);
+    QVERIFY(controller != nullptr);
 
     const QModelIndex statusName = registers->model()->index(0, 0);
     registers->setCurrentIndex(statusName);
@@ -3007,6 +3009,17 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
                               QStringLiteral("0x8"), 2000);
 
     QTest::keyClick(&window, Qt::Key_Z, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 0).data().toString(),
+                              QStringLiteral("CONTROL"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 1).data().toString(),
+                              QStringLiteral("0x4"), 2000);
+
+    QTest::keyClick(&window, Qt::Key_Y, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 0).data().toString(),
+                              QStringLiteral("CONTROL_RENAMED"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 1).data().toString(),
+                              QStringLiteral("0x8"), 2000);
+
     QTest::keyClick(&window, Qt::Key_Z, Qt::ControlModifier);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 0).data().toString(),
                               QStringLiteral("CONTROL"), 2000);
@@ -3050,13 +3063,43 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 10).data().toString(),
                               QStringLiteral("control"), 2000);
     const auto* status =
-        regmap::findRegister(*window.findChild<ProjectController*>()->workspace(),
-                             "reg-status");
+        regmap::findRegister(*controller->workspace(), "reg-status");
     QVERIFY(status != nullptr);
     QCOMPARE(status->tags, std::vector<std::string>{"control"});
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("1 of 2")));
+
+    const QModelIndex refreshedFirstTags = registers->model()->index(0, 10);
+    const QModelIndex refreshedLastTags = registers->model()->index(1, 10);
+    registers->setCurrentIndex(refreshedFirstTags);
+    registers->selectionModel()->select(
+        QItemSelection(refreshedFirstTags, refreshedLastTags),
+        QItemSelectionModel::ClearAndSelect);
+    QApplication::clipboard()->setText(QStringLiteral("shared"));
+    QTest::keyClick(registers, Qt::Key_V, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 10).data().toString(),
+                              QStringLiteral("shared"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 10).data().toString(),
+                              QStringLiteral("shared"), 2000);
+
+    QTest::keyClick(&window, Qt::Key_Z, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 10).data().toString(),
+                              QStringLiteral("control"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 10).data().toString(),
+                              QStringLiteral("control"), 2000);
+    QTest::keyClick(&window, Qt::Key_Y, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 10).data().toString(),
+                              QStringLiteral("shared"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 10).data().toString(),
+                              QStringLiteral("shared"), 2000);
+    QTest::keyClick(&window, Qt::Key_Z, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 10).data().toString(),
+                              QStringLiteral("control"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 10).data().toString(),
+                              QStringLiteral("control"), 2000);
 
     const QModelIndex sourceAccess = registers->model()->index(0, 9);
     registers->scrollTo(sourceAccess);
+    QCoreApplication::processEvents();
     QTest::mouseClick(registers->viewport(), Qt::LeftButton, Qt::NoModifier,
                       registers->visualRect(sourceAccess).center());
     QVERIFY(QApplication::activePopupWidget() == nullptr);
@@ -3078,9 +3121,24 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
                               QStringLiteral("WO"), 2000);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 9).data().toString(),
                               QStringLiteral("WO"), 2000);
-    QCOMPARE(regmap::findRegister(*window.findChild<ProjectController*>()->workspace(),
-                                  "reg-status")->access,
+    QCOMPARE(regmap::findRegister(*controller->workspace(), "reg-status")->access,
              regmap::AccessMode::writeOnly);
+
+    QTest::keyClick(&window, Qt::Key_Z, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 9).data().toString(),
+                              QStringLiteral("RO"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 9).data().toString(),
+                              QStringLiteral("RW"), 2000);
+    QTest::keyClick(&window, Qt::Key_Y, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 9).data().toString(),
+                              QStringLiteral("WO"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 9).data().toString(),
+                              QStringLiteral("WO"), 2000);
+    QTest::keyClick(&window, Qt::Key_Z, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 9).data().toString(),
+                              QStringLiteral("RO"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 9).data().toString(),
+                              QStringLiteral("RW"), 2000);
 
     makeGeneratedFilesWritable(directory.path());
 }

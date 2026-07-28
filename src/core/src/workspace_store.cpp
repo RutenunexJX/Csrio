@@ -216,6 +216,8 @@ std::string_view WorkspaceStore::redoText() const noexcept
     return redo_.empty() ? std::string_view{} : redo_.back().description;
 }
 
+std::size_t WorkspaceStore::undoDepth() const noexcept { return undo_.size(); }
+
 std::uint64_t WorkspaceStore::revision() const noexcept { return revision_; }
 
 bool WorkspaceStore::transact(std::string description, const Mutation& mutation)
@@ -234,6 +236,19 @@ bool WorkspaceStore::transact(std::string description, const Mutation& mutation)
     redo_.clear();
     ++revision_;
     revalidate();
+    return true;
+}
+
+bool WorkspaceStore::squashUndoSince(
+    std::size_t startingDepth,
+    std::string description)
+{
+    if (startingDepth >= undo_.size()) {
+        return false;
+    }
+
+    undo_[startingDepth].description = std::move(description);
+    undo_.resize(startingDepth + 1U);
     return true;
 }
 

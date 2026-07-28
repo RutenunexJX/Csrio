@@ -4758,14 +4758,41 @@ void MainWindow::pasteSelection()
         }
     }
 
+    if (targets.empty()) {
+        statusBar()->showMessage(
+            QStringLiteral("Paste skipped: selected cells do not accept pasted values"),
+            4000);
+        return;
+    }
+
+    const std::size_t undoDepth = controller_.undoDepth();
     const QScopedValueRollback editGuard(modelEditInProgress_, true);
     for (const auto& target : targets) {
         applyPropertyEdit(target.objectId, target.property, target.value);
     }
-    statusBar()->showMessage(
-        QStringLiteral("Pasted into %1 cell(s); rejected values remain unchanged")
-            .arg(targets.size()),
-        4000);
+    const std::size_t currentUndoDepth = controller_.undoDepth();
+    const std::size_t changed =
+        currentUndoDepth >= undoDepth ? currentUndoDepth - undoDepth : 0;
+    if (changed > 0) {
+        static_cast<void>(controller_.squashUndoSince(
+            undoDepth, QStringLiteral("Paste %1 cell(s)").arg(changed)));
+    }
+
+    if (changed == 0) {
+        statusBar()->showMessage(
+            QStringLiteral("Paste made no changes in %1 target cell(s)").arg(targets.size()),
+            4000);
+    } else if (changed == targets.size()) {
+        statusBar()->showMessage(
+            QStringLiteral("Pasted into %1 cell(s); Ctrl+Z restores this paste").arg(changed),
+            4000);
+    } else {
+        statusBar()->showMessage(
+            QStringLiteral("Pasted into %1 of %2 cell(s); invalid or unchanged values were skipped")
+                .arg(changed)
+                .arg(targets.size()),
+            5000);
+    }
 }
 
 void MainWindow::copyHierarchySelection()

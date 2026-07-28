@@ -215,6 +215,11 @@ QString ProjectController::redoText() const
     return fromUtf8(store_.redoText());
 }
 
+std::size_t ProjectController::undoDepth() const noexcept
+{
+    return store_.undoDepth();
+}
+
 bool ProjectController::editWorkspace(
     const QString& description,
     const regmap::WorkspaceStore::Mutation& mutation)
@@ -224,6 +229,18 @@ bool ProjectController::editWorkspace(
         notifyModelEdited();
     }
     return changed;
+}
+
+bool ProjectController::squashUndoSince(
+    std::size_t startingDepth,
+    const QString& description)
+{
+    const bool squashed =
+        store_.squashUndoSince(startingDepth, description.toUtf8().toStdString());
+    if (squashed) {
+        emit editStateChanged();
+    }
+    return squashed;
 }
 
 void ProjectController::openProject(const QString& manifestPath)
