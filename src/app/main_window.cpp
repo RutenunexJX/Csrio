@@ -4883,29 +4883,39 @@ void MainWindow::pasteSelection()
     std::size_t unchanged = 0;
     std::size_t rejected = 0;
     QString firstRejected;
-    const QScopedValueRollback editGuard(modelEditInProgress_, true);
-    for (const auto& target : targets) {
-        const PropertyEditResult result =
-            applyPropertyEdit(target.objectId, target.property, target.value, false);
-        switch (result.status) {
-        case PropertyEditStatus::changed:
-            ++changed;
-            break;
-        case PropertyEditStatus::unchanged:
-            ++unchanged;
-            break;
-        case PropertyEditStatus::rejected:
-            ++rejected;
-            if (firstRejected.isEmpty()) {
-                const QString displayValue =
-                    target.value.isEmpty() ? QStringLiteral("<empty>") : target.value;
-                firstRejected =
-                    QStringLiteral("%1 / %2 = \"%3\" (expected %4)")
-                        .arg(target.objectName, target.propertyName, displayValue,
-                             result.expectation);
+    QModelIndex firstRejectedIndex;
+    {
+        const QScopedValueRollback editGuard(modelEditInProgress_, true);
+        for (const auto& target : targets) {
+            const PropertyEditResult result =
+                applyPropertyEdit(target.objectId, target.property, target.value, false);
+            switch (result.status) {
+            case PropertyEditStatus::changed:
+                ++changed;
+                break;
+            case PropertyEditStatus::unchanged:
+                ++unchanged;
+                break;
+            case PropertyEditStatus::rejected:
+                ++rejected;
+                if (!firstRejectedIndex.isValid()) {
+                    firstRejectedIndex =
+                        view->model()->index(target.row, target.column);
+                    const QString displayValue =
+                        target.value.isEmpty() ? QStringLiteral("<empty>") : target.value;
+                    firstRejected =
+                        QStringLiteral("%1 / %2 = \"%3\" (expected %4)")
+                            .arg(target.objectName, target.propertyName, displayValue,
+                                 result.expectation);
+                }
+                break;
             }
-            break;
         }
+    }
+    if (firstRejectedIndex.isValid()) {
+        view->selectionModel()->setCurrentIndex(
+            firstRejectedIndex, QItemSelectionModel::NoUpdate);
+        view->scrollTo(firstRejectedIndex, QAbstractItemView::PositionAtCenter);
     }
     if (changed > 0) {
         static_cast<void>(controller_.squashUndoSince(
