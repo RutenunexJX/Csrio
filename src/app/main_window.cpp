@@ -4833,6 +4833,25 @@ void MainWindow::pasteSelection()
 
     const QStringList firstCells = rows.front().split('\t', Qt::KeepEmptyParts);
     QModelIndexList selected = view->selectionModel()->selectedIndexes();
+    QModelIndex pasteStart = view->currentIndex();
+    if (selected.size() > 1) {
+        int firstRow = selected.front().row();
+        int lastRow = firstRow;
+        int firstColumn = selected.front().column();
+        int lastColumn = firstColumn;
+        for (const QModelIndex& index : selected) {
+            firstRow = std::min(firstRow, index.row());
+            lastRow = std::max(lastRow, index.row());
+            firstColumn = std::min(firstColumn, index.column());
+            lastColumn = std::max(lastColumn, index.column());
+        }
+        const qsizetype selectedArea =
+            static_cast<qsizetype>(lastRow - firstRow + 1) *
+            static_cast<qsizetype>(lastColumn - firstColumn + 1);
+        if (selected.size() == selectedArea) {
+            pasteStart = view->model()->index(firstRow, firstColumn);
+        }
+    }
     if (rows.size() == 1 && firstCells.size() == 1 && selected.size() > 1) {
         std::ranges::sort(selected, [](const QModelIndex& left, const QModelIndex& right) {
             return left.row() == right.row() ? left.column() < right.column()
@@ -4842,13 +4861,12 @@ void MainWindow::pasteSelection()
             appendTarget(target, firstCells.front());
         }
     } else {
-        const QModelIndex start = view->currentIndex();
         for (int rowOffset = 0; rowOffset < rows.size(); ++rowOffset) {
             const QStringList cells = rows[rowOffset].split('\t', Qt::KeepEmptyParts);
             for (int columnOffset = 0; columnOffset < cells.size(); ++columnOffset) {
                 appendTarget(
-                    view->model()->index(start.row() + rowOffset,
-                                         start.column() + columnOffset),
+                    view->model()->index(pasteStart.row() + rowOffset,
+                                         pasteStart.column() + columnOffset),
                     cells[columnOffset]);
             }
         }

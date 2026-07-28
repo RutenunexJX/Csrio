@@ -3002,7 +3002,13 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
     QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("STATUS"));
 
     QApplication::clipboard()->setText(QStringLiteral("CONTROL_RENAMED\t0x8"));
-    registers->setCurrentIndex(registers->model()->index(1, 0));
+    const QModelIndex matrixPasteStart = registers->model()->index(1, 0);
+    const QModelIndex matrixPasteEnd = registers->model()->index(1, 1);
+    registers->setCurrentIndex(matrixPasteEnd);
+    registers->selectionModel()->select(
+        QItemSelection(matrixPasteStart, matrixPasteEnd),
+        QItemSelectionModel::ClearAndSelect);
+    QCOMPARE(registers->currentIndex(), matrixPasteEnd);
     QTest::keyClick(registers, Qt::Key_V, Qt::ControlModifier);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 0).data().toString(),
                               QStringLiteral("CONTROL_RENAMED"), 2000);
