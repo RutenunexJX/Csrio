@@ -3629,6 +3629,17 @@ void GuiSmokeTests::keepsUndoRedoInsideActiveEditor()
             regmap::findRegister(*controller->workspace(), "reg-status")->description),
         QStringLiteral("Committed description"));
 
+    editor->setSelection(static_cast<int>(originalName.size()), 1);
+    QTest::keyClick(editor, Qt::Key_Delete);
+    QVERIFY(regmap::findRegister(*controller->workspace(), "reg-status") != nullptr);
+    QCOMPARE(registers->model()->rowCount(), 3);
+    QCOMPARE(editor->text(), originalName);
+    QCOMPARE(controller->undoDepth(), workspaceUndoDepth);
+    QCOMPARE(
+        QString::fromStdString(
+            regmap::findRegister(*controller->workspace(), "reg-status")->description),
+        QStringLiteral("Committed description"));
+
     QTest::keyClick(editor, Qt::Key_Escape);
     QCoreApplication::processEvents();
     QCOMPARE(registers->model()->index(0, 0).data().toString(), originalName);
