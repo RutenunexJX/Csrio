@@ -85,6 +85,7 @@ private slots:
     void navigatesFieldProblemsAndFallsBackForHiddenFields();
     void navigatesEnumValuesFromSearchAndProblems();
     void supportsTrailingRowsAndFieldMovement();
+    void keepsRegisterFieldConversionImmediatelyUsable();
     void keepsCompoundFieldsUsableDuringConversionAndDeletion();
     void dragsFieldsAndResolvesOverlaps();
     void cancelsInterruptedFieldDrag();
@@ -2046,6 +2047,8 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     QCOMPARE(enums->model()->rowCount(), 0);
     QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("incompatible data")));
     QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("Ctrl+Z")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("NEW_FIELD created")));
     registerUndo = findUndoAction();
     QVERIFY(registerUndo != nullptr);
     QVERIFY(registerUndo->isEnabled());
@@ -2233,29 +2236,18 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     QTRY_VERIFY_WITH_TIMEOUT(!fields->isVisible(), 2000);
     QCOMPARE(fields->model()->rowCount(), 0);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 5).data().toString(),
-                              QStringLiteral("Open (0)"), 2000);
+                              QStringLiteral("Open (1)"), 2000);
     Q_EMIT registers->clicked(registers->model()->index(1, 5));
     QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
-    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->rowCount(), 1, 2000);
-
-    Q_EMIT fields->clicked(fields->model()->index(0, 13));
-    QCoreApplication::processEvents();
-    QCOMPARE(fields->model()->rowCount(), 1);
-
-    Q_EMIT fields->clicked(fields->model()->index(0, 0));
-    QCOMPARE(fields->model()->rowCount(), 2);
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->rowCount(), 2, 2000);
     const auto visibleFieldEditor = [fields]() -> QLineEdit* {
         const auto editors = fields->findChildren<QLineEdit*>();
         const auto visible = std::ranges::find_if(
             editors, [](const QLineEdit* editor) { return editor->isVisible(); });
         return visible == editors.end() ? nullptr : *visible;
     };
-    QTRY_VERIFY_WITH_TIMEOUT(visibleFieldEditor() != nullptr, 2000);
-    auto* fieldNameEditor = visibleFieldEditor();
-    QCOMPARE(fieldNameEditor->text(), QStringLiteral("NEW_FIELD"));
-    QTest::keyClick(fieldNameEditor, Qt::Key_Escape);
-    QCoreApplication::processEvents();
     QCOMPARE(fields->model()->index(0, 0).data().toString(), QStringLiteral("NEW_FIELD"));
+    QVERIFY(visibleFieldEditor() == nullptr);
 
     const QModelIndex widthIndex = fields->model()->index(0, 4);
     fields->scrollTo(widthIndex);
@@ -2576,6 +2568,94 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     QVERIFY(!secondFieldId.isEmpty());
     QTest::keyClick(secondFieldNameEditor, Qt::Key_Escape);
     QCoreApplication::processEvents();
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::keepsRegisterFieldConversionImmediatelyUsable()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createTwoRegisterProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+
+    auto* controller = window.findChild<ProjectController*>();
+    auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* fields = window.findChild<QTableView*>(QStringLiteral("fieldView"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+    const std::size_t initialUndoDepth = controller->undoDepth();
+
+    QVERIFY(registers->model()->setData(registers->model()->index(1, 4),
+                                        QStringLiteral("field")));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findRegister(*controller->workspace(), "reg-control") != nullptr &&
+            regmap::findRegister(*controller->workspace(), "reg-control")->fields.size() == 1,
+        2000);
+    const auto* reg =
+        regmap::findRegister(*controller->workspace(), "reg-control");
+    QVERIFY(reg != nullptr);
+    QCOMPARE(reg->type, regmap::FieldType::structure);
+    const std::string firstFieldId = reg->fields.front().id;
+    QVERIFY(!firstFieldId.empty());
+    QCOMPARE(QString::fromStdString(reg->fields.front().name),
+             QStringLiteral("NEW_FIELD"));
+    QCOMPARE(reg->fields.front().lsb, 0U);
+    QCOMPARE(reg->fields.front().msb, 0U);
+    QCOMPARE(reg->fields.front().softwareAccess, regmap::AccessMode::readWrite);
+    QCOMPARE(reg->fields.front().hardwareAccess, regmap::AccessMode::none);
+    QCOMPARE(reg->fields.front().resetValue,
+             std::optional(regmap::UnsignedValue(0)));
+    QCOMPARE(reg->fields.front().writeSideEffect,
+             regmap::WriteSideEffect::write);
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+    QCOMPARE(controller->undoDepth(), initialUndoDepth + 1);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 5).data().toString(),
+                              QStringLiteral("Open (1)"), 2000);
+    QVERIFY(!fields->isVisible());
+    QCOMPARE(fields->model()->rowCount(), 0);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("NEW_FIELD created")));
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("Ctrl+Z")));
+
+    const auto actions = window.findChildren<QAction*>();
+    const auto undo = std::ranges::find_if(actions, [](const QAction* action) {
+        return action->shortcut().matches(QKeySequence::Undo) ==
+               QKeySequence::ExactMatch;
+    });
+    const auto redo = std::ranges::find_if(actions, [](const QAction* action) {
+        return action->shortcut().matches(QKeySequence::Redo) ==
+               QKeySequence::ExactMatch;
+    });
+    QVERIFY(undo != actions.end());
+    QVERIFY(redo != actions.end());
+    (*undo)->trigger();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findRegister(*controller->workspace(), "reg-control") != nullptr &&
+            regmap::findRegister(*controller->workspace(), "reg-control")->type ==
+                regmap::FieldType::unsignedInteger &&
+            regmap::findRegister(*controller->workspace(), "reg-control")->fields.empty(),
+        2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+    (*redo)->trigger();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findField(*controller->workspace(), firstFieldId) != nullptr, 2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth + 1);
+
+    Q_EMIT registers->clicked(registers->model()->index(1, 5));
+    QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->rowCount(), 2, 2000);
+    QCOMPARE(fields->model()->index(0, 0).data().toString(),
+             QStringLiteral("NEW_FIELD"));
+    QCOMPARE(fields->model()->index(0, 0).data(Qt::UserRole + 1).toString(),
+             QString::fromStdString(firstFieldId));
 
     makeGeneratedFilesWritable(directory.path());
 }

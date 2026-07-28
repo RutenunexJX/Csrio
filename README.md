@@ -81,11 +81,12 @@ unique. The register context menu can convert a register to a red, bold reserved
 it while shifting subsequent offsets upward. Page and block properties are shown once in the
 highlighted context bar above the register table.
 
-A register whose Type is `field` has an **Open (N)** button in the **Fields** column. The button
-opens its bit-field diagram and Field table directly, including the trailing `+` for the first
-Field; selecting an entire register row does not open this workspace. The Fields header identifies
-the current register and provides **Close Fields**. Search and Problems results that target a Field
-open the corresponding Fields workspace automatically.
+Changing a scalar Register to Type `field` creates its first `NEW_FIELD` in the same undoable
+edit. A register whose Type is `field` has an **Open (N)** button in the **Fields** column. The
+button opens its bit-field diagram and Field table directly, including the trailing `+` for
+further Fields; selecting an entire register row does not open this workspace. The Fields header
+identifies the current register and provides **Close Fields**. Search and Problems results that
+target a Field open the corresponding Fields workspace automatically.
 Field LSB is derived and read-only. Edit **Width** or **MSB**, or drag a top-level field in the
 bit-field view. Every block shows its bit range above it; the moving block is painted on top and
 its MSB/LSB update continuously. On overlap, Workbench asks whether to trim the moving field or

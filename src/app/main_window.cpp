@@ -1145,6 +1145,30 @@ uniqueDefaultName(const std::vector<Value>& values, std::string_view base)
     return candidate;
 }
 
+[[nodiscard]] regmap::Field
+makeDefaultRegisterField(const regmap::Workspace& workspace,
+                         const regmap::Register& reg, std::uint32_t bit)
+{
+    regmap::Field field;
+    field.id = regmap::makeStableObjectId(workspace, "field");
+    field.name = uniqueDefaultName(reg.fields, "NEW_FIELD");
+    field.msb = bit;
+    field.lsb = bit;
+    field.type = regmap::FieldType::bits;
+    field.softwareAccess = reg.access;
+    field.hardwareAccess = regmap::AccessMode::none;
+    field.resetValue =
+        reg.resetValue
+            ? std::optional{reg.resetValue->slice(static_cast<std::size_t>(bit), 1)}
+            : std::nullopt;
+    field.writeSideEffect =
+        reg.access == regmap::AccessMode::writeOnly ||
+                reg.access == regmap::AccessMode::readWrite
+            ? regmap::WriteSideEffect::write
+            : regmap::WriteSideEffect::none;
+    return field;
+}
+
 template <typename Value>
 [[nodiscard]] bool
 isUniqueSiblingName(const std::vector<Value>& values, std::string_view objectId,
@@ -4020,6 +4044,11 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                 (current->access != regmap::AccessMode::none ||
                  (current->initialValue && !current->initialValue->isZero()) ||
                  (current->resetValue && !current->resetValue->isZero()));
+            std::optional<regmap::Field> defaultField;
+            if (*parsed == regmap::FieldType::structure &&
+                current->fields.empty()) {
+                defaultField = makeDefaultRegisterField(*workspace, *current, 0);
+            }
             const regmap::WorkspaceStore::Mutation mutation =
                 [=](regmap::Workspace& candidate) {
                 if (auto* reg = regmap::findRegister(candidate, objectId)) {
@@ -4044,6 +4073,9 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                         reg->minimumValue.reset();
                         reg->maximumValue.reset();
                     }
+                    if (defaultField && reg->fields.empty()) {
+                        reg->fields.push_back(*defaultField);
+                    }
                 }
             };
             if (!acceptsAddressEdit(objectId, mutation)) {
@@ -4052,12 +4084,27 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                         "a Register Type whose width preserves the address layout"));
             }
             const PropertyEditResult result = commit(mutation);
-            if (result.status == PropertyEditStatus::changed &&
-                (clearsEnumValues || clearsRange || normalizesReserved) && reportFeedback) {
-                statusBar()->showMessage(
-                    QStringLiteral(
-                        "Type changed · incompatible data cleared or normalized · Ctrl+Z to restore"),
-                    6000);
+            if (result.status == PropertyEditStatus::changed && reportFeedback) {
+                const bool normalized =
+                    clearsEnumValues || clearsRange || normalizesReserved;
+                if (defaultField && normalized) {
+                    statusBar()->showMessage(
+                        QStringLiteral(
+                            "Type changed · NEW_FIELD created · incompatible data cleared "
+                            "or normalized · Ctrl+Z to restore"),
+                        6000);
+                } else if (defaultField) {
+                    statusBar()->showMessage(
+                        QStringLiteral(
+                            "Type changed · NEW_FIELD created · Ctrl+Z to restore"),
+                        6000);
+                } else if (normalized) {
+                    statusBar()->showMessage(
+                        QStringLiteral(
+                            "Type changed · incompatible data cleared or normalized · "
+                            "Ctrl+Z to restore"),
+                        6000);
+                }
             }
             return result;
         }
@@ -4580,19 +4627,8 @@ void MainWindow::addField()
         return;
     }
 
-    regmap::Field field;
-    field.id = regmap::makeStableObjectId(*workspace, "field");
-    field.name = uniqueDefaultName(reg->fields, "NEW_FIELD");
-    field.msb = field.lsb = static_cast<std::uint32_t>(std::distance(used.begin(), freeBit));
-    field.type = regmap::FieldType::bits;
-    field.softwareAccess = reg->access;
-    field.hardwareAccess = regmap::AccessMode::none;
-    field.resetValue =
-        reg->resetValue ? std::optional{reg->resetValue->slice(field.lsb, 1)} : std::nullopt;
-    field.writeSideEffect =
-        reg->access == regmap::AccessMode::writeOnly || reg->access == regmap::AccessMode::readWrite
-            ? regmap::WriteSideEffect::write
-            : regmap::WriteSideEffect::none;
+    regmap::Field field = makeDefaultRegisterField(
+        *workspace, *reg, static_cast<std::uint32_t>(std::distance(used.begin(), freeBit)));
     const std::string newId = field.id;
     const std::string registerId = reg->id;
     if (controller_.editWorkspace(
