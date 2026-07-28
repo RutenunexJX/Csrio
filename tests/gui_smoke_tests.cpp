@@ -86,6 +86,7 @@ private slots:
     void navigatesEnumValuesFromSearchAndProblems();
     void supportsTrailingRowsAndFieldMovement();
     void keepsRegisterFieldConversionImmediatelyUsable();
+    void keepsEnumConversionsImmediatelyUsable();
     void confirmsCompoundTypeChangesBeforeRemovingChildren();
     void keepsCompoundFieldsUsableDuringConversionAndDeletion();
     void dragsFieldsAndResolvesOverlaps();
@@ -1967,26 +1968,23 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     QVERIFY(registers->model()->setData(registers->model()->index(1, 4),
                                         QStringLiteral("enum")));
     QTRY_VERIFY_WITH_TIMEOUT(enums->isVisible(), 2000);
-    QTRY_COMPARE_WITH_TIMEOUT(enums->model()->rowCount(), 1, 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(enums->model()->rowCount(), 2, 2000);
     const auto visibleEnumEditor = [enums]() -> QLineEdit* {
         const auto editors = enums->findChildren<QLineEdit*>();
         const auto visible = std::ranges::find_if(
             editors, [](const QLineEdit* editor) { return editor->isVisible(); });
         return visible == editors.end() ? nullptr : *visible;
     };
+    QCOMPARE(enums->model()->index(0, 0).data().toString(), QStringLiteral("NEW_VALUE"));
+    QCOMPARE(enums->model()->index(0, 1).data().toString(), QStringLiteral("0x0"));
+    const QString enumId =
+        enums->model()->index(0, 0).data(Qt::UserRole + 1).toString();
+    QVERIFY(!enumId.isEmpty());
     Q_EMIT enums->clicked(enums->model()->index(0, 2));
     QCoreApplication::processEvents();
-    QCOMPARE(enums->model()->rowCount(), 1);
+    QCOMPARE(enums->model()->rowCount(), 2);
     QCOMPARE(visibleEnumEditor(), nullptr);
     Q_EMIT enums->clicked(enums->model()->index(0, 0));
-    QTRY_COMPARE_WITH_TIMEOUT(enums->model()->rowCount(), 2, 2000);
-    QTRY_VERIFY_WITH_TIMEOUT(visibleEnumEditor() != nullptr, 2000);
-    auto* enumNameEditor = visibleEnumEditor();
-    QCOMPARE(enumNameEditor->text(), QStringLiteral("NEW_VALUE"));
-    const QString enumId =
-        enums->currentIndex().data(Qt::UserRole + 1).toString();
-    QVERIFY(!enumId.isEmpty());
-    QTest::keyClick(enumNameEditor, Qt::Key_Escape);
     QCoreApplication::processEvents();
     QCOMPARE(enums->model()->index(0, 0).data().toString(), QStringLiteral("NEW_VALUE"));
     QCOMPARE(enums->model()->index(0, 1).data().toString(), QStringLiteral("0x0"));
@@ -2410,17 +2408,13 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     QVERIFY(fields->model()->setData(fields->model()->index(memberRow, 5),
                                      QStringLiteral("enum")));
     QTRY_VERIFY_WITH_TIMEOUT(enums->isVisible(), 2000);
-    QTRY_COMPARE_WITH_TIMEOUT(enums->model()->rowCount(), 1, 2000);
-
-    Q_EMIT enums->clicked(enums->model()->index(0, 0));
-    QString guardedFieldEnumId;
-    for (int row = 0; row < enums->model()->rowCount(); ++row) {
-        const QString candidate =
-            enums->model()->index(row, 0).data(Qt::UserRole + 1).toString();
-        if (!candidate.isEmpty()) {
-            guardedFieldEnumId = candidate;
-        }
-    }
+    QTRY_COMPARE_WITH_TIMEOUT(enums->model()->rowCount(), 2, 2000);
+    QCOMPARE(enums->model()->index(0, 0).data().toString(),
+             QStringLiteral("NEW_VALUE"));
+    QCOMPARE(enums->model()->index(0, 1).data().toString(),
+             QStringLiteral("0x0"));
+    const QString guardedFieldEnumId =
+        enums->model()->index(0, 0).data(Qt::UserRole + 1).toString();
     QVERIFY(!guardedFieldEnumId.isEmpty());
     const int parentRow = fieldRowForId(parentFieldId);
     QVERIFY(parentRow >= 0);
@@ -2499,8 +2493,11 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     QVERIFY(fields->model()->setData(fields->model()->index(memberRow, 5),
                                      QStringLiteral("enum")));
     QTRY_VERIFY_WITH_TIMEOUT(enums->isVisible(), 2000);
-    QTRY_COMPARE_WITH_TIMEOUT(enums->model()->rowCount(), 1, 2000);
-    QCOMPARE(enums->model()->index(0, 0).data().toString(), QStringLiteral("+"));
+    QTRY_COMPARE_WITH_TIMEOUT(enums->model()->rowCount(), 2, 2000);
+    QCOMPARE(enums->model()->index(0, 0).data().toString(),
+             QStringLiteral("NEW_VALUE"));
+    QCOMPARE(enums->model()->index(0, 1).data().toString(),
+             QStringLiteral("0x0"));
 
     memberRow = fieldRowForId(memberFieldId);
     QVERIFY(memberRow >= 0);
@@ -2679,6 +2676,222 @@ void GuiSmokeTests::keepsRegisterFieldConversionImmediatelyUsable()
              QStringLiteral("NEW_FIELD"));
     QCOMPARE(fields->model()->index(0, 0).data(Qt::UserRole + 1).toString(),
              QString::fromStdString(firstFieldId));
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::keepsEnumConversionsImmediatelyUsable()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createTwoRegisterProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+
+    auto* controller = window.findChild<ProjectController*>();
+    auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* fields = window.findChild<QTableView*>(QStringLiteral("fieldView"));
+    auto* enums = window.findChild<QTableView*>(QStringLiteral("enumView"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+    QVERIFY(enums != nullptr);
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Seed distinct enum references"),
+        [](regmap::Workspace& workspace) {
+            auto* reg = regmap::findRegister(workspace, "reg-control");
+            QVERIFY(reg != nullptr);
+            reg->initialValue = regmap::UnsignedValue(1);
+            reg->resetValue = regmap::UnsignedValue(2);
+        }));
+
+    const auto registerRowForId = [registers](const QString& id) {
+        for (int row = 0; row < registers->model()->rowCount(); ++row) {
+            if (registers->model()
+                    ->index(row, 0)
+                    .data(Qt::UserRole + 1)
+                    .toString() == id) {
+                return row;
+            }
+        }
+        return -1;
+    };
+    const auto actions = window.findChildren<QAction*>();
+    const auto addEnum = std::ranges::find_if(
+        actions, [](const QAction* action) {
+            return action->text() == QStringLiteral("Add Enum Value");
+        });
+    QVERIFY(addEnum != actions.end());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        registerRowForId(QStringLiteral("reg-status")) >= 0, 2000);
+    const int statusRow = registerRowForId(QStringLiteral("reg-status"));
+    registers->setCurrentIndex(registers->model()->index(statusRow, 0));
+    registers->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
+    const std::size_t structuredUndoDepth = controller->undoDepth();
+    (*addEnum)->trigger();
+    QCOMPARE(
+        regmap::findRegister(*controller->workspace(), "reg-status")->type,
+        regmap::FieldType::structure);
+    QVERIFY(regmap::findField(
+                *controller->workspace(), "field-ready") != nullptr);
+    QCOMPARE(controller->undoDepth(), structuredUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Change Type to enum first")));
+
+    QTRY_VERIFY_WITH_TIMEOUT(
+        registerRowForId(QStringLiteral("reg-control")) >= 0, 2000);
+    const int controlRow = registerRowForId(QStringLiteral("reg-control"));
+    registers->setCurrentIndex(registers->model()->index(controlRow, 0));
+    registers->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
+
+    const std::size_t initialUndoDepth = controller->undoDepth();
+    window.statusBar()->clearMessage();
+    QVERIFY(registers->model()->setData(
+        registers->model()->index(controlRow, 4), QStringLiteral("enum")));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findRegister(*controller->workspace(), "reg-control")->type ==
+            regmap::FieldType::enumeration,
+        2000);
+    const auto* enumRegister =
+        regmap::findRegister(*controller->workspace(), "reg-control");
+    QVERIFY(enumRegister != nullptr);
+    QCOMPARE(enumRegister->enumValues.size(), std::size_t{2});
+    QVERIFY(std::ranges::any_of(
+        enumRegister->enumValues, [](const regmap::EnumValue& value) {
+            return value.value == regmap::UnsignedValue(1);
+        }));
+    QVERIFY(std::ranges::any_of(
+        enumRegister->enumValues, [](const regmap::EnumValue& value) {
+            return value.value == regmap::UnsignedValue(2);
+        }));
+    QVERIFY(enumRegister->enumValues[0].id != enumRegister->enumValues[1].id);
+    const std::string firstRegisterEnumId = enumRegister->enumValues[0].id;
+    const std::string secondRegisterEnumId = enumRegister->enumValues[1].id;
+    QCOMPARE(controller->undoDepth(), initialUndoDepth + 1);
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+    QTRY_COMPARE_WITH_TIMEOUT(enums->model()->rowCount(), 3, 2000);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("2 Enum values created")));
+    QVERIFY(window.statusBar()->currentMessage().contains(QStringLiteral("Ctrl+Z")));
+
+    controller->undo();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findRegister(*controller->workspace(), "reg-control")->type ==
+            regmap::FieldType::unsignedInteger,
+        2000);
+    const auto* restoredNumeric =
+        regmap::findRegister(*controller->workspace(), "reg-control");
+    QVERIFY(restoredNumeric != nullptr);
+    QVERIFY(restoredNumeric->enumValues.empty());
+    QCOMPARE(*restoredNumeric->initialValue, regmap::UnsignedValue(1));
+    QCOMPARE(*restoredNumeric->resetValue, regmap::UnsignedValue(2));
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+
+    controller->redo();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findRegister(*controller->workspace(), "reg-control")
+                ->enumValues.size() == 2,
+        2000);
+    const auto* redoneEnum =
+        regmap::findRegister(*controller->workspace(), "reg-control");
+    QCOMPARE(redoneEnum->enumValues[0].id, firstRegisterEnumId);
+    QCOMPARE(redoneEnum->enumValues[1].id, secondRegisterEnumId);
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+
+    controller->undo();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findRegister(*controller->workspace(), "reg-control")->type ==
+            regmap::FieldType::unsignedInteger,
+        2000);
+    registers->setCurrentIndex(
+        registers->model()->index(registerRowForId(QStringLiteral("reg-control")), 0));
+    registers->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
+    (*addEnum)->trigger();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findRegister(*controller->workspace(), "reg-control")
+                ->enumValues.size() == 2,
+        2000);
+    QCOMPARE(regmap::findRegister(*controller->workspace(), "reg-control")->type,
+             regmap::FieldType::enumeration);
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+    QTRY_COMPARE_WITH_TIMEOUT(enums->model()->rowCount(), 3, 2000);
+    const auto enumEditors = enums->findChildren<QLineEdit*>();
+    const auto visibleEnumEditor =
+        std::ranges::find_if(enumEditors, [](const QLineEdit* editor) {
+            return editor->isVisible();
+        });
+    if (visibleEnumEditor != enumEditors.end()) {
+        QTest::keyClick(*visibleEnumEditor, Qt::Key_Escape);
+    }
+    controller->undo();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findRegister(*controller->workspace(), "reg-control")->type ==
+            regmap::FieldType::unsignedInteger,
+        2000);
+
+    Q_EMIT registers->clicked(registers->model()->index(statusRow, 5));
+    QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
+    const auto fieldRowForId = [fields](const QString& id) {
+        for (int row = 0; row < fields->model()->rowCount(); ++row) {
+            if (fields->model()
+                    ->index(row, 0)
+                    .data(Qt::UserRole + 1)
+                    .toString() == id) {
+                return row;
+            }
+        }
+        return -1;
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fieldRowForId(QStringLiteral("field-ready")) >= 0, 2000);
+    const int readyRow = fieldRowForId(QStringLiteral("field-ready"));
+    const std::size_t fieldUndoDepth = controller->undoDepth();
+    window.statusBar()->clearMessage();
+    QVERIFY(fields->model()->setData(
+        fields->model()->index(readyRow, 5), QStringLiteral("enum")));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findField(*controller->workspace(), "field-ready")->type ==
+            regmap::FieldType::enumeration,
+        2000);
+    const auto* enumField =
+        regmap::findField(*controller->workspace(), "field-ready");
+    QVERIFY(enumField != nullptr);
+    QCOMPARE(enumField->enumValues.size(), std::size_t{1});
+    QCOMPARE(enumField->enumValues.front().value, regmap::UnsignedValue(0));
+    const std::string fieldEnumId = enumField->enumValues.front().id;
+    QCOMPARE(controller->undoDepth(), fieldUndoDepth + 1);
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+    QTRY_COMPARE_WITH_TIMEOUT(enums->model()->rowCount(), 2, 2000);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("NEW_VALUE created")));
+
+    controller->undo();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findField(*controller->workspace(), "field-ready")->type ==
+            regmap::FieldType::boolean,
+        2000);
+    QVERIFY(regmap::findField(
+                *controller->workspace(), "field-ready")
+                ->enumValues.empty());
+    QCOMPARE(controller->undoDepth(), fieldUndoDepth);
+    controller->redo();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findEnumValue(*controller->workspace(), fieldEnumId) != nullptr,
+        2000);
+    QCOMPARE(regmap::findField(*controller->workspace(), "field-ready")
+                 ->enumValues.front()
+                 .id,
+             fieldEnumId);
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
 
     makeGeneratedFilesWritable(directory.path());
 }

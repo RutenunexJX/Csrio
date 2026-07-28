@@ -106,6 +106,12 @@ confirm each conversion individually.
 Register types use the same value-type vocabulary. A register's **Range** cell uses
 `minimum .. maximum`; **Initial** is independent of **Reset**. For `enum` and `bool` registers,
 enum values for the selected register are edited in the same table below the field table.
+Changing a scalar Register to `enum` creates one `NEW_VALUE` for each distinct Initial and Reset
+value; a Field conversion creates one for its effective Reset. If none exists, value zero is
+created. Type conversion and all required Enum values are one undoable edit, so the object is
+valid and immediately editable instead of first producing an empty-enumeration Problem.
+**Add Enum Value** applies the same rule when an Enum list is empty. Structure and reserved
+objects must first use the Type cell so destructive cleanup cannot bypass its confirmation.
 
 `Ctrl+S` validates and saves the project, synchronizes managed RTL, advances the merge baseline,
 and regenerates all three read-only outputs. The persistent badge confirms whether the operation

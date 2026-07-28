@@ -1178,6 +1178,63 @@ makeDefaultRegisterField(const regmap::Workspace& workspace,
     return result;
 }
 
+[[nodiscard]] std::optional<regmap::UnsignedValue>
+effectiveFieldReset(const regmap::Field& field, const regmap::Register* owner)
+{
+    if (field.resetValue) {
+        return field.resetValue;
+    }
+    if (owner == nullptr || !owner->resetValue) {
+        return std::nullopt;
+    }
+    const auto absoluteLsb = fieldAbsoluteLsb(owner->fields, field.id);
+    if (!absoluteLsb) {
+        return std::nullopt;
+    }
+    return owner->resetValue->slice(
+        static_cast<std::size_t>(*absoluteLsb),
+        static_cast<std::size_t>(field.width()));
+}
+
+[[nodiscard]] std::vector<regmap::EnumValue>
+makeDefaultEnumValues(
+    const regmap::Workspace& workspace,
+    const std::vector<std::optional<regmap::UnsignedValue>>& referencedValues)
+{
+    std::vector<regmap::EnumValue> result;
+    std::set<regmap::ObjectId, std::less<>> generatedIds;
+    const auto append = [&](const regmap::UnsignedValue& value) {
+        if (std::ranges::any_of(
+                result, [&](const regmap::EnumValue& candidate) {
+                    return candidate.value == value;
+                })) {
+            return;
+        }
+        regmap::EnumValue enumValue;
+        enumValue.id = copiedObjectId(workspace, "enum", generatedIds);
+        enumValue.name = uniqueDefaultName(result, "NEW_VALUE");
+        enumValue.value = value;
+        result.push_back(std::move(enumValue));
+    };
+
+    for (const auto& value : referencedValues) {
+        if (value) {
+            append(*value);
+        }
+    }
+    if (result.empty()) {
+        append(regmap::UnsignedValue(0));
+    }
+    return result;
+}
+
+[[nodiscard]] QString enumValuesCreatedText(std::size_t count)
+{
+    return count == 1
+               ? QStringLiteral("NEW_VALUE created")
+               : QStringLiteral("%1 Enum values created").arg(count);
+}
+
 template <typename Value>
 [[nodiscard]] bool
 isUniqueSiblingName(const std::vector<Value>& values, std::string_view objectId,
@@ -3760,6 +3817,14 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                 currentField != nullptr && !enumerationLike && !currentField->enumValues.empty();
             const bool clearsRange = currentField != nullptr && !numeric &&
                                      (currentField->minimumValue || currentField->maximumValue);
+            const std::vector<regmap::EnumValue> defaultEnumValues =
+                *parsed == regmap::FieldType::enumeration &&
+                        currentField != nullptr &&
+                        currentField->enumValues.empty()
+                    ? makeDefaultEnumValues(
+                          *workspace,
+                          {effectiveFieldReset(*currentField, owner)})
+                    : std::vector<regmap::EnumValue>{};
             std::optional<regmap::Field> defaultMember;
             if (*parsed == regmap::FieldType::structure && currentField != nullptr &&
                 owner != nullptr && currentField->members.empty()) {
@@ -3808,6 +3873,10 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                     }
                     if (!enumerationLike) {
                         field->enumValues.clear();
+                    }
+                    if (!defaultEnumValues.empty() &&
+                        field->enumValues.empty()) {
+                        field->enumValues = defaultEnumValues;
                     }
                     if (!numeric) {
                         field->minimumValue.reset();
@@ -3868,32 +3937,28 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
             }
             const PropertyEditResult result = commit(mutation);
             if (result.status == PropertyEditStatus::changed && reportFeedback) {
+                QStringList changes;
                 if (removesMembers) {
-                    const QString removedLabel =
+                    changes << (
                         removedMemberCount == 1
                             ? QStringLiteral("1 Member Field removed")
                             : QStringLiteral("%1 Member Fields removed")
-                                  .arg(removedMemberCount);
+                                  .arg(removedMemberCount));
+                }
+                if (defaultMember) {
+                    changes << QStringLiteral("NEW_MEMBER created");
+                }
+                if (!defaultEnumValues.empty()) {
+                    changes << enumValuesCreatedText(defaultEnumValues.size());
+                }
+                if (clearsEnumValues || clearsRange) {
+                    changes << QStringLiteral(
+                        "incompatible Enum/Range data cleared");
+                }
+                if (!changes.empty()) {
                     statusBar()->showMessage(
                         QStringLiteral("Type changed · %1 · Ctrl+Z to restore")
-                            .arg(removedLabel),
-                        6000);
-                } else if (defaultMember && (clearsEnumValues || clearsRange)) {
-                    statusBar()->showMessage(
-                        QStringLiteral(
-                            "Type changed · NEW_MEMBER created · incompatible Enum/Range "
-                            "data cleared · Ctrl+Z to restore"),
-                        6000);
-                } else if (defaultMember) {
-                    statusBar()->showMessage(
-                        QStringLiteral(
-                            "Type changed · NEW_MEMBER created · Ctrl+Z to restore"),
-                        6000);
-                } else if (clearsEnumValues || clearsRange) {
-                    statusBar()->showMessage(
-                        QStringLiteral(
-                            "Type changed · incompatible Enum/Range data cleared · "
-                            "Ctrl+Z to restore"),
+                            .arg(changes.join(QStringLiteral(" · "))),
                         6000);
                 }
             }
@@ -4134,6 +4199,13 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
             const bool clearsEnumValues = !enumerationLike && !current->enumValues.empty();
             const bool clearsRange =
                 !numeric && (current->minimumValue || current->maximumValue);
+            const std::vector<regmap::EnumValue> defaultEnumValues =
+                *parsed == regmap::FieldType::enumeration &&
+                        current->enumValues.empty()
+                    ? makeDefaultEnumValues(
+                          *workspace,
+                          {current->initialValue, current->resetValue})
+                    : std::vector<regmap::EnumValue>{};
             const bool normalizesReserved =
                 *parsed == regmap::FieldType::reserved &&
                 (current->access != regmap::AccessMode::none ||
@@ -4163,6 +4235,10 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                     }
                     if (!enumerationLike) {
                         reg->enumValues.clear();
+                    }
+                    if (!defaultEnumValues.empty() &&
+                        reg->enumValues.empty()) {
+                        reg->enumValues = defaultEnumValues;
                     }
                     if (!numeric) {
                         reg->minimumValue.reset();
@@ -4210,34 +4286,30 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
             }
             const PropertyEditResult result = commit(mutation);
             if (result.status == PropertyEditStatus::changed && reportFeedback) {
+                QStringList changes;
                 const bool normalized =
                     clearsEnumValues || clearsRange || normalizesReserved;
                 if (removesFields) {
-                    const QString removedLabel =
+                    changes << (
                         removedFieldCount == 1
                             ? QStringLiteral("1 Field removed")
                             : QStringLiteral("%1 Fields removed")
-                                  .arg(removedFieldCount);
+                                  .arg(removedFieldCount));
+                }
+                if (defaultField) {
+                    changes << QStringLiteral("NEW_FIELD created");
+                }
+                if (!defaultEnumValues.empty()) {
+                    changes << enumValuesCreatedText(defaultEnumValues.size());
+                }
+                if (normalized) {
+                    changes << QStringLiteral(
+                        "incompatible data cleared or normalized");
+                }
+                if (!changes.empty()) {
                     statusBar()->showMessage(
                         QStringLiteral("Type changed · %1 · Ctrl+Z to restore")
-                            .arg(removedLabel),
-                        6000);
-                } else if (defaultField && normalized) {
-                    statusBar()->showMessage(
-                        QStringLiteral(
-                            "Type changed · NEW_FIELD created · incompatible data cleared "
-                            "or normalized · Ctrl+Z to restore"),
-                        6000);
-                } else if (defaultField) {
-                    statusBar()->showMessage(
-                        QStringLiteral(
-                            "Type changed · NEW_FIELD created · Ctrl+Z to restore"),
-                        6000);
-                } else if (normalized) {
-                    statusBar()->showMessage(
-                        QStringLiteral(
-                            "Type changed · incompatible data cleared or normalized · "
-                            "Ctrl+Z to restore"),
+                            .arg(changes.join(QStringLiteral(" · "))),
                         6000);
                 }
             }
@@ -4859,34 +4931,81 @@ void MainWindow::addEnumValue()
         return;
     }
 
-    const auto& currentValues = field != nullptr ? field->enumValues : reg->enumValues;
-    const std::uint64_t width = field != nullptr ? field->width() : reg->width;
-    std::uint64_t value = 0;
-    for (;;) {
-        const bool used = std::ranges::any_of(currentValues, [&](const regmap::EnumValue& item) {
-            return item.value == regmap::UnsignedValue(value);
-        });
-        if (!used) {
-            break;
-        }
-        ++value;
+    const std::size_t structuredChildCount =
+        field != nullptr
+            ? fieldTreeSize(field->members)
+            : fieldTreeSize(reg->fields);
+    const bool structuredOwner =
+        field != nullptr
+            ? field->type == regmap::FieldType::structure
+            : reg->type == regmap::FieldType::structure;
+    if (structuredOwner) {
+        const QString childLabel =
+            field != nullptr
+                ? (structuredChildCount == 1
+                       ? QStringLiteral("1 Member Field")
+                       : QStringLiteral("%1 Member Fields")
+                             .arg(structuredChildCount))
+                : (structuredChildCount == 1
+                       ? QStringLiteral("1 Field")
+                       : QStringLiteral("%1 Fields/Members")
+                             .arg(structuredChildCount));
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Change Type to enum first to review removal of %1")
+                .arg(childLabel),
+            6000);
+        return;
     }
-    if (!regmap::UnsignedValue(value).fitsInBits(width)) {
-        statusBar()->showMessage(QStringLiteral("No unused enum value fits in this object"), 5000);
+    const bool reservedOwner =
+        field != nullptr
+            ? field->type == regmap::FieldType::reserved
+            : reg->reserved || reg->type == regmap::FieldType::reserved;
+    if (reservedOwner) {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Change Type from reserved before adding Enum values"),
+            6000);
         return;
     }
 
-    regmap::EnumValue enumValue;
-    enumValue.id = regmap::makeStableObjectId(*workspace, "enum");
-    enumValue.name = uniqueDefaultName(currentValues, "NEW_VALUE");
-    enumValue.value = regmap::UnsignedValue(value);
-    const std::string newId = enumValue.id;
+    const auto& currentValues = field != nullptr ? field->enumValues : reg->enumValues;
+    std::vector<regmap::EnumValue> addedValues;
+    if (currentValues.empty()) {
+        addedValues =
+            field != nullptr
+                ? makeDefaultEnumValues(
+                      *workspace, {effectiveFieldReset(*field, reg)})
+                : makeDefaultEnumValues(
+                      *workspace, {reg->initialValue, reg->resetValue});
+    } else {
+        const std::uint64_t width = field != nullptr ? field->width() : reg->width;
+        std::uint64_t value = 0;
+        while (std::ranges::any_of(
+            currentValues, [&](const regmap::EnumValue& item) {
+                return item.value == regmap::UnsignedValue(value);
+            })) {
+            ++value;
+        }
+        if (!regmap::UnsignedValue(value).fitsInBits(width)) {
+            statusBar()->showMessage(
+                QStringLiteral("No unused enum value fits in this object"), 5000);
+            return;
+        }
+        regmap::EnumValue enumValue;
+        enumValue.id = regmap::makeStableObjectId(*workspace, "enum");
+        enumValue.name = uniqueDefaultName(currentValues, "NEW_VALUE");
+        enumValue.value = regmap::UnsignedValue(value);
+        addedValues.push_back(std::move(enumValue));
+    }
+    const std::string newId = addedValues.front().id;
     const std::string ownerId = field != nullptr ? field->id : reg->id;
     const bool fieldOwner = field != nullptr;
     if (controller_.editWorkspace(
             QStringLiteral("Add enum value"),
             [ownerId, fieldOwner,
-             enumValue = std::move(enumValue)](regmap::Workspace& candidate) mutable {
+             addedValues = std::move(addedValues)](
+                regmap::Workspace& candidate) mutable {
                 if (fieldOwner) {
                     if (auto* target = regmap::findField(candidate, ownerId)) {
                         if (target->type != regmap::FieldType::boolean) {
@@ -4894,7 +5013,10 @@ void MainWindow::addEnumValue()
                         }
                         target->minimumValue.reset();
                         target->maximumValue.reset();
-                        target->enumValues.push_back(std::move(enumValue));
+                        target->enumValues.insert(
+                            target->enumValues.end(),
+                            std::make_move_iterator(addedValues.begin()),
+                            std::make_move_iterator(addedValues.end()));
                     }
                 } else if (auto* target = regmap::findRegister(candidate, ownerId)) {
                     if (target->type != regmap::FieldType::boolean) {
@@ -4902,7 +5024,10 @@ void MainWindow::addEnumValue()
                     }
                     target->minimumValue.reset();
                     target->maximumValue.reset();
-                    target->enumValues.push_back(std::move(enumValue));
+                    target->enumValues.insert(
+                        target->enumValues.end(),
+                        std::make_move_iterator(addedValues.begin()),
+                        std::make_move_iterator(addedValues.end()));
                 }
             })) {
         refreshProject();
