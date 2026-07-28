@@ -86,6 +86,7 @@ private slots:
     void switchesProjectsWithoutReusingFieldWorkspaceState();
     void retainsCurrentProjectWhenReplacementCannotLoad();
     void retainsCurrentProjectWhenCreationFails();
+    void reportsExplicitOpenFailure();
     void reloadsProjectWithoutLosingFieldWorkspaceContext();
     void confirmsDiscardBeforeReloadingDirtyProject();
     void protectsUnsavedChangesWhenClosing();
@@ -2070,7 +2071,7 @@ void GuiSmokeTests::retainsCurrentProjectWhenReplacementCannotLoad()
 
     QSignalSpy projectChanged(controller, &ProjectController::projectChanged);
     QSignalSpy statusChanged(controller, &ProjectController::syncStatusChanged);
-    window.openProjectPath(brokenManifest);
+    QVERIFY(!window.openProjectPath(brokenManifest));
     QCoreApplication::processEvents();
 
     QVERIFY(controller->workspace() != nullptr);
@@ -2160,6 +2161,110 @@ void GuiSmokeTests::retainsCurrentProjectWhenCreationFails()
     blocker.close();
 
     makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::reportsExplicitOpenFailure()
+{
+    QApplication::setAttribute(Qt::AA_DontUseNativeDialogs, true);
+
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    QDir root(directory.path());
+    QVERIFY(root.mkpath(QStringLiteral("current")));
+    QVERIFY(root.mkpath(QStringLiteral("broken")));
+    const QString currentManifest =
+        root.filePath(
+            QStringLiteral("current/current.regmap.yaml"));
+    const QString brokenManifest =
+        root.filePath(
+            QStringLiteral("broken/broken.regmap.yaml"));
+    createProject(currentManifest);
+    QFile brokenFile(brokenManifest);
+    QVERIFY(brokenFile.open(
+        QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate));
+    const QByteArray brokenText("schema_version: [\n");
+    QCOMPARE(brokenFile.write(brokenText), brokenText.size());
+    brokenFile.close();
+
+    MainWindow window;
+    window.resize(1100, 720);
+    window.show();
+    QVERIFY(window.openProjectPath(currentManifest));
+    QTest::qWait(50);
+
+    auto* controller = window.findChild<ProjectController*>();
+    auto* registers =
+        window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* openProject =
+        window.findChild<QAction*>(QStringLiteral("openProjectAction"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(openProject != nullptr);
+    const std::filesystem::path originalManifest =
+        controller->manifestPath();
+    const QString selectedRegister =
+        registers->currentIndex().data(Qt::UserRole + 1).toString();
+    QSignalSpy projectChanged(
+        controller, &ProjectController::projectChanged);
+
+    bool pickerSeen = false;
+    bool errorSeen = false;
+    bool recoveryDescribed = false;
+    QTimer::singleShot(0, &window, [&] {
+        auto* picker = qobject_cast<QFileDialog*>(
+            QApplication::activeModalWidget());
+        if (picker == nullptr) {
+            return;
+        }
+        pickerSeen = true;
+        picker->setDirectory(
+            QFileInfo(brokenManifest).absolutePath());
+        picker->selectFile(brokenManifest);
+        QTimer::singleShot(0, &window, [&] {
+            auto* dialog = qobject_cast<QMessageBox*>(
+                QApplication::activeModalWidget());
+            if (dialog == nullptr) {
+                return;
+            }
+            errorSeen = true;
+            recoveryDescribed =
+                dialog->windowTitle() ==
+                    QStringLiteral("Open Project") &&
+                dialog->icon() == QMessageBox::Critical &&
+                dialog->text().contains(
+                    QStringLiteral("broken.regmap.yaml")) &&
+                dialog->text().contains(
+                    QStringLiteral("Cannot parse manifest")) &&
+                dialog->text().contains(
+                    QStringLiteral("current project retained")) &&
+                dialog->defaultButton() ==
+                    dialog->button(QMessageBox::Ok);
+            QTest::mouseClick(
+                dialog->button(QMessageBox::Ok), Qt::LeftButton);
+        });
+        QVERIFY(QMetaObject::invokeMethod(
+            picker, "accept", Qt::DirectConnection));
+    });
+    openProject->trigger();
+
+    QVERIFY(pickerSeen);
+    QVERIFY(errorSeen);
+    QVERIFY(recoveryDescribed);
+    QCOMPARE(projectChanged.count(), 0);
+    QCOMPARE(controller->manifestPath(), originalManifest);
+    QVERIFY(controller->workspace() != nullptr);
+    QVERIFY(!controller->isDirty());
+    QCOMPARE(registers->currentIndex()
+                 .data(Qt::UserRole + 1)
+                 .toString(),
+             selectedRegister);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("broken.regmap.yaml")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("current project retained")));
+
+    makeGeneratedFilesWritable(
+        root.filePath(QStringLiteral("current")));
 }
 
 void GuiSmokeTests::reloadsProjectWithoutLosingFieldWorkspaceContext()

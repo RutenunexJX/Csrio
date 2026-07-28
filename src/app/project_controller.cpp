@@ -265,12 +265,15 @@ bool ProjectController::squashUndoSince(
     return squashed;
 }
 
-void ProjectController::openProject(const QString& manifestPath)
+bool ProjectController::openProject(const QString& manifestPath)
 {
     const std::filesystem::path requestedPath =
         std::filesystem::absolute(std::filesystem::path(manifestPath.toStdWString()))
             .lexically_normal();
     auto loaded = regmap::openProject(requestedPath);
+    const std::optional<std::string> requestedWorkspaceId =
+        loaded.workspace ? std::optional<std::string>(loaded.workspace->id)
+                         : std::nullopt;
     if (store_.workspace() != nullptr &&
         (!loaded.manifest.has_value() || !loaded.workspace.has_value())) {
         const auto firstError = std::ranges::find_if(
@@ -284,7 +287,7 @@ void ProjectController::openProject(const QString& manifestPath)
         emit syncStatusChanged(
             QStringLiteral("Could not open %1%2; current project retained")
                 .arg(fileName, detail));
-        return;
+        return false;
     }
 
     manifestPath_ = requestedPath;
@@ -301,6 +304,9 @@ void ProjectController::openProject(const QString& manifestPath)
     diagnostics_.clear();
     lastAcceptedModelWasValid_ = false;
     reloadImpl(false, &loaded);
+    return requestedWorkspaceId.has_value() && manifestPath_ == requestedPath &&
+        store_.workspace() != nullptr &&
+        store_.workspace()->id == *requestedWorkspaceId;
 }
 
 void ProjectController::reload()

@@ -56,7 +56,7 @@ public:
     bool squashUndoSince(std::size_t startingDepth, const QString& description);
 
 public slots:
-    void openProject(const QString& manifestPath);
+    bool openProject(const QString& manifestPath);
     void reload();
     void save();
     void undo();

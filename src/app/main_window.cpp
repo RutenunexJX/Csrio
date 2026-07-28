@@ -2308,7 +2308,15 @@ void MainWindow::buildActions()
                            "Files (*)"));
         if (!path.isEmpty()) {
             if (confirmProjectReplacement()) {
-                openProjectPath(path);
+                if (!openProjectPath(path)) {
+                    const QString detail =
+                        statusBar()->currentMessage().isEmpty()
+                            ? QStringLiteral(
+                                  "The register-map project could not be opened.")
+                            : statusBar()->currentMessage();
+                    QMessageBox::critical(
+                        this, QStringLiteral("Open Project"), detail);
+                }
             }
         }
     });
@@ -2991,7 +2999,10 @@ bool MainWindow::confirmProjectReplacement()
     return true;
 }
 
-void MainWindow::openProjectPath(const QString& path) { controller_.openProject(path); }
+bool MainWindow::openProjectPath(const QString& path)
+{
+    return controller_.openProject(path);
+}
 
 void MainWindow::requestProjectRefresh()
 {

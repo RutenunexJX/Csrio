@@ -34,7 +34,7 @@ class MainWindow final : public QMainWindow {
 public:
     explicit MainWindow(QWidget* parent = nullptr);
 
-    void openProjectPath(const QString& path);
+    bool openProjectPath(const QString& path);
 
 private:
     enum DataRole {
