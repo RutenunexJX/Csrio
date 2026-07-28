@@ -126,6 +126,7 @@ private:
     void buildUi();
     void buildActions();
     void connectSignals();
+    void commitActiveEditor();
     bool confirmProjectReplacement();
     void requestProjectRefresh();
     void refreshProject();

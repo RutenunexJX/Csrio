@@ -1330,12 +1330,16 @@ void MainWindow::buildActions()
     saveAction_->setObjectName(QStringLiteral("saveSyncAction"));
     saveAction_->setShortcut(QKeySequence::Save);
     saveAction_->setEnabled(false);
-    connect(saveAction_, &QAction::triggered, &controller_, &ProjectController::save);
+    connect(saveAction_, &QAction::triggered, this, [this] {
+        commitActiveEditor();
+        controller_.save();
+    });
 
     reloadAction_ = new QAction(QStringLiteral("Reload from Disk"), this);
     reloadAction_->setShortcut(QKeySequence::Refresh);
     reloadAction_->setEnabled(false);
     connect(reloadAction_, &QAction::triggered, this, [this] {
+        commitActiveEditor();
         if (controller_.isDirty() &&
             QMessageBox::question(
                 this, QStringLiteral("Reload Project"),
@@ -1371,13 +1375,18 @@ void MainWindow::buildActions()
     generateAction_ = new QAction(QStringLiteral("Generate"), this);
     generateAction_->setShortcut(QKeySequence(QStringLiteral("Ctrl+G")));
     generateAction_->setEnabled(false);
-    connect(generateAction_, &QAction::triggered, &controller_, &ProjectController::generateNow);
+    connect(generateAction_, &QAction::triggered, this, [this] {
+        commitActiveEditor();
+        controller_.generateNow();
+    });
 
     synchronizeAction_ = new QAction(QStringLiteral("Synchronize RTL"), this);
     synchronizeAction_->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+S")));
     synchronizeAction_->setEnabled(false);
-    connect(synchronizeAction_, &QAction::triggered, &controller_,
-            &ProjectController::synchronizeNow);
+    connect(synchronizeAction_, &QAction::triggered, this, [this] {
+        commitActiveEditor();
+        controller_.synchronizeNow();
+    });
 
     useWorkbenchAction_ = new QAction(QStringLiteral("Resolve Conflicts Using Workbench"), this);
     useWorkbenchAction_->setEnabled(false);
@@ -1808,8 +1817,16 @@ void MainWindow::connectSignals()
     connect(enumModel_, &QStandardItemModel::itemChanged, this, handleModelEdit);
 }
 
+void MainWindow::commitActiveEditor()
+{
+    if (auto* edit = qobject_cast<QLineEdit*>(QApplication::focusWidget())) {
+        edit->clearFocus();
+    }
+}
+
 bool MainWindow::confirmProjectReplacement()
 {
+    commitActiveEditor();
     if (!controller_.isDirty()) {
         return true;
     }
@@ -5307,6 +5324,7 @@ void MainWindow::updateEditActions()
 
 void MainWindow::closeEvent(QCloseEvent* event)
 {
+    commitActiveEditor();
     if (!controller_.isDirty()) {
         event->accept();
         return;

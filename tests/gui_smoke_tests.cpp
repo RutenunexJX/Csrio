@@ -86,6 +86,7 @@ private slots:
     void searchesAndNavigatesProblems();
     void copiesAndPastesEditableCells();
     void keepsUndoRedoInsideActiveEditor();
+    void savesActiveEditorWithShortcut();
     void deletesFocusedRegisterAndRestoresIt();
     void editsUndoesAndSavesProject();
     void rejectsInvalidManagedRtl();
@@ -3350,6 +3351,59 @@ void GuiSmokeTests::keepsUndoRedoInsideActiveEditor()
     QTest::keyClick(editor, Qt::Key_Escape);
     QCoreApplication::processEvents();
     QCOMPARE(registers->model()->index(0, 0).data().toString(), originalName);
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::savesActiveEditorWithShortcut()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createTwoRegisterProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+    auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* controller = window.findChild<ProjectController*>();
+    QVERIFY(registers != nullptr);
+    QVERIFY(controller != nullptr);
+    QVERIFY(!controller->isDirty());
+
+    const QModelIndex name = registers->model()->index(0, 0);
+    registers->setCurrentIndex(name);
+    registers->scrollTo(name);
+    registers->setFocus(Qt::OtherFocusReason);
+    registers->edit(name);
+    QCoreApplication::processEvents();
+    const auto visibleEditor = [registers]() -> QLineEdit* {
+        const auto editors = registers->findChildren<QLineEdit*>();
+        const auto visible = std::ranges::find_if(
+            editors, [](const QLineEdit* editor) { return editor->isVisible(); });
+        return visible == editors.end() ? nullptr : *visible;
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(visibleEditor() != nullptr, 2000);
+    QLineEdit* editor = visibleEditor();
+    const QString savedName = QStringLiteral("STATUS_SAVED");
+    editor->selectAll();
+    QTest::keyClicks(editor, savedName);
+    QCOMPARE(editor->text(), savedName);
+    QCOMPARE(registers->model()->index(0, 0).data().toString(),
+             QStringLiteral("STATUS"));
+
+    QTest::keyClick(editor, Qt::Key_S, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 0).data().toString(),
+                              savedName, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(!controller->isDirty(), 2000);
+
+    const auto reopened =
+        regmap::openProject(std::filesystem::path(manifest.toStdWString()));
+    QVERIFY(reopened.workspace.has_value());
+    QCOMPARE(QString::fromStdString(
+                 regmap::findRegister(*reopened.workspace, "reg-status")->name),
+             savedName);
     makeGeneratedFilesWritable(directory.path());
 }
 
