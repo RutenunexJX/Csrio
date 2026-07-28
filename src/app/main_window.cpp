@@ -1654,7 +1654,9 @@ void MainWindow::connectSignals()
 
     connect(registerView_, &QTableView::clicked, this, [this](const QModelIndex& index) {
         if (index.data(addRowRole).toBool()) {
-            addRegister();
+            if (index.column() == registerNameColumn) {
+                addRegister();
+            }
             return;
         }
         if (index.data(openFieldsRole).toBool()) {
@@ -1682,12 +1684,16 @@ void MainWindow::connectSignals()
     });
     connect(fieldView_, &QTableView::clicked, this, [this](const QModelIndex& index) {
         if (index.data(addRowRole).toBool()) {
-            addField();
+            if (index.column() == fieldNameColumn) {
+                addField();
+            }
         }
     });
     connect(enumView_, &QTableView::clicked, this, [this](const QModelIndex& index) {
         if (index.data(addRowRole).toBool()) {
-            addEnumValue();
+            if (index.column() == enumNameColumn) {
+                addEnumValue();
+            }
         }
     });
     connect(enumView_, &QWidget::customContextMenuRequested, this, [this](const QPoint& position) {

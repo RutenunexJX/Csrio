@@ -1859,6 +1859,12 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     Q_EMIT blockBase->editingFinished();
     QCOMPARE(registers->model()->index(0, 2).data().toString(), QStringLiteral("0x1020"));
 
+    const int initialRegisterRows = registers->model()->rowCount();
+    Q_EMIT registers->clicked(
+        registers->model()->index(initialRegisterRows - 1, 11));
+    QCoreApplication::processEvents();
+    QCOMPARE(registers->model()->rowCount(), initialRegisterRows);
+
     Q_EMIT registers->clicked(registers->model()->index(1, 0));
     QCOMPARE(registers->model()->rowCount(), 3);
     QCOMPARE(registers->model()->index(1, 0).data().toString(), QStringLiteral("NEW_REGISTER"));
@@ -1900,6 +1906,10 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
             editors, [](const QLineEdit* editor) { return editor->isVisible(); });
         return visible == editors.end() ? nullptr : *visible;
     };
+    Q_EMIT enums->clicked(enums->model()->index(0, 2));
+    QCoreApplication::processEvents();
+    QCOMPARE(enums->model()->rowCount(), 1);
+    QCOMPARE(visibleEnumEditor(), nullptr);
     Q_EMIT enums->clicked(enums->model()->index(0, 0));
     QTRY_COMPARE_WITH_TIMEOUT(enums->model()->rowCount(), 2, 2000);
     QTRY_VERIFY_WITH_TIMEOUT(visibleEnumEditor() != nullptr, 2000);
@@ -2156,6 +2166,10 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     Q_EMIT registers->clicked(registers->model()->index(1, 5));
     QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
     QTRY_COMPARE_WITH_TIMEOUT(fields->model()->rowCount(), 1, 2000);
+
+    Q_EMIT fields->clicked(fields->model()->index(0, 13));
+    QCoreApplication::processEvents();
+    QCOMPARE(fields->model()->rowCount(), 1);
 
     Q_EMIT fields->clicked(fields->model()->index(0, 0));
     QCOMPARE(fields->model()->rowCount(), 2);
