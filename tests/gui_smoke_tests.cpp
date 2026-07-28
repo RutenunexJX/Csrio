@@ -87,6 +87,7 @@ private slots:
     void dragsFieldsAndResolvesOverlaps();
     void cancelsInterruptedFieldDrag();
     void editsTagsAndAccessFromDoubleClick();
+    void closesTagPopupWhenFilteredRegisterDisappears();
     void insertsRegisterBetweenRows();
     void showsUnifiedSyncStateAndGeneratedResults();
     void searchesAndNavigatesProblems();
@@ -2859,6 +2860,103 @@ void GuiSmokeTests::editsTagsAndAccessFromDoubleClick()
     QTest::keyClick(access, Qt::Key_Return);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 9).data().toString(),
                               QStringLiteral("RO"), 2000);
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::closesTagPopupWhenFilteredRegisterDisappears()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createTwoRegisterProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+
+    auto* controller = window.findChild<ProjectController*>();
+    auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* tagFilter = window.findChild<QComboBox*>(QStringLiteral("tagFilter"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(tagFilter != nullptr);
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Share active filter tag"),
+        [](regmap::Workspace& workspace) {
+            if (auto* control = regmap::findRegister(workspace, "reg-control")) {
+                control->tags.push_back("existing");
+            }
+        }));
+
+    const auto rowForId = [registers](const QString& id) {
+        for (int row = 0; row < registers->model()->rowCount(); ++row) {
+            if (registers->model()->index(row, 0).data(Qt::UserRole + 1).toString() == id) {
+                return row;
+            }
+        }
+        return -1;
+    };
+    int existingFilter = -1;
+    for (int index = 0; index < tagFilter->count(); ++index) {
+        if (tagFilter->itemText(index) == QStringLiteral("existing")) {
+            existingFilter = index;
+            break;
+        }
+    }
+    QVERIFY(existingFilter > 0);
+    tagFilter->setCurrentIndex(existingFilter);
+    QTRY_VERIFY_WITH_TIMEOUT(rowForId(QStringLiteral("reg-status")) >= 0, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(rowForId(QStringLiteral("reg-control")) >= 0, 2000);
+
+    const int statusRow = rowForId(QStringLiteral("reg-status"));
+    const QModelIndex statusTags = registers->model()->index(statusRow, 10);
+    registers->scrollTo(statusTags);
+    QCoreApplication::processEvents();
+    QTest::mouseClick(registers->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      registers->visualRect(statusTags).center());
+    QCOMPARE(registers->currentIndex(), statusTags);
+    QVERIFY(QApplication::activePopupWidget() == nullptr);
+    QTest::mouseDClick(registers->viewport(), Qt::LeftButton, Qt::NoModifier,
+                       registers->visualRect(statusTags).center());
+    QTRY_VERIFY_WITH_TIMEOUT(QApplication::activePopupWidget() != nullptr, 2000);
+    auto* popup = qobject_cast<QFrame*>(QApplication::activePopupWidget());
+    QVERIFY(popup != nullptr);
+    QCOMPARE(popup->objectName(), QStringLiteral("tagPopup"));
+    auto* tags = popup->findChild<QListWidget*>(QStringLiteral("tagOptions"));
+    QVERIFY(tags != nullptr);
+
+    QListWidgetItem* existing = nullptr;
+    for (int index = 0; index < tags->count(); ++index) {
+        if (tags->item(index)->text() == QStringLiteral("existing")) {
+            existing = tags->item(index);
+            break;
+        }
+    }
+    QVERIFY(existing != nullptr);
+    QVERIFY(existing->isSelected());
+    QTest::mouseClick(tags->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      tags->visualItemRect(existing).center());
+
+    QTRY_VERIFY_WITH_TIMEOUT(rowForId(QStringLiteral("reg-status")) < 0, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(rowForId(QStringLiteral("reg-control")) >= 0, 2000);
+    QCOMPARE(tagFilter->currentText(), QStringLiteral("existing"));
+    QTRY_VERIFY_WITH_TIMEOUT(QApplication::activePopupWidget() == nullptr, 2000);
+    QCOMPARE(registers->currentIndex().data(Qt::UserRole + 1).toString(),
+             QStringLiteral("reg-control"));
+
+    const auto* status =
+        regmap::findRegister(*controller->workspace(), "reg-status");
+    const auto* control =
+        regmap::findRegister(*controller->workspace(), "reg-control");
+    QVERIFY(status != nullptr);
+    QVERIFY(control != nullptr);
+    QVERIFY(std::ranges::find(status->tags, std::string{"existing"}) ==
+            status->tags.end());
+    QVERIFY(std::ranges::find(control->tags, std::string{"existing"}) !=
+            control->tags.end());
 
     makeGeneratedFilesWritable(directory.path());
 }

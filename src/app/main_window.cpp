@@ -3749,7 +3749,7 @@ void MainWindow::editRegisterTags(const QModelIndex& index)
         }
         return false;
     };
-    const auto commit = [this, list, registerId] {
+    const auto commit = [this, popup, list, registerId] {
         std::vector<std::string> tags;
         for (int itemIndex = 0; itemIndex < list->count(); ++itemIndex) {
             if (list->item(itemIndex)->data(selectedRole).toBool()) {
@@ -3759,13 +3759,22 @@ void MainWindow::editRegisterTags(const QModelIndex& index)
         std::ranges::sort(tags);
         tags.erase(std::unique(tags.begin(), tags.end()), tags.end());
         selectedRegisterId_ = registerId;
-        controller_.editWorkspace(
+        const bool changed = controller_.editWorkspace(
             QStringLiteral("Edit register tags"),
             [registerId, tags = std::move(tags)](regmap::Workspace& candidate) {
                 if (auto* target = regmap::findRegister(candidate, registerId)) {
                     target->tags = tags;
                 }
             });
+        if (!changed || selectedTagFilter_.empty()) {
+            return;
+        }
+        const auto* updated = findRegister(registerId);
+        if (updated == nullptr ||
+            std::ranges::find(updated->tags, selectedTagFilter_) ==
+                updated->tags.end()) {
+            popup->close();
+        }
     };
     const auto updateFilter = [list, add, containsTag](const QString& text) {
         const QString filter = text.trimmed();
