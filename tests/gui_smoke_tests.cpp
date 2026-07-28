@@ -117,6 +117,7 @@ private slots:
     void savesActiveEditorWithShortcut();
     void rejectsInvalidActiveEditorBeforeSave();
     void deletesFocusedRegisterAndRestoresIt();
+    void rejectsUnsafeDeleteAndShift();
     void editsUndoesAndSavesProject();
     void rejectsInvalidManagedRtl();
     void synchronizesManagedRtlEdits();
@@ -7878,6 +7879,175 @@ void GuiSmokeTests::deletesFocusedRegisterAndRestoresIt()
     }
     QVERIFY(controlRow >= 0);
     QCOMPARE(registers->model()->index(controlRow, 1).data().toString(), QStringLiteral("0x4"));
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::rejectsUnsafeDeleteAndShift()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest =
+        directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createTwoRegisterProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+
+    auto* registers =
+        window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* controller = window.findChild<ProjectController*>();
+    QVERIFY(registers != nullptr);
+    QVERIFY(controller != nullptr);
+
+    const auto rowForId = [registers](const QString& id) {
+        for (int row = 0; row < registers->model()->rowCount(); ++row) {
+            if (registers->model()
+                    ->index(row, 0)
+                    .data(Qt::UserRole + 1)
+                    .toString() == id) {
+                return row;
+            }
+        }
+        return -1;
+    };
+    const auto triggerRejectedDelete =
+        [&](const QString& id, bool& unexpectedDialog) {
+            const int row = rowForId(id);
+            if (row < 0) {
+                return false;
+            }
+            registers->setCurrentIndex(
+                registers->model()->index(row, 0));
+            registers->setFocus(Qt::OtherFocusReason);
+            window.activateWindow();
+            QCoreApplication::processEvents();
+            QTimer::singleShot(0, &window, [&] {
+                if (auto* dialog = qobject_cast<QMessageBox*>(
+                        QApplication::activeModalWidget())) {
+                    unexpectedDialog = true;
+                    dialog->reject();
+                }
+            });
+            QTest::keyClick(registers, Qt::Key_Delete);
+            QCoreApplication::processEvents();
+            return true;
+        };
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Configure delete-shift underflow fixture"),
+        [](regmap::Workspace& workspace) {
+            auto* block =
+                regmap::findRegisterBlock(workspace, "block-control");
+            auto* status =
+                regmap::findRegister(workspace, "reg-status");
+            auto* control =
+                regmap::findRegister(workspace, "reg-control");
+            QVERIFY(block != nullptr);
+            QVERIFY(status != nullptr);
+            QVERIFY(control != nullptr);
+            regmap::Register statusCopy = *status;
+            regmap::Register controlCopy = *control;
+            statusCopy.offset = 0;
+            controlCopy.offset = 8;
+            block->registers = {
+                std::move(controlCopy), std::move(statusCopy)};
+        }));
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+    const std::size_t underflowUndoDepth = controller->undoDepth();
+    window.statusBar()->clearMessage();
+    bool underflowDialog = false;
+    QVERIFY(triggerRejectedDelete(
+        QStringLiteral("reg-control"), underflowDialog));
+    QVERIFY(!underflowDialog);
+    const auto* underflowBlock =
+        regmap::findRegisterBlock(
+            *controller->workspace(), "block-control");
+    QVERIFY(underflowBlock != nullptr);
+    QCOMPARE(underflowBlock->registers.size(), std::size_t{2});
+    QCOMPARE(underflowBlock->registers[0].id,
+             std::string("reg-control"));
+    QCOMPARE(underflowBlock->registers[0].offset,
+             std::uint64_t{8});
+    QCOMPARE(underflowBlock->registers[1].id,
+             std::string("reg-status"));
+    QCOMPARE(underflowBlock->registers[1].offset,
+             std::uint64_t{0});
+    QCOMPARE(controller->undoDepth(), underflowUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Cannot delete and shift CONTROL")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("STATUS at Offset 0x0 would underflow")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("shifted by 0x4")));
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Configure delete-shift collision fixture"),
+        [](regmap::Workspace& workspace) {
+            auto* block =
+                regmap::findRegisterBlock(workspace, "block-control");
+            auto* status =
+                regmap::findRegister(workspace, "reg-status");
+            auto* control =
+                regmap::findRegister(workspace, "reg-control");
+            QVERIFY(block != nullptr);
+            QVERIFY(status != nullptr);
+            QVERIFY(control != nullptr);
+            regmap::Register statusCopy = *status;
+            regmap::Register controlCopy = *control;
+            statusCopy.offset = 0;
+            controlCopy.offset = 8;
+
+            regmap::Register third;
+            third.id = "reg-third";
+            third.name = "THIRD";
+            third.offset = 4;
+            third.width = 32;
+            third.array.count = 1;
+            third.array.stride = 4;
+            third.type = regmap::FieldType::unsignedInteger;
+            third.initialValue = regmap::UnsignedValue(0);
+            third.resetValue = regmap::UnsignedValue(0);
+            third.access = regmap::AccessMode::readWrite;
+            block->registers = {
+                std::move(statusCopy), std::move(controlCopy),
+                std::move(third)};
+        }));
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+    const std::size_t collisionUndoDepth = controller->undoDepth();
+    window.statusBar()->clearMessage();
+    bool collisionDialog = false;
+    QVERIFY(triggerRejectedDelete(
+        QStringLiteral("reg-control"), collisionDialog));
+    QVERIFY(!collisionDialog);
+    const auto* collisionBlock =
+        regmap::findRegisterBlock(
+            *controller->workspace(), "block-control");
+    QVERIFY(collisionBlock != nullptr);
+    QCOMPARE(collisionBlock->registers.size(), std::size_t{3});
+    QCOMPARE(collisionBlock->registers[0].id,
+             std::string("reg-status"));
+    QCOMPARE(collisionBlock->registers[0].offset,
+             std::uint64_t{0});
+    QCOMPARE(collisionBlock->registers[1].id,
+             std::string("reg-control"));
+    QCOMPARE(collisionBlock->registers[1].offset,
+             std::uint64_t{8});
+    QCOMPARE(collisionBlock->registers[2].id,
+             std::string("reg-third"));
+    QCOMPARE(collisionBlock->registers[2].offset,
+             std::uint64_t{4});
+    QCOMPARE(controller->undoDepth(), collisionUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Cannot delete and shift CONTROL")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("resulting Offsets")));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("invalid Block/Page address layout")));
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
 
     makeGeneratedFilesWritable(directory.path());
 }

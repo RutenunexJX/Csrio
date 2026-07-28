@@ -36,6 +36,9 @@ Workspace -> Page (Address Space) -> Register Block -> Register -> Field -> Enum
   Converting a populated Register to Reserved first reports the Fields, Enum values, Range
   bounds, non-zero Initial/Reset values, and Description that will be removed or replaced; the
   confirmation defaults to cancel and a confirmed conversion remains one undoable edit.
+  Delete-with-shift previews the complete result before asking for confirmation; it leaves the
+  model unchanged when a following Offset would underflow or the shifted layout would introduce
+  an address conflict.
 - Multi-tag register assignment with existing-tag selection, new-tag creation, and tag filtering.
 - Single-click cell selection and double-click/F2 editing for register and field properties,
   including register type, value range, initial value, and reset value.

@@ -6115,6 +6115,9 @@ void MainWindow::deleteSelectedRegisterAndShift()
     std::uint64_t firstFollowingOffset = 0;
     std::uint64_t lastFollowingOffset = 0;
     std::size_t affectedCount = 0;
+    std::string underflowRegisterName;
+    std::uint64_t underflowOffset = 0;
+    const std::string registerId = selectedRegisterId_;
     for (const auto& space : workspace->addressSpaces) {
         for (const auto& block : space.blocks) {
             const auto iterator =
@@ -6125,7 +6128,16 @@ void MainWindow::deleteSelectedRegisterAndShift()
             blockId = block.id;
             registerName = iterator->name;
             registerOffset = iterator->offset;
-            shift = registerExtent(*iterator);
+            const auto extent = checkedRegisterExtent(*iterator);
+            if (!extent) {
+                statusBar()->showMessage(
+                    QStringLiteral(
+                        "Cannot delete and shift %1: its Register extent is invalid")
+                        .arg(fromUtf8(registerName)),
+                    7000);
+                return;
+            }
+            shift = *extent;
             const auto index =
                 static_cast<std::size_t>(std::distance(block.registers.begin(), iterator));
             affectedCount = block.registers.size() - index - 1;
@@ -6133,6 +6145,15 @@ void MainWindow::deleteSelectedRegisterAndShift()
                 nextId = block.registers[index + 1].id;
                 firstFollowingOffset = block.registers[index + 1].offset;
                 lastFollowingOffset = block.registers.back().offset;
+                const auto underflow = std::find_if(
+                    std::next(iterator), block.registers.end(),
+                    [shift](const regmap::Register& following) {
+                        return following.offset < shift;
+                    });
+                if (underflow != block.registers.end()) {
+                    underflowRegisterName = underflow->name;
+                    underflowOffset = underflow->offset;
+                }
             } else if (index > 0) {
                 nextId = block.registers[index - 1].id;
             }
@@ -6145,17 +6166,70 @@ void MainWindow::deleteSelectedRegisterAndShift()
     if (blockId.empty()) {
         return;
     }
+    if (!underflowRegisterName.empty()) {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Cannot delete and shift %1: following Register %2 at Offset %3 "
+                "would underflow when shifted by %4. Reorder the rows or edit "
+                "Offsets first.")
+                .arg(fromUtf8(registerName),
+                     fromUtf8(underflowRegisterName), hex(underflowOffset),
+                     hex(shift)),
+            9000);
+        return;
+    }
+
+    const regmap::WorkspaceStore::Mutation deleteAndShift =
+        [blockId, registerId](regmap::Workspace& candidate) {
+            auto* block =
+                regmap::findRegisterBlock(candidate, blockId);
+            if (block == nullptr) {
+                return;
+            }
+            const auto iterator =
+                std::ranges::find(
+                    block->registers, registerId,
+                    &regmap::Register::id);
+            if (iterator == block->registers.end()) {
+                return;
+            }
+            const auto extent = checkedRegisterExtent(*iterator);
+            if (!extent ||
+                std::ranges::any_of(
+                    std::next(iterator), block->registers.end(),
+                    [extent](const regmap::Register& following) {
+                        return following.offset < *extent;
+                    })) {
+                return;
+            }
+            const auto firstFollowing = block->registers.erase(iterator);
+            for (auto current = firstFollowing;
+                 current != block->registers.end(); ++current) {
+                current->offset -= *extent;
+            }
+        };
+    regmap::Workspace candidate = *workspace;
+    deleteAndShift(candidate);
+    if (regmap::findRegister(candidate, registerId) != nullptr ||
+        !addressEditDoesNotWorsen(*workspace, candidate, blockId)) {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Cannot delete and shift %1: the resulting Offsets would "
+                "create an invalid Block/Page address layout. Reorder the rows "
+                "or edit Offsets first.")
+                .arg(fromUtf8(registerName)),
+            9000);
+        return;
+    }
 
     QString impact = QStringLiteral("No following register will move.");
     if (affectedCount > 0) {
-        const auto shifted = [shift](std::uint64_t offset) {
-            return offset >= shift ? offset - shift : 0;
-        };
         impact =
             QStringLiteral("%1 following register(s) will shift by %2:\n%3 … %4  →  %5 … %6")
                 .arg(affectedCount)
                 .arg(hex(shift), hex(firstFollowingOffset), hex(lastFollowingOffset),
-                     hex(shifted(firstFollowingOffset)), hex(shifted(lastFollowingOffset)));
+                     hex(firstFollowingOffset - shift),
+                     hex(lastFollowingOffset - shift));
     }
     const QString prompt =
         QStringLiteral("Delete %1 at offset %2?\n\n%3\n\nThis can be restored with Ctrl+Z.")
@@ -6166,25 +6240,9 @@ void MainWindow::deleteSelectedRegisterAndShift()
         return;
     }
 
-    const std::string registerId = selectedRegisterId_;
     if (controller_.editWorkspace(
             QStringLiteral("Delete register and shift following offsets"),
-            [blockId, registerId](regmap::Workspace& candidate) {
-                auto* block = regmap::findRegisterBlock(candidate, blockId);
-                if (block == nullptr) {
-                    return;
-                }
-                const auto iterator =
-                    std::ranges::find(block->registers, registerId, &regmap::Register::id);
-                if (iterator == block->registers.end()) {
-                    return;
-                }
-                const std::uint64_t extent = registerExtent(*iterator);
-                const auto firstFollowing = block->registers.erase(iterator);
-                for (auto current = firstFollowing; current != block->registers.end(); ++current) {
-                    current->offset = current->offset >= extent ? current->offset - extent : 0;
-                }
-            })) {
+            deleteAndShift)) {
         selectedRegisterId_ = nextId;
         selectedFieldId_.clear();
         openFieldsRegisterId_.clear();
