@@ -177,15 +177,15 @@ enum EnumColumn {
 {
     switch (access) {
     case regmap::AccessMode::none:
-        return QStringLiteral("none");
+        return QStringLiteral("NONE");
     case regmap::AccessMode::readOnly:
-        return QStringLiteral("ro");
+        return QStringLiteral("RO");
     case regmap::AccessMode::writeOnly:
-        return QStringLiteral("wo");
+        return QStringLiteral("WO");
     case regmap::AccessMode::readWrite:
-        return QStringLiteral("rw");
+        return QStringLiteral("RW");
     }
-    return QStringLiteral("unknown");
+    return QStringLiteral("UNKNOWN");
 }
 
 [[nodiscard]] QString valueTypeText(regmap::FieldType type, std::uint64_t width)

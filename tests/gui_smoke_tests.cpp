@@ -780,6 +780,9 @@ void GuiSmokeTests::opensProjectAndPopulatesEditableViews()
     Q_EMIT registers->clicked(registers->model()->index(0, 5));
     QCoreApplication::processEvents();
     QCOMPARE(fields->model()->rowCount(), 2);
+    QCOMPARE(registers->model()->index(0, 9).data().toString(), QStringLiteral("RO"));
+    QCOMPARE(fields->model()->index(0, 8).data().toString(), QStringLiteral("RO"));
+    QCOMPARE(fields->model()->index(0, 9).data().toString(), QStringLiteral("WO"));
     QCOMPARE(enums->model()->rowCount(), 2);
     QCOMPARE(registers->model()->columnCount(), 12);
     QCOMPARE(fields->model()->columnCount(), 14);
@@ -2490,9 +2493,9 @@ void GuiSmokeTests::supportsTrailingRowsAndFieldMovement()
     QTRY_VERIFY_WITH_TIMEOUT(fieldRowForId(memberFieldId) >= 0, 2000);
     memberRow = fieldRowForId(memberFieldId);
     QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(memberRow, 8).data().toString(),
-                              QStringLiteral("none"), 2000);
+                              QStringLiteral("NONE"), 2000);
     QCOMPARE(fields->model()->index(memberRow, 9).data().toString(),
-             QStringLiteral("none"));
+             QStringLiteral("NONE"));
     QCOMPARE(fields->model()->index(memberRow, 11).data().toString(),
              QStringLiteral("none"));
     QCOMPARE(fields->model()->index(memberRow, 12).data().toString(),
