@@ -2286,8 +2286,12 @@ void MainWindow::buildActions()
             return;
         }
         if (!controller_.createProject(path)) {
+            const QString detail = statusBar()->currentMessage().isEmpty()
+                ? QStringLiteral(
+                      "The register-map project could not be created.")
+                : statusBar()->currentMessage();
             QMessageBox::critical(this, QStringLiteral("Create Project"),
-                                  QStringLiteral("The register-map project could not be created."));
+                                  detail);
         }
     });
 

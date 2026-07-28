@@ -98,7 +98,9 @@ valid workspace. Right-click the Workspace to create a Page, right-click the Pag
 Register Block, and right-click the Register Block to create a Register.
 New/Open validates and commits the active table editor before displaying a file chooser. If the
 cell value is invalid, the chooser is not opened, the current project remains active, and the
-status bar states the expected value. An existing project can also be passed at startup:
+status bar states the expected value. If a selected project cannot be created or opened, the
+current project and its pending edits remain active; the failure identifies the target and the
+first available cause. An existing project can also be passed at startup:
 
 **File > Reload from Disk** reloads a clean project directly. If Workbench has local edits, it
 reports how many changes will be discarded, identifies the project file, and explains that the

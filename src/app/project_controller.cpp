@@ -132,7 +132,27 @@ bool ProjectController::createProject(const QString& manifestPath)
 
     const auto diagnostics = regmap::saveProjectFile(manifest, workspace);
     if (containsErrors(diagnostics)) {
-        emit syncStatusChanged(QStringLiteral("Could not create the project file"));
+        const auto firstError = std::ranges::find_if(
+            diagnostics, [](const regmap::Diagnostic& diagnostic) {
+                return diagnostic.severity ==
+                    regmap::DiagnosticSeverity::error;
+            });
+        const QString detail =
+            firstError == diagnostics.end()
+                ? QString {}
+                : QStringLiteral(": %1")
+                      .arg(fromUtf8(firstError->message));
+        QString retainedState = QStringLiteral("no project was opened");
+        if (store_.workspace() != nullptr) {
+            retainedState =
+                store_.dirty()
+                    ? QStringLiteral(
+                          "current project and unsaved Workbench edits retained")
+                    : QStringLiteral("current project retained");
+        }
+        emit syncStatusChanged(
+            QStringLiteral("Could not create %1%2; %3")
+                .arg(fromPath(path), detail, retainedState));
         return false;
     }
     openProject(fromPath(path));

@@ -84,6 +84,7 @@ private slots:
     void movesHierarchyObjectsByDrag();
     void switchesProjectsWithoutReusingFieldWorkspaceState();
     void retainsCurrentProjectWhenReplacementCannotLoad();
+    void retainsCurrentProjectWhenCreationFails();
     void reloadsProjectWithoutLosingFieldWorkspaceContext();
     void confirmsDiscardBeforeReloadingDirtyProject();
     void protectsUnsavedChangesWhenClosing();
@@ -2027,6 +2028,80 @@ void GuiSmokeTests::retainsCurrentProjectWhenReplacementCannotLoad()
         QStringLiteral("current project retained")));
 
     makeGeneratedFilesWritable(root.filePath(QStringLiteral("current")));
+}
+
+void GuiSmokeTests::retainsCurrentProjectWhenCreationFails()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString currentManifest =
+        directory.filePath(QStringLiteral("current.regmap.yaml"));
+    createProject(currentManifest);
+
+    const QString blockedParent =
+        directory.filePath(QStringLiteral("not-a-directory"));
+    QFile blocker(blockedParent);
+    QVERIFY(blocker.open(
+        QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate));
+    const QByteArray sentinel("keep this file unchanged");
+    QCOMPARE(blocker.write(sentinel), sentinel.size());
+    blocker.close();
+    const QString failedManifest =
+        QDir(blockedParent).filePath(
+            QStringLiteral("failed-project.regmap.yaml"));
+
+    MainWindow window;
+    window.resize(1100, 720);
+    window.show();
+    window.openProjectPath(currentManifest);
+    QTest::qWait(50);
+
+    auto* controller = window.findChild<ProjectController*>();
+    QVERIFY(controller != nullptr);
+    QVERIFY(controller->workspace() != nullptr);
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Unsaved creation failure edit"),
+        [](regmap::Workspace& workspace) {
+            workspace.name = "Unsaved Workspace Kept";
+        }));
+    QVERIFY(controller->isDirty());
+    QCOMPARE(controller->changes().size(), std::size_t{1});
+    const std::size_t undoDepth = controller->undoDepth();
+    const std::filesystem::path originalManifest =
+        controller->manifestPath();
+
+    QSignalSpy projectChanged(
+        controller, &ProjectController::projectChanged);
+    QSignalSpy statusChanged(
+        controller, &ProjectController::syncStatusChanged);
+    QVERIFY(!controller->createProject(failedManifest));
+    QCoreApplication::processEvents();
+
+    QCOMPARE(projectChanged.count(), 0);
+    QVERIFY(!statusChanged.isEmpty());
+    const QString failure = statusChanged.last().at(0).toString();
+    QVERIFY(failure.contains(
+        QStringLiteral("failed-project.regmap.yaml")));
+    QVERIFY(failure.contains(QStringLiteral("Cannot create")));
+    QVERIFY(failure.contains(QStringLiteral("current project")));
+    QVERIFY(failure.contains(
+        QStringLiteral("unsaved Workbench edits retained")));
+    QCOMPARE(window.statusBar()->currentMessage(), failure);
+
+    QCOMPARE(controller->manifestPath(), originalManifest);
+    QVERIFY(controller->workspace() != nullptr);
+    QCOMPARE(controller->workspace()->name,
+             std::string("Unsaved Workspace Kept"));
+    QVERIFY(controller->isDirty());
+    QCOMPARE(controller->undoDepth(), undoDepth);
+    QVERIFY(controller->canUndo());
+    QVERIFY(!QFileInfo::exists(failedManifest));
+
+    QVERIFY(blocker.open(QIODevice::ReadOnly));
+    QCOMPARE(blocker.readAll(), sentinel);
+    blocker.close();
+
+    makeGeneratedFilesWritable(directory.path());
 }
 
 void GuiSmokeTests::reloadsProjectWithoutLosingFieldWorkspaceContext()
