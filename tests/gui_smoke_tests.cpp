@@ -98,6 +98,7 @@ private slots:
     void copiesAndPastesEditableCells();
     void rejectsOutOfRangeNumericEdits();
     void rejectsInvalidNumericRangesDuringEditing();
+    void rejectsAddressEditsThatIntroduceConflicts();
     void synchronizesFieldResetEdits();
     void protectsEnumContractsDuringEditing();
     void rejectsRegisterResetsOutsideFieldEnums();
@@ -3453,6 +3454,7 @@ void GuiSmokeTests::searchesAndNavigatesProblems()
     auto* fieldContext = window.findChild<QLabel*>(QStringLiteral("fieldContextLabel"));
     auto* problems = window.findChild<QTableView*>(QStringLiteral("problemsView"));
     auto* state = window.findChild<QLabel*>(QStringLiteral("syncStateBadge"));
+    auto* controller = window.findChild<ProjectController*>();
     QVERIFY(search != nullptr);
     QVERIFY(searchResult != nullptr);
     QVERIFY(registers != nullptr);
@@ -3461,6 +3463,7 @@ void GuiSmokeTests::searchesAndNavigatesProblems()
     QVERIFY(fieldContext != nullptr);
     QVERIFY(problems != nullptr);
     QVERIFY(state != nullptr);
+    QVERIFY(controller != nullptr);
 
     search->setText(QStringLiteral("CONTROL"));
     Q_EMIT search->returnPressed();
@@ -3479,8 +3482,13 @@ void GuiSmokeTests::searchesAndNavigatesProblems()
     QTRY_VERIFY_WITH_TIMEOUT(fieldPanel->isVisible(), 2000);
     QVERIFY(fieldContext->text().contains(QStringLiteral("STATUS")));
 
-    QVERIFY(registers->model()->setData(registers->model()->index(1, 1),
-                                        QStringLiteral("0x0")));
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Inject external address conflict"),
+        [](regmap::Workspace& workspace) {
+            if (auto* reg = regmap::findRegister(workspace, "reg-control")) {
+                reg->offset = 0;
+            }
+        }));
     QTRY_VERIFY_WITH_TIMEOUT(problems->model()->rowCount() > 0, 2000);
     QTRY_VERIFY_WITH_TIMEOUT(state->text().startsWith(QStringLiteral("Blocked")), 2000);
 
@@ -4151,6 +4159,170 @@ void GuiSmokeTests::rejectsInvalidNumericRangesDuringEditing()
             .toString(),
         QString{}, 2000);
     QCOMPARE(controller->undoDepth(), recoveryUndoDepth + 2);
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::rejectsAddressEditsThatIntroduceConflicts()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createTwoRegisterProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+
+    auto* controller = window.findChild<ProjectController*>();
+    auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* pageBase = window.findChild<QLineEdit*>(QStringLiteral("pageBaseEdit"));
+    auto* pageWidth = window.findChild<QLineEdit*>(QStringLiteral("pageWidthEdit"));
+    auto* blockBase = window.findChild<QLineEdit*>(QStringLiteral("blockBaseEdit"));
+    auto* blockSize = window.findChild<QLineEdit*>(QStringLiteral("blockSizeEdit"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(pageBase != nullptr);
+    QVERIFY(pageWidth != nullptr);
+    QVERIFY(blockBase != nullptr);
+    QVERIFY(blockSize != nullptr);
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+
+    const auto registerRow = [registers](const QString& id) {
+        for (int row = 0; row < registers->model()->rowCount(); ++row) {
+            if (registers->model()->index(row, 0).data(Qt::UserRole + 1).toString() == id) {
+                return row;
+            }
+        }
+        return -1;
+    };
+    int controlRow = registerRow(QStringLiteral("reg-control"));
+    QVERIFY(controlRow >= 0);
+    const std::size_t initialUndoDepth = controller->undoDepth();
+
+    QVERIFY(registers->model()->setData(
+        registers->model()->index(controlRow, 1), QStringLiteral("0x0")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()
+            ->index(registerRow(QStringLiteral("reg-control")), 1)
+            .data()
+            .toString(),
+        QStringLiteral("0x4"), 2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("address layout")));
+
+    controlRow = registerRow(QStringLiteral("reg-control"));
+    QVERIFY(registers->model()->setData(
+        registers->model()->index(controlRow, 1), QStringLiteral("0x1000")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()
+            ->index(registerRow(QStringLiteral("reg-control")), 1)
+            .data()
+            .toString(),
+        QStringLiteral("0x4"), 2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+
+    controlRow = registerRow(QStringLiteral("reg-control"));
+    QVERIFY(registers->model()->setData(
+        registers->model()->index(controlRow, 1), QStringLiteral("0x8")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()
+            ->index(registerRow(QStringLiteral("reg-control")), 1)
+            .data()
+            .toString(),
+        QStringLiteral("0x8"), 2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth + 1);
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+
+    registers->setFocus(Qt::OtherFocusReason);
+    QTest::keyClick(registers, Qt::Key_Z, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()
+            ->index(registerRow(QStringLiteral("reg-control")), 1)
+            .data()
+            .toString(),
+        QStringLiteral("0x4"), 2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+
+    const int statusRow = registerRow(QStringLiteral("reg-status"));
+    QVERIFY(statusRow >= 0);
+    QVERIFY(registers->model()->setData(
+        registers->model()->index(statusRow, 3), QStringLiteral("64")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()
+            ->index(registerRow(QStringLiteral("reg-status")), 3)
+            .data()
+            .toString(),
+        QStringLiteral("32"), 2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Register extent")));
+
+    blockSize->setText(QStringLiteral("0x4"));
+    Q_EMIT blockSize->editingFinished();
+    QTRY_COMPARE_WITH_TIMEOUT(blockSize->text(), QStringLiteral("0x1000"), 2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+
+    blockBase->setText(QStringLiteral("0xffffffff"));
+    Q_EMIT blockBase->editingFinished();
+    QTRY_COMPARE_WITH_TIMEOUT(blockBase->text(), QStringLiteral("0x0"), 2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+
+    pageBase->setText(QStringLiteral("0x100000000"));
+    Q_EMIT pageBase->editingFinished();
+    QTRY_COMPARE_WITH_TIMEOUT(pageBase->text(), QStringLiteral("0x0"), 2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+
+    pageWidth->setText(QStringLiteral("2"));
+    Q_EMIT pageWidth->editingFinished();
+    QTRY_COMPARE_WITH_TIMEOUT(pageWidth->text(), QStringLiteral("32"), 2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+
+    blockSize->setText(QStringLiteral("0x8"));
+    Q_EMIT blockSize->editingFinished();
+    QTRY_COMPARE_WITH_TIMEOUT(blockSize->text(), QStringLiteral("0x8"), 2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth + 1);
+    QCOMPARE(controller->workspace()
+                 ->addressSpaces.front()
+                 .blocks.front()
+                 .size,
+             std::optional<std::uint64_t>{8});
+
+    pageBase->setText(QStringLiteral("0x1000"));
+    Q_EMIT pageBase->editingFinished();
+    QTRY_COMPARE_WITH_TIMEOUT(pageBase->text(), QStringLiteral("0x1000"), 2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth + 2);
+    QCOMPARE(controller->workspace()->addressSpaces.front().baseAddress,
+             std::uint64_t{0x1000});
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Configure address recovery fixture"),
+        [](regmap::Workspace& workspace) {
+            if (auto* reg = regmap::findRegister(workspace, "reg-control")) {
+                reg->offset = 0;
+            }
+        }));
+    QVERIFY(!regmap::validateWorkspace(*controller->workspace()).empty());
+    controlRow = registerRow(QStringLiteral("reg-control"));
+    QVERIFY(controlRow >= 0);
+    QCOMPARE(registers->model()->index(controlRow, 1).data().toString(),
+             QStringLiteral("0x0"));
+    const std::size_t recoveryUndoDepth = controller->undoDepth();
+
+    QVERIFY(registers->model()->setData(
+        registers->model()->index(controlRow, 1), QStringLiteral("0x4")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()
+            ->index(registerRow(QStringLiteral("reg-control")), 1)
+            .data()
+            .toString(),
+        QStringLiteral("0x4"), 2000);
+    QCOMPARE(controller->undoDepth(), recoveryUndoDepth + 1);
     QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
 
     makeGeneratedFilesWritable(directory.path());

@@ -85,6 +85,11 @@
 namespace {
 
 constexpr std::uint32_t maximumEditableWidth = 65536;
+constexpr std::string_view addressWidthDiagnosticCode = "RM3010";
+constexpr std::string_view addressRangeDiagnosticCode = "RM3011";
+constexpr std::string_view strideDiagnosticCode = "RM3022";
+constexpr std::string_view registerRangeDiagnosticCode = "RM3023";
+constexpr std::string_view addressOverlapDiagnosticCode = "RM3024";
 constexpr std::string_view numericRangeDiagnosticCode = "RM3052";
 constexpr auto tableClipboardMimeType =
     "application/x-regmap-workbench-table-cells";
@@ -1204,6 +1209,80 @@ blockSiblings(const regmap::Workspace& workspace, std::string_view blockId)
         }
     }
     return nullptr;
+}
+
+[[nodiscard]] bool isAddressLayoutDiagnostic(std::string_view code) noexcept
+{
+    return code == addressWidthDiagnosticCode ||
+           code == addressRangeDiagnosticCode ||
+           code == strideDiagnosticCode ||
+           code == registerRangeDiagnosticCode ||
+           code == addressOverlapDiagnosticCode;
+}
+
+[[nodiscard]] const regmap::AddressSpace*
+addressSpaceContaining(const regmap::Workspace& workspace,
+                       std::string_view objectId)
+{
+    for (const auto& page : workspace.addressSpaces) {
+        if (page.id == objectId) {
+            return &page;
+        }
+        for (const auto& block : page.blocks) {
+            if (block.id == objectId ||
+                std::ranges::any_of(
+                    block.registers,
+                    [objectId](const regmap::Register& reg) {
+                        return reg.id == objectId;
+                    })) {
+                return &page;
+            }
+        }
+    }
+    return nullptr;
+}
+
+[[nodiscard]] std::vector<std::string>
+addressLayoutIssues(const regmap::Workspace& workspace,
+                    std::string_view targetId)
+{
+    const auto* page = addressSpaceContaining(workspace, targetId);
+    if (page == nullptr) {
+        return {std::string{"missing-address-owner:"} + std::string{targetId}};
+    }
+
+    std::set<std::string, std::less<>> objectIds{page->id};
+    for (const auto& block : page->blocks) {
+        objectIds.insert(block.id);
+        for (const auto& reg : block.registers) {
+            objectIds.insert(reg.id);
+        }
+    }
+
+    std::vector<std::string> issues;
+    for (const auto& diagnostic : regmap::validateWorkspace(workspace)) {
+        if (!isAddressLayoutDiagnostic(diagnostic.code) ||
+            !objectIds.contains(diagnostic.objectId)) {
+            continue;
+        }
+        issues.push_back(
+            diagnostic.code + '\n' + diagnostic.objectId + '\n' +
+            diagnostic.message);
+    }
+    std::ranges::sort(issues);
+    return issues;
+}
+
+[[nodiscard]] bool addressEditDoesNotWorsen(
+    const regmap::Workspace& before, const regmap::Workspace& after,
+    std::string_view targetId)
+{
+    const auto beforeIssues = addressLayoutIssues(before, targetId);
+    const auto afterIssues = addressLayoutIssues(after, targetId);
+    return afterIssues.size() < beforeIssues.size() ||
+           std::includes(
+               beforeIssues.begin(), beforeIssues.end(),
+               afterIssues.begin(), afterIssues.end());
 }
 
 [[nodiscard]] std::optional<std::size_t>
@@ -3181,6 +3260,13 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                            diagnostic.objectId == targetId;
                 });
         };
+    const auto acceptsAddressEdit =
+        [workspace](std::string_view targetId,
+                    const regmap::WorkspaceStore::Mutation& mutation) {
+            regmap::Workspace candidate = *workspace;
+            mutation(candidate);
+            return addressEditDoesNotWorsen(*workspace, candidate, targetId);
+        };
 
     if (workspace->id == objectId && property == "name") {
         if (textValue.empty()) {
@@ -3814,11 +3900,19 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
             if (!parsed) {
                 return reject(QStringLiteral("a 64-bit unsigned integer"));
             }
-            return commit([=](regmap::Workspace& candidate) {
+            const regmap::WorkspaceStore::Mutation mutation =
+                [=](regmap::Workspace& candidate) {
                 if (auto* reg = regmap::findRegister(candidate, objectId)) {
                     (property == "offset" ? reg->offset : reg->array.stride) = *parsed;
                 }
-            });
+            };
+            if (!acceptsAddressEdit(objectId, mutation)) {
+                return reject(
+                    QStringLiteral(
+                        "an address layout without new overlaps, overflow, "
+                        "or out-of-block Register instances"));
+            }
+            return commit(mutation);
         }
         if (property == "width" || property == "array_count") {
             const auto parsed = parseUInt32();
@@ -3843,11 +3937,19 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                     QStringLiteral(
                         "a register width that fits existing Initial, Reset, and Enum values"));
             }
-            return commit([=](regmap::Workspace& candidate) {
+            const regmap::WorkspaceStore::Mutation mutation =
+                [=](regmap::Workspace& candidate) {
                 if (auto* reg = regmap::findRegister(candidate, objectId)) {
                     (property == "width" ? reg->width : reg->array.count) = *parsed;
                 }
-            });
+            };
+            if (!acceptsAddressEdit(objectId, mutation)) {
+                return reject(
+                    QStringLiteral(
+                        "a Register extent that preserves a non-overlapping "
+                        "in-block address layout"));
+            }
+            return commit(mutation);
         }
         if (property == "initial" || property == "reset") {
             std::optional<regmap::UnsignedValue> parsed;
@@ -3947,7 +4049,8 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                         QStringLiteral("a positive block size or an empty value"));
                 }
             }
-            return commit([=](regmap::Workspace& candidate) {
+            const regmap::WorkspaceStore::Mutation mutation =
+                [=](regmap::Workspace& candidate) {
                 if (auto* block = regmap::findRegisterBlock(candidate, objectId)) {
                     if (property == "base") {
                         block->baseAddress = *parsed;
@@ -3955,7 +4058,14 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                         block->size = parsed;
                     }
                 }
-            });
+            };
+            if (!acceptsAddressEdit(objectId, mutation)) {
+                return reject(
+                    QStringLiteral(
+                        "a Block address layout without new overflow, overlap, "
+                        "or out-of-block Register instances"));
+            }
+            return commit(mutation);
         }
     }
 
@@ -3984,11 +4094,18 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
             if (!parsed) {
                 return reject(QStringLiteral("a 64-bit unsigned integer"));
             }
-            return commit([=](regmap::Workspace& candidate) {
+            const regmap::WorkspaceStore::Mutation mutation =
+                [=](regmap::Workspace& candidate) {
                 if (auto* space = regmap::findAddressSpace(candidate, objectId)) {
                     space->baseAddress = *parsed;
                 }
-            });
+            };
+            if (!acceptsAddressEdit(objectId, mutation)) {
+                return reject(
+                    QStringLiteral(
+                        "a Page Base that keeps its address layout within range"));
+            }
+            return commit(mutation);
         }
         if (property == "address_width") {
             const auto parsed = parseUInt32();
@@ -3996,11 +4113,18 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                 return reject(
                     QStringLiteral("an address width from 1 to 64 bits"));
             }
-            return commit([=](regmap::Workspace& candidate) {
+            const regmap::WorkspaceStore::Mutation mutation =
+                [=](regmap::Workspace& candidate) {
                 if (auto* space = regmap::findAddressSpace(candidate, objectId)) {
                     space->addressWidth = *parsed;
                 }
-            });
+            };
+            if (!acceptsAddressEdit(objectId, mutation)) {
+                return reject(
+                    QStringLiteral(
+                        "an Address Width containing the Page Base and all Registers"));
+            }
+            return commit(mutation);
         }
     }
 
