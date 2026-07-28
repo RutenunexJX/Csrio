@@ -97,6 +97,7 @@ private slots:
     void copiesAndPastesEditableCells();
     void rejectsOutOfRangeNumericEdits();
     void synchronizesFieldResetEdits();
+    void protectsEnumContractsDuringEditing();
     void requiresExplicitCellEditing();
     void keepsUndoRedoInsideActiveEditor();
     void savesActiveEditorWithShortcut();
@@ -3825,6 +3826,213 @@ void GuiSmokeTests::synchronizesFieldResetEdits()
                               QStringLiteral("0x0"), 2000);
     QCOMPARE(controller->undoDepth(), undoDepth);
 
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::protectsEnumContractsDuringEditing()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+
+    auto* controller = window.findChild<ProjectController*>();
+    auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* fields = window.findChild<QTableView*>(QStringLiteral("fieldView"));
+    auto* enums = window.findChild<QTableView*>(QStringLiteral("enumView"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+    QVERIFY(enums != nullptr);
+
+    const auto configureEnums = [](std::vector<regmap::EnumValue>& values,
+                                   std::string_view prefix) {
+        regmap::EnumValue zero;
+        zero.id = std::string(prefix) + "-zero";
+        zero.name = "ZERO";
+        zero.value = regmap::UnsignedValue(0);
+        regmap::EnumValue three;
+        three.id = std::string(prefix) + "-three";
+        three.name = "THREE";
+        three.value = regmap::UnsignedValue(3);
+        values = {std::move(zero), std::move(three)};
+    };
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Configure register Enum fixture"),
+        [configureEnums](regmap::Workspace& workspace) {
+            auto* reg = regmap::findRegister(workspace, "reg-status");
+            if (reg == nullptr) {
+                return;
+            }
+            reg->width = 2;
+            reg->type = regmap::FieldType::enumeration;
+            reg->fields.clear();
+            reg->array.stride = 1;
+            configureEnums(reg->enumValues, "enum-register");
+        }));
+    QTRY_VERIFY_WITH_TIMEOUT(enums->isVisible(), 2000);
+    const auto enumRow = [enums](const QString& id) {
+        for (int row = 0; row < enums->model()->rowCount(); ++row) {
+            if (enums->model()->index(row, 0).data(Qt::UserRole + 1).toString() == id) {
+                return row;
+            }
+        }
+        return -1;
+    };
+    int zeroRow = enumRow(QStringLiteral("enum-register-zero"));
+    int threeRow = enumRow(QStringLiteral("enum-register-three"));
+    QVERIFY(zeroRow >= 0);
+    QVERIFY(threeRow >= 0);
+    const std::size_t registerEnumUndoDepth = controller->undoDepth();
+
+    QVERIFY(enums->model()->setData(enums->model()->index(threeRow, 0),
+                                    QStringLiteral("ZERO")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        enums->model()->index(enumRow(QStringLiteral("enum-register-three")), 0)
+            .data()
+            .toString(),
+        QStringLiteral("THREE"), 2000);
+    QCOMPARE(controller->undoDepth(), registerEnumUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("unique Enum name")));
+
+    threeRow = enumRow(QStringLiteral("enum-register-three"));
+    QVERIFY(enums->model()->setData(enums->model()->index(threeRow, 1),
+                                    QStringLiteral("0x0")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        enums->model()->index(enumRow(QStringLiteral("enum-register-three")), 1)
+            .data()
+            .toString(),
+        QStringLiteral("0x3"), 2000);
+    QCOMPARE(controller->undoDepth(), registerEnumUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("unique Enum value")));
+
+    zeroRow = enumRow(QStringLiteral("enum-register-zero"));
+    QVERIFY(enums->model()->setData(enums->model()->index(zeroRow, 1),
+                                    QStringLiteral("0x1")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        enums->model()->index(enumRow(QStringLiteral("enum-register-zero")), 1)
+            .data()
+            .toString(),
+        QStringLiteral("0x1"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 7).data().toString(),
+                              QStringLiteral("0x1"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 8).data().toString(),
+                              QStringLiteral("0x1"), 2000);
+    QCOMPARE(controller->undoDepth(), registerEnumUndoDepth + 1);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Initial/Reset updated")));
+
+    QTest::keyClick(&window, Qt::Key_Z, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        enums->model()->index(enumRow(QStringLiteral("enum-register-zero")), 1)
+            .data()
+            .toString(),
+        QStringLiteral("0x0"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 7).data().toString(),
+                              QStringLiteral("0x0"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 8).data().toString(),
+                              QStringLiteral("0x0"), 2000);
+    QCOMPARE(controller->undoDepth(), registerEnumUndoDepth);
+
+    QVERIFY(registers->model()->setData(registers->model()->index(0, 7),
+                                        QStringLiteral("0x1")));
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 7).data().toString(),
+                              QStringLiteral("0x0"), 2000);
+    QCOMPARE(controller->undoDepth(), registerEnumUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("existing Enum value")));
+
+    QVERIFY(registers->model()->setData(registers->model()->index(0, 8),
+                                        QStringLiteral("0x1")));
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 8).data().toString(),
+                              QStringLiteral("0x0"), 2000);
+    QCOMPARE(controller->undoDepth(), registerEnumUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("existing Enum value")));
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Configure Field Enum fixture"),
+        [configureEnums](regmap::Workspace& workspace) {
+            auto* reg = regmap::findRegister(workspace, "reg-status");
+            if (reg == nullptr) {
+                return;
+            }
+            reg->width = 32;
+            reg->type = regmap::FieldType::structure;
+            reg->array.stride = 4;
+            reg->enumValues.clear();
+            regmap::Field field;
+            field.id = "field-enum";
+            field.name = "MODE";
+            field.msb = 1;
+            field.lsb = 0;
+            field.type = regmap::FieldType::enumeration;
+            field.softwareAccess = regmap::AccessMode::readOnly;
+            field.hardwareAccess = regmap::AccessMode::writeOnly;
+            field.resetValue = regmap::UnsignedValue(0);
+            field.writeSideEffect = regmap::WriteSideEffect::none;
+            configureEnums(field.enumValues, "enum-field");
+            reg->fields = {std::move(field)};
+        }));
+    Q_EMIT registers->clicked(registers->model()->index(0, 5));
+    QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(enums->isVisible(), 2000);
+    int fieldRow = -1;
+    for (int row = 0; row < fields->model()->rowCount(); ++row) {
+        if (fields->model()->index(row, 0).data(Qt::UserRole + 1).toString() ==
+            QStringLiteral("field-enum")) {
+            fieldRow = row;
+            break;
+        }
+    }
+    QVERIFY(fieldRow >= 0);
+    const std::size_t fieldEnumUndoDepth = controller->undoDepth();
+    QVERIFY(fields->model()->setData(fields->model()->index(fieldRow, 10),
+                                     QStringLiteral("0x1")));
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(fieldRow, 10).data().toString(),
+                              QStringLiteral("0x0"), 2000);
+    QCOMPARE(controller->undoDepth(), fieldEnumUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("existing Enum value")));
+
+    zeroRow = enumRow(QStringLiteral("enum-field-zero"));
+    QVERIFY(zeroRow >= 0);
+    QVERIFY(enums->model()->setData(enums->model()->index(zeroRow, 1),
+                                    QStringLiteral("0x1")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        enums->model()->index(enumRow(QStringLiteral("enum-field-zero")), 1)
+            .data()
+            .toString(),
+        QStringLiteral("0x1"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(fieldRow, 10).data().toString(),
+                              QStringLiteral("0x1"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 8).data().toString(),
+                              QStringLiteral("0x1"), 2000);
+    QCOMPARE(controller->undoDepth(), fieldEnumUndoDepth + 1);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Field/Register Reset updated")));
+
+    QTest::keyClick(&window, Qt::Key_Z, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        enums->model()->index(enumRow(QStringLiteral("enum-field-zero")), 1)
+            .data()
+            .toString(),
+        QStringLiteral("0x0"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(fieldRow, 10).data().toString(),
+                              QStringLiteral("0x0"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 8).data().toString(),
+                              QStringLiteral("0x0"), 2000);
+    QCOMPARE(controller->undoDepth(), fieldEnumUndoDepth);
+
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
     makeGeneratedFilesWritable(directory.path());
 }
 

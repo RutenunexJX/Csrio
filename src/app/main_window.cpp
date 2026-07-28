@@ -853,24 +853,34 @@ private:
     return nullptr;
 }
 
-[[nodiscard]] std::optional<std::size_t>
-enumValueOwnerWidth(const std::vector<regmap::Field>& fields, std::string_view enumValueId)
+struct EnumOwnerContext {
+    const std::vector<regmap::EnumValue>* values;
+    std::size_t width;
+    regmap::ObjectId ownerId;
+    bool registerOwner;
+};
+
+[[nodiscard]] std::optional<EnumOwnerContext>
+enumOwnerContext(const std::vector<regmap::Field>& fields,
+                 std::string_view enumValueId)
 {
     for (const auto& field : fields) {
         if (std::ranges::any_of(field.enumValues, [&](const regmap::EnumValue& value) {
                 return value.id == enumValueId;
             })) {
-            return static_cast<std::size_t>(field.width());
+            return EnumOwnerContext{&field.enumValues,
+                                    static_cast<std::size_t>(field.width()),
+                                    field.id, false};
         }
-        if (const auto width = enumValueOwnerWidth(field.members, enumValueId)) {
-            return width;
+        if (auto context = enumOwnerContext(field.members, enumValueId)) {
+            return context;
         }
     }
     return std::nullopt;
 }
 
-[[nodiscard]] std::optional<std::size_t>
-enumValueOwnerWidth(const regmap::Workspace& workspace, std::string_view enumValueId)
+[[nodiscard]] std::optional<EnumOwnerContext>
+enumOwnerContext(const regmap::Workspace& workspace, std::string_view enumValueId)
 {
     for (const auto& addressSpace : workspace.addressSpaces) {
         for (const auto& block : addressSpace.blocks) {
@@ -878,10 +888,12 @@ enumValueOwnerWidth(const regmap::Workspace& workspace, std::string_view enumVal
                 if (std::ranges::any_of(reg.enumValues, [&](const regmap::EnumValue& value) {
                         return value.id == enumValueId;
                     })) {
-                    return static_cast<std::size_t>(reg.width);
+                    return EnumOwnerContext{&reg.enumValues,
+                                            static_cast<std::size_t>(reg.width),
+                                            reg.id, true};
                 }
-                if (const auto width = enumValueOwnerWidth(reg.fields, enumValueId)) {
-                    return width;
+                if (auto context = enumOwnerContext(reg.fields, enumValueId)) {
+                    return context;
                 }
             }
         }
@@ -1133,6 +1145,61 @@ void refreshRegisterFieldResets(regmap::Register& reg)
     for (auto& field : reg.fields) {
         refreshFieldResets(field, reg.resetValue, 0);
     }
+}
+
+void assignFieldReset(regmap::Workspace& workspace, std::string_view fieldId,
+                      const std::optional<regmap::UnsignedValue>& value)
+{
+    auto* field = regmap::findField(workspace, fieldId);
+    if (field == nullptr) {
+        return;
+    }
+    auto* reg = findRegisterContainingField(workspace, fieldId);
+    if (value && reg != nullptr && reg->resetValue) {
+        const auto absoluteLsb = fieldAbsoluteLsb(reg->fields, fieldId);
+        const auto merged =
+            absoluteLsb
+                ? reg->resetValue->replacingSlice(
+                      static_cast<std::size_t>(*absoluteLsb),
+                      static_cast<std::size_t>(field->width()), *value)
+                : std::nullopt;
+        if (merged) {
+            reg->resetValue = *merged;
+            refreshRegisterFieldResets(*reg);
+            return;
+        }
+    }
+    field->resetValue = value;
+}
+
+[[nodiscard]] bool enumValueIsReferenced(const regmap::Workspace& workspace,
+                                         const EnumOwnerContext& context,
+                                         const regmap::UnsignedValue& value)
+{
+    if (context.registerOwner) {
+        const auto* reg = regmap::findRegister(workspace, context.ownerId);
+        return reg != nullptr &&
+               ((reg->initialValue && *reg->initialValue == value) ||
+                (reg->resetValue && *reg->resetValue == value));
+    }
+
+    const auto* field = regmap::findField(workspace, context.ownerId);
+    if (field == nullptr) {
+        return false;
+    }
+    if (field->resetValue) {
+        return *field->resetValue == value;
+    }
+    const auto* reg = findRegisterContainingField(workspace, context.ownerId);
+    if (reg == nullptr || !reg->resetValue) {
+        return false;
+    }
+    const auto absoluteLsb = fieldAbsoluteLsb(reg->fields, context.ownerId);
+    return absoluteLsb &&
+           reg->resetValue
+                   ->slice(static_cast<std::size_t>(*absoluteLsb),
+                           static_cast<std::size_t>(field->width())) ==
+               value;
 }
 
 } // namespace
@@ -2872,30 +2939,96 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
             [=](regmap::Workspace& candidate) { candidate.name = textValue; });
     }
 
-    if (regmap::findEnumValue(*workspace, objectId) != nullptr) {
-        if (property == "name" || property == "description") {
+    if (const auto* currentEnum = regmap::findEnumValue(*workspace, objectId)) {
+        if (property == "description") {
             return commit([=](regmap::Workspace& candidate) {
                 if (auto* enumValue = regmap::findEnumValue(candidate, objectId)) {
-                    (property == "name" ? enumValue->name : enumValue->description) = textValue;
+                    enumValue->description = textValue;
+                }
+            });
+        }
+        const auto ownerContext = enumOwnerContext(*workspace, objectId);
+        if (property == "name") {
+            if (textValue.empty()) {
+                return reject(QStringLiteral("a non-empty unique Enum name"));
+            }
+            if (!ownerContext) {
+                return reject(QStringLiteral("a unique Enum name with a valid owner"));
+            }
+            const bool duplicate = std::ranges::any_of(
+                *ownerContext->values, [&](const regmap::EnumValue& value) {
+                    return value.id != objectId && value.name == textValue;
+                });
+            if (duplicate) {
+                return reject(QStringLiteral("a unique Enum name within its owner"));
+            }
+            return commit([=](regmap::Workspace& candidate) {
+                if (auto* enumValue = regmap::findEnumValue(candidate, objectId)) {
+                    enumValue->name = textValue;
                 }
             });
         }
         if (property == "value") {
             const auto parsed = parseUnsigned();
-            const auto ownerWidth = enumValueOwnerWidth(*workspace, objectId);
-            if (!parsed || !ownerWidth || !parsed->fitsInBits(*ownerWidth)) {
+            if (!parsed || !ownerContext || !parsed->fitsInBits(ownerContext->width)) {
                 return reject(
-                    ownerWidth
+                    ownerContext
                         ? QStringLiteral(
                               "an unsigned integer fitting the owning %1-bit value")
-                              .arg(*ownerWidth)
+                              .arg(ownerContext->width)
                         : QStringLiteral("an unsigned integer with a valid Enum owner"));
             }
-            return commit([=](regmap::Workspace& candidate) {
-                if (auto* enumValue = regmap::findEnumValue(candidate, objectId)) {
-                    enumValue->value = *parsed;
-                }
-            });
+            const bool duplicate = std::ranges::any_of(
+                *ownerContext->values, [&](const regmap::EnumValue& value) {
+                    return value.id != objectId && value.value == *parsed;
+                });
+            if (duplicate) {
+                return reject(QStringLiteral("a unique Enum value within its owner"));
+            }
+            const regmap::UnsignedValue previousValue = currentEnum->value;
+            const bool updatesReference =
+                enumValueIsReferenced(*workspace, *ownerContext, previousValue);
+            const PropertyEditResult result =
+                commit([=](regmap::Workspace& candidate) {
+                    if (auto* enumValue =
+                            regmap::findEnumValue(candidate, objectId)) {
+                        enumValue->value = *parsed;
+                    }
+                    if (!updatesReference) {
+                        return;
+                    }
+                    if (ownerContext->registerOwner) {
+                        if (auto* reg =
+                                regmap::findRegister(candidate, ownerContext->ownerId)) {
+                            bool resetChanged = false;
+                            if (reg->initialValue && *reg->initialValue == previousValue) {
+                                reg->initialValue = *parsed;
+                            }
+                            if (reg->resetValue && *reg->resetValue == previousValue) {
+                                reg->resetValue = *parsed;
+                                resetChanged = true;
+                            }
+                            if (resetChanged) {
+                                refreshRegisterFieldResets(*reg);
+                            }
+                        }
+                    } else {
+                        assignFieldReset(candidate, ownerContext->ownerId, *parsed);
+                    }
+                });
+            if (result.status == PropertyEditStatus::changed &&
+                updatesReference && reportFeedback) {
+                statusBar()->showMessage(
+                    ownerContext->registerOwner
+                        ? QStringLiteral(
+                              "Enum value changed · matching Initial/Reset updated · "
+                              "Ctrl+Z to restore")
+                        : QStringLiteral(
+                              "Enum value changed · matching Field/Register Reset updated · "
+                              "Ctrl+Z to restore"),
+                    6000);
+            }
+            return result;
         }
     }
 
@@ -2983,32 +3116,24 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                                   .arg(current->width()));
                 }
             }
+            const bool enumerationLike =
+                current != nullptr &&
+                (current->type == regmap::FieldType::enumeration ||
+                 current->type == regmap::FieldType::boolean);
+            if (parsed && enumerationLike && !current->enumValues.empty() &&
+                std::ranges::none_of(
+                    current->enumValues, [&](const regmap::EnumValue& enumValue) {
+                        return enumValue.value == *parsed;
+                    })) {
+                return reject(
+                    QStringLiteral("an existing Enum value for this field, or empty"));
+            }
             const bool updatesRegisterReset =
                 parsed.has_value() && current != nullptr && owner != nullptr &&
                 owner->resetValue.has_value();
             const PropertyEditResult result =
                 commit([=](regmap::Workspace& candidate) {
-                    auto* field = regmap::findField(candidate, objectId);
-                    if (field == nullptr) {
-                        return;
-                    }
-                    auto* reg = findRegisterContainingField(candidate, objectId);
-                    if (parsed && reg != nullptr && reg->resetValue) {
-                        const auto absoluteLsb =
-                            fieldAbsoluteLsb(reg->fields, objectId);
-                        const auto merged =
-                            absoluteLsb
-                                ? reg->resetValue->replacingSlice(
-                                      static_cast<std::size_t>(*absoluteLsb),
-                                      static_cast<std::size_t>(field->width()), *parsed)
-                                : std::nullopt;
-                        if (merged) {
-                            reg->resetValue = *merged;
-                            refreshRegisterFieldResets(*reg);
-                            return;
-                        }
-                    }
-                    field->resetValue = parsed;
+                    assignFieldReset(candidate, objectId, parsed);
                 });
             if (result.status == PropertyEditStatus::changed &&
                 updatesRegisterReset && reportFeedback) {
@@ -3341,12 +3466,23 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
         }
         if (property == "initial" || property == "reset") {
             std::optional<regmap::UnsignedValue> parsed;
+            const auto* current = regmap::findRegister(*workspace, objectId);
             if (!textValue.empty()) {
                 parsed = parseUnsigned();
-                const auto* current = regmap::findRegister(*workspace, objectId);
                 if (!parsed || current == nullptr || !parsed->fitsInBits(current->width)) {
                     return reject(
                         QStringLiteral("an unsigned integer fitting the register width, or empty"));
+                }
+                const bool enumerationLike =
+                    current->type == regmap::FieldType::enumeration ||
+                    current->type == regmap::FieldType::boolean;
+                if (enumerationLike && !current->enumValues.empty() &&
+                    std::ranges::none_of(
+                        current->enumValues, [&](const regmap::EnumValue& enumValue) {
+                            return enumValue.value == *parsed;
+                        })) {
+                    return reject(
+                        QStringLiteral("an existing Enum value for this register, or empty"));
                 }
             }
             return commit([=](regmap::Workspace& candidate) {
