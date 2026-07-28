@@ -453,6 +453,24 @@ void CoreTests::roundTripsExtendedModel()
         return diagnostic.code == "RM3051" &&
                diagnostic.message.find("must not contain a comma") != std::string::npos;
     }));
+
+    auto duplicateTag = workspace;
+    regmap::findRegister(duplicateTag, "reg-active")->tags.push_back("CONTROL");
+    const auto duplicateTagDiagnostics = regmap::validateWorkspace(duplicateTag);
+    QVERIFY(std::ranges::any_of(
+        duplicateTagDiagnostics, [](const regmap::Diagnostic& diagnostic) {
+            return diagnostic.code == "RM3051" &&
+                   diagnostic.message.find("duplicated") != std::string::npos;
+        }));
+
+    auto paddedTag = workspace;
+    regmap::findRegister(paddedTag, "reg-active")->tags.push_back(" padded ");
+    const auto paddedTagDiagnostics = regmap::validateWorkspace(paddedTag);
+    QVERIFY(std::ranges::any_of(
+        paddedTagDiagnostics, [](const regmap::Diagnostic& diagnostic) {
+            return diagnostic.code == "RM3051" &&
+                   diagnostic.message.find("leading or trailing whitespace") != std::string::npos;
+        }));
 }
 
 void CoreTests::tracksTransactionsAndStableIds()

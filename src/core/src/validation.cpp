@@ -558,16 +558,32 @@ void Validator::validateRegister(const Register& reg)
         const auto first = std::ranges::find_if_not(tag, [](char character) {
             return std::isspace(static_cast<unsigned char>(character)) != 0;
         });
+        const bool hasBoundaryWhitespace =
+            !tag.empty() &&
+            (std::isspace(static_cast<unsigned char>(tag.front())) != 0 ||
+             std::isspace(static_cast<unsigned char>(tag.back())) != 0);
         if (first == tag.end()) {
             addDiagnostic(diagnostics_, tagCode, "Register tag must not be empty.", reg.id,
                           propertySource(reg, "tags"));
+        } else if (hasBoundaryWhitespace) {
+            addDiagnostic(
+                diagnostics_, tagCode,
+                "Register tag '" + tag + "' must not have leading or trailing whitespace.",
+                reg.id, propertySource(reg, "tags"));
         } else if (tag.find(',') != std::string::npos) {
             addDiagnostic(diagnostics_, tagCode,
                           "Register tag '" + tag + "' must not contain a comma.", reg.id,
                           propertySource(reg, "tags"));
-        } else if (!tags.insert(tag).second) {
-            addDiagnostic(diagnostics_, tagCode, "Register tag '" + tag + "' is duplicated.",
-                          reg.id, propertySource(reg, "tags"));
+        } else {
+            std::string normalized = tag;
+            std::ranges::transform(normalized, normalized.begin(), [](char character) {
+                return static_cast<char>(
+                    std::tolower(static_cast<unsigned char>(character)));
+            });
+            if (!tags.insert(normalized).second) {
+                addDiagnostic(diagnostics_, tagCode, "Register tag '" + tag + "' is duplicated.",
+                              reg.id, propertySource(reg, "tags"));
+            }
         }
     }
 
