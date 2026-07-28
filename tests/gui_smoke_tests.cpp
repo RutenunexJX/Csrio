@@ -89,6 +89,7 @@ private slots:
     void cancelsInterruptedFieldDrag();
     void editsTagsAndAccessFromDoubleClick();
     void editsFieldAccessFromConstrainedChoices();
+    void keepsAccessAndEffectsConsistentDuringEditing();
     void closesTagPopupWhenFilteredRegisterDisappears();
     void insertsRegisterBetweenRows();
     void showsUnifiedSyncStateAndGeneratedResults();
@@ -3017,12 +3018,12 @@ void GuiSmokeTests::editsFieldAccessFromConstrainedChoices()
     QVERIFY(!editor->isEditable());
 
     const std::size_t undoDepth = controller->undoDepth();
-    editor->setCurrentText(QStringLiteral("RW"));
+    editor->setCurrentText(QStringLiteral("NONE"));
     Q_EMIT editor->activated(editor->currentIndex());
     QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(0, 8).data().toString(),
-                              QStringLiteral("RW"), 2000);
+                              QStringLiteral("NONE"), 2000);
     QCOMPARE(regmap::findField(*controller->workspace(), "field-ready")->softwareAccess,
-             regmap::AccessMode::readWrite);
+             regmap::AccessMode::none);
     QCOMPARE(controller->undoDepth(), undoDepth + 1);
 
     fields->setFocus(Qt::OtherFocusReason);
@@ -3030,6 +3031,138 @@ void GuiSmokeTests::editsFieldAccessFromConstrainedChoices()
     QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(0, 8).data().toString(),
                               QStringLiteral("RO"), 2000);
     QCOMPARE(controller->undoDepth(), undoDepth);
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::keepsAccessAndEffectsConsistentDuringEditing()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+
+    auto* controller = window.findChild<ProjectController*>();
+    auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* fields = window.findChild<QTableView*>(QStringLiteral("fieldView"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+
+    Q_EMIT registers->clicked(registers->model()->index(0, 5));
+    QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
+    const auto fieldRow = [fields](const QString& id) {
+        for (int row = 0; row < fields->model()->rowCount(); ++row) {
+            if (fields->model()->index(row, 0).data(Qt::UserRole + 1).toString() == id) {
+                return row;
+            }
+        }
+        return -1;
+    };
+    int readyRow = fieldRow(QStringLiteral("field-ready"));
+    QVERIFY(readyRow >= 0);
+    const std::size_t initialUndoDepth = controller->undoDepth();
+
+    QVERIFY(fields->model()->setData(
+        fields->model()->index(readyRow, 8), QStringLiteral("RW")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fields->model()
+            ->index(fieldRow(QStringLiteral("field-ready")), 8)
+            .data()
+            .toString(),
+        QStringLiteral("RO"), 2000);
+    QCOMPARE(regmap::findField(*controller->workspace(), "field-ready")->softwareAccess,
+             regmap::AccessMode::readOnly);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("containing Register")));
+
+    readyRow = fieldRow(QStringLiteral("field-ready"));
+    QVERIFY(fields->model()->setData(
+        fields->model()->index(readyRow, 11), QStringLiteral("clear")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fields->model()
+            ->index(fieldRow(QStringLiteral("field-ready")), 11)
+            .data()
+            .toString(),
+        QStringLiteral("clear"), 2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth + 1);
+
+    readyRow = fieldRow(QStringLiteral("field-ready"));
+    QVERIFY(fields->model()->setData(
+        fields->model()->index(readyRow, 8), QStringLiteral("NONE")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fields->model()
+            ->index(fieldRow(QStringLiteral("field-ready")), 8)
+            .data()
+            .toString(),
+        QStringLiteral("NONE"), 2000);
+    QCOMPARE(regmap::findField(*controller->workspace(), "field-ready")->readSideEffect,
+             regmap::ReadSideEffect::none);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth + 2);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Read Effect cleared")));
+
+    fields->setFocus(Qt::OtherFocusReason);
+    QTest::keyClick(fields, Qt::Key_Z, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fields->model()
+            ->index(fieldRow(QStringLiteral("field-ready")), 8)
+            .data()
+            .toString(),
+        QStringLiteral("RO"), 2000);
+    QCOMPARE(regmap::findField(*controller->workspace(), "field-ready")->readSideEffect,
+             regmap::ReadSideEffect::clear);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth + 1);
+
+    readyRow = fieldRow(QStringLiteral("field-ready"));
+    QVERIFY(fields->model()->setData(
+        fields->model()->index(readyRow, 12), QStringLiteral("w1c")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fields->model()
+            ->index(fieldRow(QStringLiteral("field-ready")), 12)
+            .data()
+            .toString(),
+        QStringLiteral("none"), 2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth + 1);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("software-writable")));
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Configure Register access conflict fixture"),
+        [](regmap::Workspace& workspace) {
+            auto* reg = regmap::findRegister(workspace, "reg-status");
+            auto* field = regmap::findField(workspace, "field-ready");
+            if (reg == nullptr || field == nullptr) {
+                return;
+            }
+            reg->access = regmap::AccessMode::readWrite;
+            field->softwareAccess = regmap::AccessMode::readWrite;
+            field->readSideEffect = regmap::ReadSideEffect::none;
+            field->writeSideEffect = regmap::WriteSideEffect::none;
+        }));
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+    const std::size_t registerUndoDepth = controller->undoDepth();
+
+    QVERIFY(registers->model()->setData(
+        registers->model()->index(0, 9), QStringLiteral("RO")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()->index(0, 9).data().toString(),
+        QStringLiteral("RW"), 2000);
+    QCOMPARE(regmap::findRegister(*controller->workspace(), "reg-status")->access,
+             regmap::AccessMode::readWrite);
+    QCOMPARE(regmap::findField(*controller->workspace(), "field-ready")->softwareAccess,
+             regmap::AccessMode::readWrite);
+    QCOMPARE(controller->undoDepth(), registerUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Field software access")));
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
 
     makeGeneratedFilesWritable(directory.path());
 }
@@ -5101,6 +5234,17 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
                               QStringLiteral("control"), 2000);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 10).data().toString(),
                               QStringLiteral("control"), 2000);
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Configure Access paste fixture"),
+        [](regmap::Workspace& workspace) {
+            if (auto* field = regmap::findField(workspace, "field-ready")) {
+                field->softwareAccess = regmap::AccessMode::none;
+                field->readSideEffect = regmap::ReadSideEffect::none;
+                field->writeSideEffect = regmap::WriteSideEffect::none;
+            }
+        }));
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
 
     const QModelIndex sourceAccess = registers->model()->index(0, 9);
     registers->scrollTo(sourceAccess);

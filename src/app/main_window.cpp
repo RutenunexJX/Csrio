@@ -190,6 +190,35 @@ enum EnumColumn {
     return QStringLiteral("UNKNOWN");
 }
 
+[[nodiscard]] bool accessCanRead(regmap::AccessMode access) noexcept
+{
+    return access == regmap::AccessMode::readOnly ||
+           access == regmap::AccessMode::readWrite;
+}
+
+[[nodiscard]] bool accessCanWrite(regmap::AccessMode access) noexcept
+{
+    return access == regmap::AccessMode::writeOnly ||
+           access == regmap::AccessMode::readWrite;
+}
+
+[[nodiscard]] bool accessFitsWithin(regmap::AccessMode access,
+                                    regmap::AccessMode containingAccess) noexcept
+{
+    return (!accessCanRead(access) || accessCanRead(containingAccess)) &&
+           (!accessCanWrite(access) || accessCanWrite(containingAccess));
+}
+
+[[nodiscard]] bool
+fieldAccessFitsRegister(const std::vector<regmap::Field>& fields,
+                        regmap::AccessMode registerAccess)
+{
+    return std::ranges::all_of(fields, [registerAccess](const regmap::Field& field) {
+        return accessFitsWithin(field.softwareAccess, registerAccess) &&
+               fieldAccessFitsRegister(field.members, registerAccess);
+    });
+}
+
 [[nodiscard]] QString valueTypeText(regmap::FieldType type, std::uint64_t width)
 {
     switch (type) {
@@ -3506,15 +3535,72 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
             }
             return result;
         }
-        if (property == "sw_access" || property == "hw_access") {
+        if (property == "sw_access") {
             const auto parsed = regmap::parseAccessMode(textValue);
             if (!parsed) {
                 return reject(QStringLiteral("none, ro, wo, or rw"));
             }
+            const auto* current = regmap::findField(*workspace, objectId);
+            const auto* owner = findRegisterContainingField(*workspace, objectId);
+            if (current == nullptr || owner == nullptr) {
+                return reject(
+                    QStringLiteral("software access with a valid containing Register"));
+            }
+            if (current->type == regmap::FieldType::reserved &&
+                *parsed != regmap::AccessMode::none) {
+                return reject(QStringLiteral("NONE software access for a reserved Field"));
+            }
+            if (!accessFitsWithin(*parsed, owner->access)) {
+                return reject(
+                    QStringLiteral(
+                        "Field software access permitted by its containing Register"));
+            }
+            const bool clearsReadEffect =
+                current->readSideEffect != regmap::ReadSideEffect::none &&
+                !accessCanRead(*parsed);
+            const bool clearsWriteEffect =
+                current->writeSideEffect != regmap::WriteSideEffect::none &&
+                !accessCanWrite(*parsed);
+            const PropertyEditResult result = commit([=](regmap::Workspace& candidate) {
+                if (auto* field = regmap::findField(candidate, objectId)) {
+                    field->softwareAccess = *parsed;
+                    if (clearsReadEffect) {
+                        field->readSideEffect = regmap::ReadSideEffect::none;
+                    }
+                    if (clearsWriteEffect) {
+                        field->writeSideEffect = regmap::WriteSideEffect::none;
+                    }
+                }
+            });
+            if (result.status == PropertyEditStatus::changed &&
+                (clearsReadEffect || clearsWriteEffect) && reportFeedback) {
+                const QString cleared =
+                    clearsReadEffect && clearsWriteEffect
+                        ? QStringLiteral("Read and Write Effects")
+                        : (clearsReadEffect ? QStringLiteral("Read Effect")
+                                            : QStringLiteral("Write Effect"));
+                statusBar()->showMessage(
+                    QStringLiteral(
+                        "Software Access changed; incompatible %1 cleared; Ctrl+Z to restore")
+                        .arg(cleared),
+                    6000);
+            }
+            return result;
+        }
+        if (property == "hw_access") {
+            const auto parsed = regmap::parseAccessMode(textValue);
+            const auto* current = regmap::findField(*workspace, objectId);
+            if (!parsed) {
+                return reject(QStringLiteral("none, ro, wo, or rw"));
+            }
+            if (current == nullptr ||
+                (current->type == regmap::FieldType::reserved &&
+                 *parsed != regmap::AccessMode::none)) {
+                return reject(QStringLiteral("NONE hardware access for a reserved Field"));
+            }
             return commit([=](regmap::Workspace& candidate) {
                 if (auto* field = regmap::findField(candidate, objectId)) {
-                    (property == "sw_access" ? field->softwareAccess : field->hardwareAccess) =
-                        *parsed;
+                    field->hardwareAccess = *parsed;
                 }
             });
         }
@@ -3522,6 +3608,12 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
             const auto parsed = regmap::parseReadSideEffect(textValue);
             if (!parsed) {
                 return reject(QStringLiteral("none, clear, or set"));
+            }
+            const auto* current = regmap::findField(*workspace, objectId);
+            if (current == nullptr ||
+                (*parsed != regmap::ReadSideEffect::none &&
+                 !accessCanRead(current->softwareAccess))) {
+                return reject(QStringLiteral("a Read Effect with software-readable access"));
             }
             return commit([=](regmap::Workspace& candidate) {
                 if (auto* field = regmap::findField(candidate, objectId)) {
@@ -3534,6 +3626,12 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
             if (!parsed) {
                 return reject(
                     QStringLiteral("none, write, w1c, w1s, w0c, w0s, or toggle"));
+            }
+            const auto* current = regmap::findField(*workspace, objectId);
+            if (current == nullptr ||
+                (*parsed != regmap::WriteSideEffect::none &&
+                 !accessCanWrite(current->softwareAccess))) {
+                return reject(QStringLiteral("a Write Effect with software-writable access"));
             }
             return commit([=](regmap::Workspace& candidate) {
                 if (auto* field = regmap::findField(candidate, objectId)) {
@@ -3796,6 +3894,16 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
             const auto parsed = regmap::parseAccessMode(textValue);
             if (!parsed) {
                 return reject(QStringLiteral("none, ro, wo, or rw"));
+            }
+            const auto* current = regmap::findRegister(*workspace, objectId);
+            if (current == nullptr ||
+                (current->reserved && *parsed != regmap::AccessMode::none)) {
+                return reject(QStringLiteral("NONE access for a reserved Register"));
+            }
+            if (!fieldAccessFitsRegister(current->fields, *parsed)) {
+                return reject(
+                    QStringLiteral(
+                        "Register Access that permits every Field software access"));
             }
             return commit([=](regmap::Workspace& candidate) {
                 if (auto* reg = regmap::findRegister(candidate, objectId)) {
