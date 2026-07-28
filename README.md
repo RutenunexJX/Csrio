@@ -30,8 +30,8 @@ Workspace -> Page (Address Space) -> Register Block -> Register -> Field -> Enum
   the context bar above the register table and remain directly editable.
 - Reserved address slots and delete-with-offset-shift operations from the register context menu.
 - Multi-tag register assignment with existing-tag selection, new-tag creation, and tag filtering.
-- Single-click cell editing for register and field properties, including register type, value
-  range, initial value, and reset value.
+- Single-click cell selection and double-click/F2 editing for register and field properties,
+  including register type, value range, initial value, and reset value.
 - Editable field width with derived read-only LSB, live MSB/LSB labels, top-layer bit-view
   dragging, and explicit overlap resolution by trimming either the moving field or the fields
   it covers.
@@ -71,10 +71,11 @@ An existing project can also be passed at startup:
 build\dev-debug\src\app\RegMapWorkbench.exe examples\minimal\.regmap.yaml
 ```
 
-Click an editable register or field cell once to edit it. Both tables end with a single `+` row.
-To insert between two existing registers, move the pointer to their boundary within the leftmost
-40 pixels of the register table, then click the displayed `+`; other boundary areas remain inert.
-Click a register **Tags** cell once to open the tag selector: typing filters the drop-down,
+Click a register or field cell once to select it; double-click an editable cell or press `F2` to
+edit it. Both tables end with a single `+` row. To insert between two existing registers, move
+the pointer to their boundary within the leftmost 40 pixels of the register table, then click the
+displayed `+`; other boundary areas remain inert. Double-click a register **Tags** cell to open
+the tag selector: typing filters the drop-down,
 clicking an existing tag selects it, and the adjacent `+` creates a tag only when its name is
 unique. The register context menu can convert a register to a red, bold reserved slot or delete
 it while shifting subsequent offsets upward. Page and block properties are shown once in the
