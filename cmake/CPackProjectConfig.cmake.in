@@ -1,0 +1,17 @@
+set(_regmap_revision "unknown")
+execute_process(
+    COMMAND
+        "@GIT_EXECUTABLE@" -C "@PROJECT_SOURCE_DIR@"
+        rev-parse --short=7 HEAD
+    RESULT_VARIABLE _regmap_git_result
+    OUTPUT_VARIABLE _regmap_git_output
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(_regmap_git_result EQUAL 0 AND NOT _regmap_git_output STREQUAL "")
+    set(_regmap_revision "${_regmap_git_output}")
+endif()
+set(
+    CPACK_PACKAGE_FILE_NAME
+    "RegMapWorkbench-@PROJECT_VERSION@-@REGMAP_PACKAGE_PLATFORM@-${_regmap_revision}"
+)

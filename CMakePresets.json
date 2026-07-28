@@ -26,6 +26,18 @@
       "cacheVariables": {
         "REGMAP_BUILD_APP": "OFF"
       }
+    },
+    {
+      "name": "dev-release",
+      "displayName": "Developer Release",
+      "inherits": "dev-debug",
+      "binaryDir": "${sourceDir}/build/dev-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "REGMAP_BUILD_APP": "ON",
+        "REGMAP_BUILD_TESTS": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -36,6 +48,18 @@
     {
       "name": "core-debug",
       "configurePreset": "core-debug"
+    },
+    {
+      "name": "dev-release",
+      "configurePreset": "dev-release"
+    },
+    {
+      "name": "package-win",
+      "displayName": "Windows Portable Package",
+      "configurePreset": "dev-release",
+      "targets": [
+        "package"
+      ]
     }
   ],
   "testPresets": [
@@ -49,6 +73,13 @@
     {
       "name": "core-debug",
       "configurePreset": "core-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "dev-release",
+      "configurePreset": "dev-release",
       "output": {
         "outputOnFailure": true
       }

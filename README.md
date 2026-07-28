@@ -222,5 +222,26 @@ showing an empty `CMAKE_CXX_COMPILER` cannot configure the project; set the comp
 **Preferences > Kits > Compilers**, then select it in the kit and run **Build > Reconfigure
 Project**. Keep `REGMAP_BUILD_APP` and `REGMAP_BUILD_TESTS` enabled.
 
+### Windows portable package
+
+Configure the Release preset once, then build the package target:
+
+```powershell
+cmake --preset dev-release -DCMAKE_PREFIX_PATH="C:\Qt\6.10.2\mingw_64"
+cmake --build --preset package-win
+```
+
+The package target uses Qt's deployment API to collect the Qt plugins, MinGW runtime, and other
+runtime dependencies required by the built executable. It writes these files under `out`:
+
+```text
+RegMapWorkbench-0.1.0-win64-<git-revision>.zip
+RegMapWorkbench-0.1.0-win64-<git-revision>.zip.sha256
+```
+
+The archive contains `RegMapWorkbench.exe`, `README.md`, `BUILD-INFO.txt`, and the deployed
+libraries and plugins. `BUILD-INFO.txt` records the revision at package time, so a package can be
+matched to its source even when CMake was configured before the latest commit.
+
 The checked-in [minimal project](examples/minimal/.regmap.yaml) is a complete schema-version-2
 example.

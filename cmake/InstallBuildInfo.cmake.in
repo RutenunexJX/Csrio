@@ -1,0 +1,32 @@
+set(_regmap_revision "unknown")
+execute_process(
+    COMMAND
+        "@GIT_EXECUTABLE@" -C "@PROJECT_SOURCE_DIR@"
+        rev-parse --short=7 HEAD
+    RESULT_VARIABLE _regmap_git_result
+    OUTPUT_VARIABLE _regmap_git_output
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(_regmap_git_result EQUAL 0 AND NOT _regmap_git_output STREQUAL "")
+    set(_regmap_revision "${_regmap_git_output}")
+endif()
+
+set(_regmap_build_type "@CMAKE_BUILD_TYPE@")
+if(NOT CMAKE_INSTALL_CONFIG_NAME STREQUAL "")
+    set(_regmap_build_type "${CMAKE_INSTALL_CONFIG_NAME}")
+endif()
+if(_regmap_build_type STREQUAL "")
+    set(_regmap_build_type "unspecified")
+endif()
+
+set(_regmap_build_info
+"Register Map Workbench
+Version: @PROJECT_VERSION@
+Revision: ${_regmap_revision}
+Platform: @REGMAP_PACKAGE_PLATFORM@
+Build type: ${_regmap_build_type}
+Qt: @Qt6_VERSION@
+Compiler: @CMAKE_CXX_COMPILER_ID@ @CMAKE_CXX_COMPILER_VERSION@
+")
+file(WRITE "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/BUILD-INFO.txt" "${_regmap_build_info}")

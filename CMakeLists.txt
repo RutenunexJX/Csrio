@@ -14,6 +14,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(REGMAP_BUILD_APP "Build the Qt desktop application" ON)
 option(REGMAP_BUILD_TESTS "Build unit tests" ON)
 
+if(WIN32 AND REGMAP_BUILD_APP)
+    set(CMAKE_INSTALL_BINDIR "." CACHE STRING "Runtime installation directory" FORCE)
+endif()
+
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(RegMapWarnings)
 
@@ -31,4 +35,8 @@ if(REGMAP_BUILD_TESTS)
     include(CTest)
     enable_testing()
     add_subdirectory(tests)
+endif()
+
+if(WIN32 AND REGMAP_BUILD_APP)
+    include(RegMapPackaging)
 endif()

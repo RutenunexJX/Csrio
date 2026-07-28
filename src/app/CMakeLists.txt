@@ -27,3 +27,21 @@ set_target_properties(regmap_workbench PROPERTIES OUTPUT_NAME RegMapWorkbench)
 target_link_libraries(regmap_workbench PRIVATE RegMap::WorkbenchUi)
 target_compile_features(regmap_workbench PRIVATE cxx_std_20)
 regmap_enable_warnings(regmap_workbench)
+
+if(WIN32)
+    install(
+        TARGETS regmap_workbench
+        RUNTIME DESTINATION .
+        COMPONENT Runtime
+    )
+    qt_generate_deploy_app_script(
+        TARGET regmap_workbench
+        OUTPUT_SCRIPT regmap_workbench_deploy_script
+        NO_TRANSLATIONS
+    )
+    install(
+        SCRIPT "${regmap_workbench_deploy_script}"
+        COMPONENT Runtime
+    )
+    install(FILES "${PROJECT_SOURCE_DIR}/README.md" DESTINATION . COMPONENT Runtime)
+endif()

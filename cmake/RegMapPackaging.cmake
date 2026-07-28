@@ -1,0 +1,47 @@
+if(NOT WIN32 OR NOT REGMAP_BUILD_APP)
+    return()
+endif()
+
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(REGMAP_PACKAGE_PLATFORM "win64")
+else()
+    set(REGMAP_PACKAGE_PLATFORM "win32")
+endif()
+
+configure_file(
+    "${PROJECT_SOURCE_DIR}/cmake/CPackProjectConfig.cmake.in"
+    "${PROJECT_BINARY_DIR}/CPackProjectConfig.cmake"
+    @ONLY
+)
+configure_file(
+    "${PROJECT_SOURCE_DIR}/cmake/InstallBuildInfo.cmake.in"
+    "${PROJECT_BINARY_DIR}/InstallBuildInfo.cmake"
+    @ONLY
+)
+install(
+    SCRIPT "${PROJECT_BINARY_DIR}/InstallBuildInfo.cmake"
+    COMPONENT Runtime
+)
+
+set(CPACK_GENERATOR "ZIP")
+set(CPACK_PACKAGE_NAME "RegMapWorkbench")
+set(CPACK_PACKAGE_VENDOR "RegMapWorkbench")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "${PROJECT_DESCRIPTION}")
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+set(
+    CPACK_PACKAGE_FILE_NAME
+    "RegMapWorkbench-${PROJECT_VERSION}-${REGMAP_PACKAGE_PLATFORM}"
+)
+set(CPACK_PACKAGE_DIRECTORY "${PROJECT_SOURCE_DIR}/out")
+set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY ON)
+set(CPACK_PACKAGE_CHECKSUM "SHA256")
+set(CPACK_COMPONENTS_ALL Runtime)
+set(CPACK_ARCHIVE_COMPONENT_INSTALL ON)
+set(CPACK_COMPONENTS_GROUPING ALL_COMPONENTS_IN_ONE)
+set(CPACK_COMPONENT_INCLUDE_TOPLEVEL_DIRECTORY ON)
+set(
+    CPACK_PROJECT_CONFIG_FILE
+    "${PROJECT_BINARY_DIR}/CPackProjectConfig.cmake"
+)
+
+include(CPack)
