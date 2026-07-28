@@ -44,6 +44,7 @@
 #include <QSignalSpy>
 #include <QStringList>
 #include <QStatusBar>
+#include <QStandardPaths>
 #include <QTabWidget>
 #include <QTableView>
 #include <QTemporaryDir>
@@ -92,6 +93,7 @@ private slots:
     void protectsUnsavedChangesWhenClosing();
     void confirmsUnsavedChangesBeforeReplacingProject();
     void preflightsActiveEditorBeforeProjectChoosers();
+    void startsProjectChoosersInUsefulDirectories();
     void navigatesFieldProblemsAndFallsBackForHiddenFields();
     void navigatesEnumValuesFromSearchAndProblems();
     void supportsTrailingRowsAndFieldMovement();
@@ -2877,6 +2879,79 @@ void GuiSmokeTests::preflightsActiveEditorBeforeProjectChoosers()
     controller->undo();
     QTRY_VERIFY_WITH_TIMEOUT(!controller->isDirty(), 2000);
     makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::startsProjectChoosersInUsefulDirectories()
+{
+    QApplication::setAttribute(Qt::AA_DontUseNativeDialogs, true);
+
+    const auto chooserDirectory =
+        [](MainWindow& window, QAction* action) {
+            QString directory;
+            QTimer::singleShot(0, &window, [&] {
+                auto* picker = qobject_cast<QFileDialog*>(
+                    QApplication::activeModalWidget());
+                if (picker == nullptr) {
+                    return;
+                }
+                directory = picker->directory().absolutePath();
+                picker->reject();
+            });
+            action->trigger();
+            return QDir::cleanPath(directory);
+        };
+
+    QTemporaryDir projectRoot;
+    QVERIFY(projectRoot.isValid());
+    QDir root(projectRoot.path());
+    QVERIFY(root.mkpath(QStringLiteral("maps/device")));
+    const QString manifest =
+        root.filePath(
+            QStringLiteral("maps/device/project.regmap.yaml"));
+    createProject(manifest);
+
+    MainWindow projectWindow;
+    projectWindow.resize(1100, 720);
+    projectWindow.show();
+    QVERIFY(projectWindow.openProjectPath(manifest));
+    QTest::qWait(50);
+    auto* newProject = projectWindow.findChild<QAction*>(
+        QStringLiteral("newProjectAction"));
+    auto* openProject = projectWindow.findChild<QAction*>(
+        QStringLiteral("openProjectAction"));
+    QVERIFY(newProject != nullptr);
+    QVERIFY(openProject != nullptr);
+    const QString expectedProjectDirectory =
+        QDir::cleanPath(QFileInfo(manifest).absolutePath());
+    QCOMPARE(
+        chooserDirectory(projectWindow, newProject),
+        expectedProjectDirectory);
+    QCOMPARE(
+        chooserDirectory(projectWindow, openProject),
+        expectedProjectDirectory);
+
+    MainWindow emptyWindow;
+    emptyWindow.resize(900, 600);
+    emptyWindow.show();
+    QTest::qWait(50);
+    auto* emptyNew = emptyWindow.findChild<QAction*>(
+        QStringLiteral("newProjectAction"));
+    auto* emptyOpen = emptyWindow.findChild<QAction*>(
+        QStringLiteral("openProjectAction"));
+    QVERIFY(emptyNew != nullptr);
+    QVERIFY(emptyOpen != nullptr);
+    const QString expectedDocuments = QDir::cleanPath(
+        QStandardPaths::writableLocation(
+            QStandardPaths::DocumentsLocation));
+    QVERIFY(!expectedDocuments.isEmpty());
+    QCOMPARE(
+        chooserDirectory(emptyWindow, emptyNew),
+        expectedDocuments);
+    QCOMPARE(
+        chooserDirectory(emptyWindow, emptyOpen),
+        expectedDocuments);
+
+    makeGeneratedFilesWritable(projectRoot.path());
 }
 
 void GuiSmokeTests::navigatesFieldProblemsAndFallsBackForHiddenFields()

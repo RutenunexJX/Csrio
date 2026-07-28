@@ -56,6 +56,7 @@
 #include <QStyleOptionButton>
 #include <QStyleOptionViewItem>
 #include <QStandardItem>
+#include <QStandardPaths>
 #include <QStandardItemModel>
 #include <QStatusBar>
 #include <QDropEvent>
@@ -163,6 +164,16 @@ enum EnumColumn {
 [[nodiscard]] QString fromPath(const std::filesystem::path& path)
 {
     return QString::fromStdWString(path.wstring());
+}
+
+[[nodiscard]] QString projectChooserDirectory(
+    const std::filesystem::path& manifestPath)
+{
+    if (!manifestPath.empty() && !manifestPath.parent_path().empty()) {
+        return fromPath(manifestPath.parent_path());
+    }
+    return QStandardPaths::writableLocation(
+        QStandardPaths::DocumentsLocation);
 }
 
 [[nodiscard]] QString hex(std::uint64_t value)
@@ -2274,8 +2285,11 @@ void MainWindow::buildActions()
             return;
         }
         QString path =
-            QFileDialog::getSaveFileName(this, QStringLiteral("Create register-map project"), {},
-                                         QStringLiteral("Register Map Project (*.regmap.yaml)"));
+            QFileDialog::getSaveFileName(
+                this, QStringLiteral("Create register-map project"),
+                projectChooserDirectory(controller_.manifestPath()),
+                QStringLiteral(
+                    "Register Map Project (*.regmap.yaml)"));
         if (path.isEmpty()) {
             return;
         }
@@ -2303,7 +2317,8 @@ void MainWindow::buildActions()
             return;
         }
         const QString path = QFileDialog::getOpenFileName(
-            this, QStringLiteral("Open register-map project"), {},
+            this, QStringLiteral("Open register-map project"),
+            projectChooserDirectory(controller_.manifestPath()),
             QStringLiteral("Register Map Project (*.regmap.yaml *.yaml *.yml);;All "
                            "Files (*)"));
         if (!path.isEmpty()) {

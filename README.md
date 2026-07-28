@@ -98,7 +98,9 @@ valid workspace. Right-click the Workspace to create a Page, right-click the Pag
 Register Block, and right-click the Register Block to create a Register.
 New/Open validates and commits the active table editor before displaying a file chooser. If the
 cell value is invalid, the chooser is not opened, the current project remains active, and the
-status bar states the expected value. If a selected project cannot be created or opened, the
+status bar states the expected value. The file chooser starts in the current project's directory,
+or the system Documents directory when no project is open, so switching projects does not begin
+in the application installation folder. If a selected project cannot be created or opened, the
 current project and its pending edits remain active; the failure identifies the target and the
 first available cause. An explicit **Open Project** failure also displays this recovery information
 in a modal error instead of relying on the status bar alone. If the project file is created
