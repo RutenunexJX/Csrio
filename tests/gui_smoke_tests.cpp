@@ -110,6 +110,7 @@ private slots:
     void confirmsDeletionOfFullyCoveredFieldsDuringDrag();
     void cancelsInterruptedFieldDrag();
     void editsTagsAndAccessFromDoubleClick();
+    void keepsPopupClipboardActionsLocal();
     void editsFieldAccessFromConstrainedChoices();
     void keepsAccessAndEffectsConsistentDuringEditing();
     void closesTagPopupWhenFilteredRegisterDisappears();
@@ -5953,6 +5954,152 @@ void GuiSmokeTests::editsTagsAndAccessFromDoubleClick()
     QTest::keyClick(access, Qt::Key_Return);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 9).data().toString(),
                               QStringLiteral("RO"), 2000);
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::keepsPopupClipboardActionsLocal()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest =
+        directory.filePath(
+            QStringLiteral("popup-clipboard.regmap.yaml"));
+    createTwoRegisterProject(manifest);
+
+    MainWindow window;
+    QVERIFY(window.openProjectPath(manifest));
+    window.resize(1100, 720);
+    window.show();
+    window.activateWindow();
+    QTest::qWait(50);
+
+    auto* controller =
+        window.findChild<ProjectController*>();
+    auto* registers =
+        window.findChild<QTableView*>(
+            QStringLiteral("registerView"));
+    auto* copy =
+        window.findChild<QAction*>(
+            QStringLiteral("copySelectionAction"));
+    auto* paste =
+        window.findChild<QAction*>(
+            QStringLiteral("pasteSelectionAction"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(copy != nullptr);
+    QVERIFY(paste != nullptr);
+
+    const std::size_t undoDepth =
+        controller->undoDepth();
+    const QModelIndex tagIndex =
+        registers->model()->index(0, 10);
+    const QString originalTags =
+        tagIndex.data().toString();
+    registers->setCurrentIndex(tagIndex);
+    Q_EMIT registers->doubleClicked(tagIndex);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        QApplication::activePopupWidget() != nullptr, 2000);
+    auto* tagPopup =
+        qobject_cast<QFrame*>(
+            QApplication::activePopupWidget());
+    QVERIFY(tagPopup != nullptr);
+    QCOMPARE(tagPopup->objectName(),
+             QStringLiteral("tagPopup"));
+    auto* tagSearch =
+        tagPopup->findChild<QLineEdit*>(
+            QStringLiteral("tagSearch"));
+    auto* tagOptions =
+        tagPopup->findChild<QListWidget*>(
+            QStringLiteral("tagOptions"));
+    QVERIFY(tagSearch != nullptr);
+    QVERIFY(tagOptions != nullptr);
+
+    tagSearch->setText(QStringLiteral("needle"));
+    tagSearch->selectAll();
+    tagSearch->setFocus(Qt::OtherFocusReason);
+    QApplication::clipboard()->setText(
+        QStringLiteral("COPY_SENTINEL"));
+    copy->trigger();
+    QCOMPARE(QApplication::clipboard()->text(),
+             QStringLiteral("needle"));
+
+    tagSearch->setText(QStringLiteral("tag"));
+    tagSearch->setCursorPosition(static_cast<int>(tagSearch->text().size()));
+    QApplication::clipboard()->setText(
+        QStringLiteral("-filter"));
+    paste->trigger();
+    QCOMPARE(tagSearch->text(),
+             QStringLiteral("tag-filter"));
+    QCOMPARE(registers->model()->index(0, 10)
+                 .data().toString(),
+             originalTags);
+    QCOMPARE(controller->undoDepth(), undoDepth);
+    QCOMPARE(QApplication::activePopupWidget(),
+             tagPopup);
+
+    tagOptions->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
+    QApplication::clipboard()->setText(
+        QStringLiteral("LIST_COPY_SENTINEL"));
+    copy->trigger();
+    QCOMPARE(QApplication::clipboard()->text(),
+             QStringLiteral("LIST_COPY_SENTINEL"));
+    QApplication::clipboard()->setText(
+        QStringLiteral("accidental-tag"));
+    paste->trigger();
+    QCoreApplication::processEvents();
+    QCOMPARE(registers->model()->index(0, 10)
+                 .data().toString(),
+             originalTags);
+    QCOMPARE(controller->undoDepth(), undoDepth);
+    QCOMPARE(QApplication::activePopupWidget(),
+             tagPopup);
+    QVERIFY(tagOptions->hasFocus());
+    tagPopup->close();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        QApplication::activePopupWidget() == nullptr, 2000);
+
+    const QModelIndex accessIndex =
+        registers->model()->index(0, 9);
+    const QString originalAccess =
+        accessIndex.data().toString();
+    registers->setCurrentIndex(accessIndex);
+    Q_EMIT registers->doubleClicked(accessIndex);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        QApplication::activePopupWidget() != nullptr, 2000);
+    auto* accessPopup =
+        qobject_cast<QFrame*>(
+            QApplication::activePopupWidget());
+    QVERIFY(accessPopup != nullptr);
+    QCOMPARE(accessPopup->objectName(),
+             QStringLiteral("accessPopup"));
+    auto* accessOptions =
+        accessPopup->findChild<QListWidget*>(
+            QStringLiteral("accessOptions"));
+    QVERIFY(accessOptions != nullptr);
+    accessOptions->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
+
+    QApplication::clipboard()->setText(
+        QStringLiteral("ACCESS_COPY_SENTINEL"));
+    copy->trigger();
+    QCOMPARE(QApplication::clipboard()->text(),
+             QStringLiteral("ACCESS_COPY_SENTINEL"));
+    QApplication::clipboard()->setText(
+        QStringLiteral("WO"));
+    paste->trigger();
+    QCoreApplication::processEvents();
+    QCOMPARE(registers->model()->index(0, 9)
+                 .data().toString(),
+             originalAccess);
+    QCOMPARE(controller->undoDepth(), undoDepth);
+    QCOMPARE(QApplication::activePopupWidget(),
+             accessPopup);
+    QVERIFY(accessOptions->hasFocus());
+    accessPopup->close();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        QApplication::activePopupWidget() == nullptr, 2000);
 
     makeGeneratedFilesWritable(directory.path());
 }

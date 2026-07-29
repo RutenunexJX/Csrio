@@ -732,6 +732,21 @@ private:
     DropHandler dropHandler_;
 };
 
+[[nodiscard]] bool focusBelongsToWidgetOutsidePopup(
+    const QWidget* focus, const QWidget* widget)
+{
+    for (const QWidget* current = focus; current != nullptr;
+         current = current->parentWidget()) {
+        if (current->windowType() == Qt::Popup) {
+            return false;
+        }
+        if (current == widget) {
+            return true;
+        }
+    }
+    return false;
+}
+
 [[nodiscard]] QFrame* createAnchoredPopup(QTableView* view, const QModelIndex& index,
                                           const QString& objectName, int preferredWidth,
                                           int preferredHeight)
@@ -2525,9 +2540,13 @@ void MainWindow::buildActions()
     connect(deleteAction_, &QAction::triggered, this, &MainWindow::deleteSelection);
 
     copyAction_ = new QAction(QStringLiteral("Copy"), this);
+    copyAction_->setObjectName(
+        QStringLiteral("copySelectionAction"));
     copyAction_->setShortcut(QKeySequence::Copy);
     connect(copyAction_, &QAction::triggered, this, &MainWindow::copySelection);
     pasteAction_ = new QAction(QStringLiteral("Paste"), this);
+    pasteAction_->setObjectName(
+        QStringLiteral("pasteSelectionAction"));
     pasteAction_->setShortcut(QKeySequence::Paste);
     connect(pasteAction_, &QAction::triggered, this, &MainWindow::pasteSelection);
 
@@ -6585,21 +6604,11 @@ void MainWindow::closeFields()
 void MainWindow::duplicateFocusedObject()
 {
     QWidget* focus = QApplication::focusWidget();
-    const auto focusBelongsToTable = [focus](const QWidget* table) {
-        for (const QWidget* current = focus; current != nullptr;
-             current = current->parentWidget()) {
-            if (current->windowType() == Qt::Popup) {
-                return false;
-            }
-            if (current == table) {
-                return true;
-            }
-        }
-        return false;
-    };
-    const bool fieldFocused = focusBelongsToTable(fieldView_);
+    const bool fieldFocused =
+        focusBelongsToWidgetOutsidePopup(focus, fieldView_);
     const bool registerFocused =
-        !fieldFocused && focusBelongsToTable(registerView_);
+        !fieldFocused &&
+        focusBelongsToWidgetOutsidePopup(focus, registerView_);
     QTableView* view =
         fieldFocused
             ? fieldView_
@@ -7922,15 +7931,14 @@ void MainWindow::copySelection()
         edit->copy();
         return;
     }
-    if (focus == hierarchyView_ ||
-        (focus != nullptr && hierarchyView_->isAncestorOf(focus))) {
+    if (focusBelongsToWidgetOutsidePopup(focus, hierarchyView_)) {
         copyHierarchySelection();
         return;
     }
     QTableView* view = nullptr;
     for (QTableView* candidate :
          {registerView_, fieldView_, enumView_, problemsView_, generatedView_, diffView_}) {
-        if (focus == candidate || (focus != nullptr && candidate->isAncestorOf(focus))) {
+        if (focusBelongsToWidgetOutsidePopup(focus, candidate)) {
             view = candidate;
             break;
         }
@@ -7991,14 +7999,13 @@ void MainWindow::pasteSelection()
         edit->paste();
         return;
     }
-    if (focus == hierarchyView_ ||
-        (focus != nullptr && hierarchyView_->isAncestorOf(focus))) {
+    if (focusBelongsToWidgetOutsidePopup(focus, hierarchyView_)) {
         pasteHierarchySelection();
         return;
     }
     QTableView* view = nullptr;
     for (QTableView* candidate : {registerView_, fieldView_, enumView_}) {
-        if (focus == candidate || (focus != nullptr && candidate->isAncestorOf(focus))) {
+        if (focusBelongsToWidgetOutsidePopup(focus, candidate)) {
             view = candidate;
             break;
         }
