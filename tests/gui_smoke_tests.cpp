@@ -1160,6 +1160,8 @@ void GuiSmokeTests::persistsWorkbenchLayoutPreferences()
     QList<int> editorSizes;
     QByteArray editorState;
     QByteArray resultsState;
+    QByteArray registerHeaderState;
+    QByteArray fieldHeaderState;
     {
         MainWindow first;
         QVERIFY(first.openProjectPath(manifest));
@@ -1187,12 +1189,15 @@ void GuiSmokeTests::persistsWorkbenchLayoutPreferences()
         auto* fields =
             first.findChild<QTableView*>(
                 QStringLiteral("fieldView"));
+        auto* controller =
+            first.findChild<ProjectController*>();
         QVERIFY(workspace != nullptr);
         QVERIFY(editor != nullptr);
         QVERIFY(results != nullptr);
         QVERIFY(advanced != nullptr);
         QVERIFY(registers != nullptr);
         QVERIFY(fields != nullptr);
+        QVERIFY(controller != nullptr);
 
         const QModelIndex openFields =
             registers->model()->index(0, 5);
@@ -1206,13 +1211,48 @@ void GuiSmokeTests::persistsWorkbenchLayoutPreferences()
         editor->setSizes({430, 326});
         results->setSizes({545, 215});
         advanced->setChecked(true);
+        registers->setColumnWidth(0, 237);
+        registers->setColumnWidth(10, 181);
+        fields->setColumnWidth(0, 223);
+        fields->setColumnWidth(5, 149);
         QCoreApplication::processEvents();
+
+        QVERIFY(controller->editWorkspace(
+            QStringLiteral(
+                "Exercise column-width refresh"),
+            [](regmap::Workspace& workspace) {
+                if (auto* reg =
+                        regmap::findRegister(
+                            workspace, "reg-status")) {
+                    reg->description =
+                        "Column-width refresh";
+                }
+            }));
+        QTRY_COMPARE_WITH_TIMEOUT(
+            registers->columnWidth(0), 237, 2000);
+        QTRY_COMPARE_WITH_TIMEOUT(
+            registers->columnWidth(10), 181, 2000);
+        QTRY_COMPARE_WITH_TIMEOUT(
+            fields->columnWidth(0), 223, 2000);
+        QTRY_COMPARE_WITH_TIMEOUT(
+            fields->columnWidth(5), 149, 2000);
+        controller->undo();
+        QTRY_VERIFY_WITH_TIMEOUT(
+            !controller->isDirty(), 2000);
+        QTRY_COMPARE_WITH_TIMEOUT(
+            registers->columnWidth(0), 237, 2000);
+        QTRY_COMPARE_WITH_TIMEOUT(
+            fields->columnWidth(0), 223, 2000);
 
         geometry = first.saveGeometry();
         workspaceSizes = workspace->sizes();
         editorSizes = editor->sizes();
         editorState = editor->saveState();
         resultsState = results->saveState();
+        registerHeaderState =
+            registers->horizontalHeader()->saveState();
+        fieldHeaderState =
+            fields->horizontalHeader()->saveState();
         QVERIFY(!geometry.isEmpty());
         QVERIFY(advanced->isChecked());
         QVERIFY(first.close());
@@ -1245,6 +1285,18 @@ void GuiSmokeTests::persistsWorkbenchLayoutPreferences()
                         "ui/v1/resultsSplitter"))
             .toByteArray(),
         resultsState);
+    QCOMPARE(
+        settings.value(
+                    QStringLiteral(
+                        "ui/v1/registerHeader"))
+            .toByteArray(),
+        registerHeaderState);
+    QCOMPARE(
+        settings.value(
+                    QStringLiteral(
+                        "ui/v1/fieldHeader"))
+            .toByteArray(),
+        fieldHeaderState);
     QCOMPARE(
         settings.value(
                     QStringLiteral("ui/v1/mainWindowGeometry"))
@@ -1323,6 +1375,10 @@ void GuiSmokeTests::persistsWorkbenchLayoutPreferences()
     QCOMPARE(restoredResultsSizes.size(), 2);
     QVERIFY(restoredResultsSizes[0] > 0);
     QVERIFY(restoredResultsSizes[1] >= 170);
+    QCOMPARE(registers->columnWidth(0), 237);
+    QCOMPARE(registers->columnWidth(10), 181);
+    QCOMPARE(fields->columnWidth(0), 223);
+    QCOMPARE(fields->columnWidth(5), 149);
     QVERIFY(advanced->isChecked());
     QVERIFY(restored.close());
     makeGeneratedFilesWritable(directory.path());

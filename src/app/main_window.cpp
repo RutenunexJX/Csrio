@@ -118,6 +118,10 @@ constexpr auto resultsSplitterSettingsKey =
     "ui/v1/resultsSplitter";
 constexpr auto advancedFieldsSettingsKey =
     "ui/v1/showAdvancedFieldColumns";
+constexpr auto registerHeaderSettingsKey =
+    "ui/v1/registerHeader";
+constexpr auto fieldHeaderSettingsKey =
+    "ui/v1/fieldHeader";
 constexpr qsizetype maximumRecentProjectCount = 8;
 
 enum class HierarchyDropPlacement {
@@ -3140,6 +3144,16 @@ void MainWindow::restoreUiState()
         resultsSplitter_, resultsSplitterSettingsKey);
     expandedEditorSplitterState_ =
         editorSplitter_->saveState();
+    registerHeaderState_ =
+        settings.value(
+                    QString::fromLatin1(
+                        registerHeaderSettingsKey))
+            .toByteArray();
+    fieldHeaderState_ =
+        settings.value(
+                    QString::fromLatin1(
+                        fieldHeaderSettingsKey))
+            .toByteArray();
     showAdvancedFieldsAction_->setChecked(
         settings.value(
                     QString::fromLatin1(
@@ -3176,6 +3190,25 @@ void MainWindow::saveUiState() const
     settings.setValue(
         QString::fromLatin1(advancedFieldsSettingsKey),
         showAdvancedFieldsAction_->isChecked());
+    const QByteArray registerHeaderState =
+        registerColumnsInitialized_
+            ? registerView_->horizontalHeader()->saveState()
+            : registerHeaderState_;
+    const QByteArray fieldHeaderState =
+        fieldColumnsInitialized_
+            ? fieldView_->horizontalHeader()->saveState()
+            : fieldHeaderState_;
+    if (!registerHeaderState.isEmpty()) {
+        settings.setValue(
+            QString::fromLatin1(
+                registerHeaderSettingsKey),
+            registerHeaderState);
+    }
+    if (!fieldHeaderState.isEmpty()) {
+        settings.setValue(
+            QString::fromLatin1(fieldHeaderSettingsKey),
+            fieldHeaderState);
+    }
     settings.sync();
 }
 
@@ -3656,6 +3689,10 @@ void MainWindow::populateRegisters()
     const TableSelectionSnapshot previousSelection =
         captureTableSelection(registerView_, objectIdRole, propertyRole);
     const std::string preferredRegister = selectedRegisterId_;
+    if (registerColumnsInitialized_) {
+        registerHeaderState_ =
+            registerView_->horizontalHeader()->saveState();
+    }
     registerModel_->clear();
     registerModel_->setHorizontalHeaderLabels(
         {QStringLiteral("Register"), QStringLiteral("Offset"), QStringLiteral("Address"),
@@ -3665,6 +3702,11 @@ void MainWindow::populateRegisters()
 
     const regmap::Workspace* workspace = controller_.workspace();
     if (workspace == nullptr) {
+        if (!registerHeaderState_.isEmpty() &&
+            registerView_->horizontalHeader()->restoreState(
+                registerHeaderState_)) {
+            registerColumnsInitialized_ = true;
+        }
         openFieldsRegisterId_.clear();
         populateFields(nullptr);
         setCurrentSource({});
@@ -3758,10 +3800,25 @@ void MainWindow::populateRegisters()
                              addRowRole);
     }
     registerModel_->appendRow(addRow);
-    registerView_->resizeColumnsToContents();
-    registerView_->setColumnWidth(
-        registerFieldsColumn, std::max(registerView_->columnWidth(registerFieldsColumn), 112));
     const int dataRowCount = registerModel_->rowCount() - 1;
+    const bool restoredHeader =
+        !registerHeaderState_.isEmpty() &&
+        registerView_->horizontalHeader()->restoreState(
+            registerHeaderState_);
+    if (!restoredHeader) {
+        registerView_->resizeColumnsToContents();
+        registerView_->setColumnWidth(
+            registerFieldsColumn,
+            std::max(
+                registerView_->columnWidth(
+                    registerFieldsColumn),
+                112));
+    }
+    if (restoredHeader || dataRowCount > 0) {
+        registerColumnsInitialized_ = true;
+        registerHeaderState_ =
+            registerView_->horizontalHeader()->saveState();
+    }
     if (preferredRow < 0 && dataRowCount > 0) {
         preferredRow = 0;
     }
@@ -3805,6 +3862,10 @@ void MainWindow::populateFields(const regmap::Register* reg)
     const TableSelectionSnapshot previousSelection =
         captureTableSelection(fieldView_, objectIdRole, propertyRole);
     const std::string preferredField = selectedFieldId_;
+    if (fieldColumnsInitialized_) {
+        fieldHeaderState_ =
+            fieldView_->horizontalHeader()->saveState();
+    }
     fieldModel_->clear();
     fieldModel_->setHorizontalHeaderLabels(
         {QStringLiteral("Field"), QStringLiteral("Parent"), QStringLiteral("MSB"),
@@ -3825,6 +3886,11 @@ void MainWindow::populateFields(const regmap::Register* reg)
     fieldView_->setVisible(showFieldEditor);
     if (!showFieldEditor) {
         selectedFieldId_.clear();
+        if (!fieldHeaderState_.isEmpty() &&
+            fieldView_->horizontalHeader()->restoreState(
+                fieldHeaderState_)) {
+            fieldColumnsInitialized_ = true;
+        }
         restoreTableSelection(
             fieldView_, previousSelection, objectIdRole, propertyRole);
         populateEnumValues(reg, nullptr);
@@ -3886,8 +3952,19 @@ void MainWindow::populateFields(const regmap::Register* reg)
         }
         fieldModel_->appendRow(addRow);
     }
-    fieldView_->resizeColumnsToContents();
     const int fieldCount = fieldModel_->rowCount() - (reg->reserved ? 0 : 1);
+    const bool restoredHeader =
+        !fieldHeaderState_.isEmpty() &&
+        fieldView_->horizontalHeader()->restoreState(
+            fieldHeaderState_);
+    if (!restoredHeader) {
+        fieldView_->resizeColumnsToContents();
+    }
+    if (restoredHeader || fieldCount > 0) {
+        fieldColumnsInitialized_ = true;
+        fieldHeaderState_ =
+            fieldView_->horizontalHeader()->saveState();
+    }
     if (preferredRow < 0 && fieldCount > 0) {
         preferredRow = 0;
     }

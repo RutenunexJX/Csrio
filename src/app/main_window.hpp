@@ -130,7 +130,11 @@ private:
     bool committingActiveEditor_{false};
     bool activeEditorCommitRejected_{false};
     bool enumOnlyEditorLayout_{false};
+    bool registerColumnsInitialized_{false};
+    bool fieldColumnsInitialized_{false};
     QByteArray expandedEditorSplitterState_;
+    QByteArray registerHeaderState_;
+    QByteArray fieldHeaderState_;
     QString lastSyncMessage_;
     QString searchQuery_;
     std::vector<std::string> searchResults_;
