@@ -174,6 +174,9 @@ clicking an existing tag selects it, and the adjacent `+` creates a tag only whe
 unique. A Register created while **Tag Filter** is active inherits that tag and remains visible
 in the filtered table. If an edit temporarily leaves the active Tag with no matches, the filter
 stays selected so Undo/Redo restores the same view; choose **All tags** to clear it explicitly.
+After selecting a Register's **Tags**, **Access**, or **Fields** cell, press Enter, Space, or F2
+to open the same editor or Field workspace available from the mouse. A single click still only
+selects the cell, so copy and range selection remain available.
 The register context menu can convert a register to a red, bold reserved slot or delete
 it while shifting subsequent offsets upward. When a Tag Filter hides following Registers, the
 delete confirmation states how many hidden Registers will still shift and defaults to cancel.

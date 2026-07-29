@@ -119,6 +119,7 @@ private slots:
     void confirmsDeletionOfFullyCoveredFieldsDuringDrag();
     void cancelsInterruptedFieldDrag();
     void editsTagsAndAccessFromDoubleClick();
+    void opensRegisterChoiceEditorsFromKeyboard();
     void editsTypesWithPresetAndCustomChoices();
     void closesAnchoredPopupEditorsWithEscape();
     void keepsPopupEditingActionsLocal();
@@ -6862,6 +6863,79 @@ void GuiSmokeTests::editsTypesWithPresetAndCustomChoices()
         visibleTypeEditor(fields) == nullptr, 2000);
     QCOMPARE(fields->model()->index(readyRow, 5).data().toString(),
              QStringLiteral("bool"));
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::opensRegisterChoiceEditorsFromKeyboard()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest =
+        directory.filePath(QStringLiteral("choice-keyboard.regmap.yaml"));
+    createTwoRegisterProject(manifest);
+
+    struct Scenario {
+        int column;
+        Qt::Key key;
+        QString popupName;
+        QString focusedChildName;
+    };
+    const std::array scenarios{
+        Scenario{10, Qt::Key_Return, QStringLiteral("tagPopup"),
+                 QStringLiteral("tagSearch")},
+        Scenario{9, Qt::Key_Space, QStringLiteral("accessPopup"),
+                 QStringLiteral("accessOptions")},
+        Scenario{9, Qt::Key_F2, QStringLiteral("accessPopup"),
+                 QStringLiteral("accessOptions")}};
+
+    for (const auto& scenario : scenarios) {
+        MainWindow window;
+        QVERIFY(window.openProjectPath(manifest));
+        window.resize(1100, 720);
+        window.show();
+        window.activateWindow();
+        QTest::qWait(50);
+
+        auto* registers =
+            window.findChild<QTableView*>(
+                QStringLiteral("registerView"));
+        QVERIFY(registers != nullptr);
+        const QModelIndex target =
+            registers->model()->index(0, scenario.column);
+        QVERIFY(target.isValid());
+        registers->scrollTo(target);
+        QTest::mouseClick(
+            registers->viewport(), Qt::LeftButton,
+            Qt::NoModifier,
+            registers->visualRect(target).center());
+        QCOMPARE(registers->currentIndex(), target);
+        QVERIFY(QApplication::activePopupWidget() == nullptr);
+
+        registers->setFocus(Qt::OtherFocusReason);
+        QTest::keyClick(registers, scenario.key);
+        QTRY_VERIFY_WITH_TIMEOUT(
+            QApplication::activePopupWidget() != nullptr,
+            2000);
+        auto* popup =
+            qobject_cast<QFrame*>(
+                QApplication::activePopupWidget());
+        QVERIFY(popup != nullptr);
+        QCOMPARE(popup->objectName(), scenario.popupName);
+        QWidget* expectedFocus =
+            popup->findChild<QWidget*>(
+                scenario.focusedChildName);
+        QVERIFY(expectedFocus != nullptr);
+        QCOMPARE(QApplication::focusWidget(), expectedFocus);
+
+        QTest::keyClick(
+            QApplication::focusWidget(), Qt::Key_Escape);
+        QTRY_VERIFY_WITH_TIMEOUT(
+            QApplication::activePopupWidget() == nullptr,
+            2000);
+        QTRY_VERIFY_WITH_TIMEOUT(registers->hasFocus(), 2000);
+        QCOMPARE(registers->currentIndex(), target);
+    }
 
     makeGeneratedFilesWritable(directory.path());
 }

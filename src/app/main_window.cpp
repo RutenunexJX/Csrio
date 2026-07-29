@@ -1002,17 +1002,34 @@ public:
     {
         cellActionHandler_ = std::move(handler);
     }
+    void setKeyboardActionPredicate(CellActionPredicate predicate)
+    {
+        keyboardActionPredicate_ = std::move(predicate);
+    }
+    void setKeyboardActionHandler(CellActionHandler handler)
+    {
+        keyboardActionHandler_ = std::move(handler);
+    }
 
 protected:
     void keyPressEvent(QKeyEvent* event) override
     {
         const QModelIndex index = currentIndex();
         if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter ||
-             event->key() == Qt::Key_Space) &&
-            cellActionPredicate_ && cellActionPredicate_(index) && cellActionHandler_) {
-            cellActionHandler_(index);
-            event->accept();
-            return;
+             event->key() == Qt::Key_Space || event->key() == Qt::Key_F2)) {
+            if (keyboardActionPredicate_ &&
+                keyboardActionPredicate_(index) &&
+                keyboardActionHandler_) {
+                keyboardActionHandler_(index);
+                event->accept();
+                return;
+            }
+            if (cellActionPredicate_ && cellActionPredicate_(index) &&
+                cellActionHandler_) {
+                cellActionHandler_(index);
+                event->accept();
+                return;
+            }
         }
         QTableView::keyPressEvent(event);
     }
@@ -1100,6 +1117,8 @@ private:
     InsertHandler insertHandler_;
     CellActionPredicate cellActionPredicate_;
     CellActionHandler cellActionHandler_;
+    CellActionPredicate keyboardActionPredicate_;
+    CellActionHandler keyboardActionHandler_;
     int insertionBoundary_{-1};
 
     [[nodiscard]] QRect plusRectangle() const
@@ -2348,6 +2367,26 @@ void MainWindow::buildUi()
         [this](const QModelIndex& index) { return index.data(openFieldsRole).toBool(); });
     registerTable->setCellActionHandler(
         [this](const QModelIndex& index) { openFieldsAt(index); });
+    registerTable->setKeyboardActionPredicate(
+        [this](const QModelIndex& index) {
+            if (!index.isValid() || index.data(addRowRole).toBool() ||
+                index.data(objectIdRole).toString().isEmpty()) {
+                return false;
+            }
+            return index.data(openFieldsRole).toBool() ||
+                   index.column() == registerTagsColumn ||
+                   index.column() == registerAccessColumn;
+        });
+    registerTable->setKeyboardActionHandler(
+        [this](const QModelIndex& index) {
+            if (index.data(openFieldsRole).toBool()) {
+                openFieldsAt(index);
+            } else if (index.column() == registerTagsColumn) {
+                editRegisterTags(index);
+            } else if (index.column() == registerAccessColumn) {
+                editRegisterAccess(index);
+            }
+        });
 
     pageContextLabel_ = new QLabel(QStringLiteral("Page: —"), this);
     pageContextLabel_->setObjectName(QStringLiteral("contextTitle"));
@@ -4045,7 +4084,9 @@ void MainWindow::populateRegisters()
                 fieldsAction->setToolTip(
                     canOpenFields
                         ? (fieldsOpen ? QStringLiteral("These fields are open below")
-                                      : QStringLiteral("Open and edit this register's fields"))
+                                      : QStringLiteral(
+                                            "Open and edit this register's fields. "
+                                            "Click, press Enter, or press Space."))
                         : QString{});
                 const bool numericRange =
                     isNumericValueType(reg.type);
@@ -4080,6 +4121,18 @@ void MainWindow::populateRegisters()
                 type->setToolTip(
                     QStringLiteral(
                         "Double-click to select a common Type or enter custom intN/uintN."));
+                auto* access =
+                    pasteableItem(accessText(reg.access).toUpper(), reg.id, "access",
+                                  objectIdRole, propertyRole);
+                access->setToolTip(
+                    QStringLiteral(
+                        "Double-click or press Enter, Space, or F2 to choose Access."));
+                auto* tags =
+                    pasteableItem(tagsText(reg.tags), reg.id, "tags",
+                                  objectIdRole, propertyRole);
+                tags->setToolTip(
+                    QStringLiteral(
+                        "Double-click or press Enter, Space, or F2 to edit Tags."));
                 row << name
                     << editableItem(hex(reg.offset), reg.id, "offset", objectIdRole, propertyRole)
                     << item(overflow ? QStringLiteral("overflow") : hex(address))
@@ -4092,10 +4145,8 @@ void MainWindow::populateRegisters()
                                     propertyRole)
                     << editableItem(valueText(reg.resetValue), reg.id, "reset", objectIdRole,
                                     propertyRole)
-                    << pasteableItem(accessText(reg.access).toUpper(), reg.id, "access",
-                                     objectIdRole, propertyRole)
-                    << pasteableItem(tagsText(reg.tags), reg.id, "tags", objectIdRole,
-                                     propertyRole)
+                    << access
+                    << tags
                     << editableItem(fromUtf8(reg.description), reg.id, "description", objectIdRole,
                                     propertyRole);
                 if (reg.reserved) {
