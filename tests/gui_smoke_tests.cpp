@@ -110,7 +110,7 @@ private slots:
     void confirmsDeletionOfFullyCoveredFieldsDuringDrag();
     void cancelsInterruptedFieldDrag();
     void editsTagsAndAccessFromDoubleClick();
-    void keepsPopupClipboardActionsLocal();
+    void keepsPopupEditingActionsLocal();
     void editsFieldAccessFromConstrainedChoices();
     void keepsAccessAndEffectsConsistentDuringEditing();
     void closesTagPopupWhenFilteredRegisterDisappears();
@@ -5958,7 +5958,7 @@ void GuiSmokeTests::editsTagsAndAccessFromDoubleClick()
     makeGeneratedFilesWritable(directory.path());
 }
 
-void GuiSmokeTests::keepsPopupClipboardActionsLocal()
+void GuiSmokeTests::keepsPopupEditingActionsLocal()
 {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
@@ -5985,10 +5985,14 @@ void GuiSmokeTests::keepsPopupClipboardActionsLocal()
     auto* paste =
         window.findChild<QAction*>(
             QStringLiteral("pasteSelectionAction"));
+    auto* remove =
+        window.findChild<QAction*>(
+            QStringLiteral("deleteSelectionAction"));
     QVERIFY(controller != nullptr);
     QVERIFY(registers != nullptr);
     QVERIFY(copy != nullptr);
     QVERIFY(paste != nullptr);
+    QVERIFY(remove != nullptr);
 
     const std::size_t undoDepth =
         controller->undoDepth();
@@ -6031,6 +6035,10 @@ void GuiSmokeTests::keepsPopupClipboardActionsLocal()
     paste->trigger();
     QCOMPARE(tagSearch->text(),
              QStringLiteral("tag-filter"));
+    tagSearch->setSelection(3, 7);
+    QTest::keyClick(tagSearch, Qt::Key_Delete);
+    QCOMPARE(tagSearch->text(),
+             QStringLiteral("tag"));
     QCOMPARE(registers->model()->index(0, 10)
                  .data().toString(),
              originalTags);
@@ -6056,6 +6064,23 @@ void GuiSmokeTests::keepsPopupClipboardActionsLocal()
     QCOMPARE(QApplication::activePopupWidget(),
              tagPopup);
     QVERIFY(tagOptions->hasFocus());
+    bool tagDeleteDialogSeen = false;
+    QTimer::singleShot(0, &window, [&] {
+        if (auto* dialog =
+                qobject_cast<QMessageBox*>(
+                    QApplication::activeModalWidget())) {
+            tagDeleteDialogSeen = true;
+            dialog->reject();
+        }
+    });
+    remove->trigger();
+    QTest::qWait(50);
+    QVERIFY(!tagDeleteDialogSeen);
+    QVERIFY(regmap::findRegister(
+                *controller->workspace(), "reg-status") !=
+            nullptr);
+    QCOMPARE(controller->undoDepth(), undoDepth);
+    QCOMPARE(QApplication::activePopupWidget(), tagPopup);
     tagPopup->close();
     QTRY_VERIFY_WITH_TIMEOUT(
         QApplication::activePopupWidget() == nullptr, 2000);
@@ -6097,6 +6122,23 @@ void GuiSmokeTests::keepsPopupClipboardActionsLocal()
     QCOMPARE(QApplication::activePopupWidget(),
              accessPopup);
     QVERIFY(accessOptions->hasFocus());
+    bool accessDeleteDialogSeen = false;
+    QTimer::singleShot(0, &window, [&] {
+        if (auto* dialog =
+                qobject_cast<QMessageBox*>(
+                    QApplication::activeModalWidget())) {
+            accessDeleteDialogSeen = true;
+            dialog->reject();
+        }
+    });
+    remove->trigger();
+    QTest::qWait(50);
+    QVERIFY(!accessDeleteDialogSeen);
+    QVERIFY(regmap::findRegister(
+                *controller->workspace(), "reg-status") !=
+            nullptr);
+    QCOMPARE(controller->undoDepth(), undoDepth);
+    QCOMPARE(QApplication::activePopupWidget(), accessPopup);
     accessPopup->close();
     QTRY_VERIFY_WITH_TIMEOUT(
         QApplication::activePopupWidget() == nullptr, 2000);
@@ -6120,9 +6162,13 @@ void GuiSmokeTests::editsFieldAccessFromConstrainedChoices()
     auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
     auto* fields = window.findChild<QTableView*>(QStringLiteral("fieldView"));
     auto* controller = window.findChild<ProjectController*>();
+    auto* remove =
+        window.findChild<QAction*>(
+            QStringLiteral("deleteSelectionAction"));
     QVERIFY(registers != nullptr);
     QVERIFY(fields != nullptr);
     QVERIFY(controller != nullptr);
+    QVERIFY(remove != nullptr);
 
     Q_EMIT registers->clicked(registers->model()->index(0, 5));
     QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
@@ -6159,6 +6205,25 @@ void GuiSmokeTests::editsFieldAccessFromConstrainedChoices()
     QVERIFY(!editor->isEditable());
 
     const std::size_t undoDepth = controller->undoDepth();
+    editor->setFocus(Qt::OtherFocusReason);
+    bool deleteDialogSeen = false;
+    QTimer::singleShot(0, &window, [&] {
+        if (auto* dialog =
+                qobject_cast<QMessageBox*>(
+                    QApplication::activeModalWidget())) {
+            deleteDialogSeen = true;
+            dialog->reject();
+        }
+    });
+    remove->trigger();
+    QTest::qWait(50);
+    QVERIFY(!deleteDialogSeen);
+    QVERIFY(regmap::findField(
+                *controller->workspace(), "field-ready") !=
+            nullptr);
+    QCOMPARE(controller->undoDepth(), undoDepth);
+    QVERIFY(editor->hasFocus());
+
     editor->setCurrentText(QStringLiteral("NONE"));
     Q_EMIT editor->activated(editor->currentIndex());
     QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(0, 8).data().toString(),

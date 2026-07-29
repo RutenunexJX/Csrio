@@ -2535,6 +2535,8 @@ void MainWindow::buildActions()
     connect(addEnumAction, &QAction::triggered, this, &MainWindow::addEnumValue);
 
     deleteAction_ = new QAction(QStringLiteral("Delete Selected Object"), this);
+    deleteAction_->setObjectName(
+        QStringLiteral("deleteSelectionAction"));
     deleteAction_->setShortcut(QKeySequence::Delete);
     deleteAction_->setEnabled(false);
     connect(deleteAction_, &QAction::triggered, this, &MainWindow::deleteSelection);
@@ -7491,21 +7493,27 @@ void MainWindow::moveField(const std::string& fieldId, std::uint32_t lsb, std::u
 void MainWindow::deleteSelection()
 {
     const QWidget* focus = QApplication::focusWidget();
-    const auto focusInside = [focus](const QWidget* widget) {
-        return focus == widget || (focus != nullptr && widget->isAncestorOf(focus));
-    };
+    if (qobject_cast<const QLineEdit*>(focus) != nullptr ||
+        qobject_cast<const QComboBox*>(focus) != nullptr) {
+        return;
+    }
     std::string id;
-    const bool deletingEnumValue = focusInside(enumView_);
+    const bool deletingEnumValue =
+        focusBelongsToWidgetOutsidePopup(focus, enumView_);
     if (deletingEnumValue) {
         id = enumView_->currentIndex().data(objectIdRole).toString().toUtf8().toStdString();
-    } else if (focusInside(fieldView_) || focusInside(bitfieldView_)) {
+    } else if (
+        focusBelongsToWidgetOutsidePopup(focus, fieldView_) ||
+        focusBelongsToWidgetOutsidePopup(focus, bitfieldView_)) {
         id = selectedFieldId_;
-    } else if (focusInside(registerView_)) {
+    } else if (
+        focusBelongsToWidgetOutsidePopup(focus, registerView_)) {
         if (!selectedRegisterId_.empty()) {
             deleteSelectedRegisterAndShift();
         }
         return;
-    } else if (focusInside(hierarchyView_)) {
+    } else if (
+        focusBelongsToWidgetOutsidePopup(focus, hierarchyView_)) {
         id = !selectedBlockId_.empty() ? selectedBlockId_ : selectedAddressId_;
     } else {
         statusBar()->showMessage(

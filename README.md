@@ -84,8 +84,8 @@ Workspace -> Page (Address Space) -> Register Block -> Register -> Field -> Enum
 - Global `Ctrl+F` search across pages, blocks, register/field names, addresses, tags, enum values,
   and descriptions; Enter/F3 cycles results and selects the matching Workbench object.
 - Spreadsheet-style cell selection plus tab-separated copy and paste for editable table cells.
-  Popup text inputs retain normal text copy and paste, while Tag/Access choice lists cannot
-  redirect clipboard commands into the underlying table.
+  Popup text inputs retain normal text editing, while Tag/Access choice lists cannot redirect
+  copy, paste, or Delete into the underlying table.
 - `Ctrl+D` duplicates the current Register or Field only while its table (or active cell editor)
   has focus. It commits a valid in-place edit before copying, rejects an invalid edit without
   creating a copy, and never acts from Tag/Access popups, search, navigation, Enum, or result
