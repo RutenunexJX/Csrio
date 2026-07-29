@@ -1877,6 +1877,34 @@ void GuiSmokeTests::preservesHierarchyExpansionAcrossRefresh()
     QVERIFY(hierarchy != nullptr);
     QVERIFY(controller != nullptr);
 
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral(
+            "Create large hierarchy fixture"),
+        [](regmap::Workspace& workspace) {
+            for (int index = 0; index < 36; ++index) {
+                regmap::AddressSpace page;
+                page.id =
+                    "space-extra-" +
+                    std::to_string(index);
+                page.name =
+                    "EXTRA_PAGE_" +
+                    std::to_string(index);
+                page.baseAddress =
+                    static_cast<std::uint64_t>(
+                        index + 1) *
+                    UINT64_C(0x100000);
+                page.addressWidth = 32;
+                workspace.addressSpaces.push_back(
+                    std::move(page));
+            }
+        }));
+    QVERIFY(regmap::validateWorkspace(
+                *controller->workspace())
+                .empty());
+    controller->save();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !controller->isDirty(), 5000);
+
     QModelIndex root =
         hierarchyIndexByObjectId(
             hierarchy->model(),
@@ -1892,6 +1920,15 @@ void GuiSmokeTests::preservesHierarchyExpansionAcrossRefresh()
 
     hierarchy->setExpanded(page, false);
     QVERIFY(!hierarchy->isExpanded(page));
+    hierarchy->setCurrentIndex(root);
+    QVERIFY(
+        hierarchy->verticalScrollBar()->maximum() > 0);
+    hierarchy->verticalScrollBar()->setValue(
+        hierarchy->verticalScrollBar()->maximum() / 2);
+    const int hierarchyScroll =
+        hierarchy->verticalScrollBar()->value();
+    QVERIFY(hierarchyScroll > 0);
+
     QVERIFY(controller->editWorkspace(
         QStringLiteral(
             "Exercise hierarchy refresh"),
@@ -1910,6 +1947,9 @@ void GuiSmokeTests::preservesHierarchyExpansionAcrossRefresh()
             .isValid(),
         2000);
     QVERIFY(!hierarchy->isExpanded(page));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        hierarchy->verticalScrollBar()->value(),
+        hierarchyScroll, 2000);
 
     controller->undo();
     QTRY_VERIFY_WITH_TIMEOUT(
@@ -1919,6 +1959,9 @@ void GuiSmokeTests::preservesHierarchyExpansionAcrossRefresh()
         QStringLiteral("space-main"));
     QVERIFY(page.isValid());
     QVERIFY(!hierarchy->isExpanded(page));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        hierarchy->verticalScrollBar()->value(),
+        hierarchyScroll, 2000);
 
     controller->reload();
     QTRY_VERIFY_WITH_TIMEOUT(
@@ -1928,6 +1971,9 @@ void GuiSmokeTests::preservesHierarchyExpansionAcrossRefresh()
             .isValid(),
         2000);
     QVERIFY(!hierarchy->isExpanded(page));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        hierarchy->verticalScrollBar()->value(),
+        hierarchyScroll, 2000);
 
     QVERIFY(window.openProjectPath(secondManifest));
     QTRY_VERIFY_WITH_TIMEOUT(

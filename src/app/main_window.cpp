@@ -3610,6 +3610,9 @@ void MainWindow::populateHierarchy()
         hierarchyInitialized_;
     std::set<std::string> expandedObjects;
     QString previousCurrentObject;
+    const int previousVerticalScroll =
+        restoreExpansion
+            ? hierarchyView_->verticalScrollBar()->value() : 0;
     if (restoreExpansion) {
         previousCurrentObject =
             hierarchyView_->currentIndex()
@@ -3726,6 +3729,9 @@ void MainWindow::populateHierarchy()
                 hierarchyView_->setExpanded(parent, true);
             }
             hierarchyView_->scrollTo(selected);
+        } else if (restoreExpansion) {
+            hierarchyView_->verticalScrollBar()->setValue(
+                previousVerticalScroll);
         }
     }
     hierarchyInitialized_ = true;
