@@ -38,6 +38,7 @@ public:
     explicit MainWindow(QWidget* parent = nullptr);
 
     bool openProjectPath(const QString& path);
+    bool openStartupProjectPath(const QString& path);
 
 private:
     enum DataRole {

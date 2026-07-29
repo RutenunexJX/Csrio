@@ -20,7 +20,7 @@ int main(int argumentCount, char* arguments[])
     if (values.size() > 1) {
         const QString projectPath = values[1];
         QTimer::singleShot(0, &window, [&window, projectPath] {
-            window.openProjectPath(projectPath);
+            window.openStartupProjectPath(projectPath);
         });
     }
 

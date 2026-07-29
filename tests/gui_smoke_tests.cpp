@@ -96,6 +96,7 @@ private slots:
     void retainsCurrentProjectWhenReplacementCannotLoad();
     void retainsCurrentProjectWhenCreationFails();
     void reportsExplicitOpenFailure();
+    void opensStartupProjectWithFeedbackAndHistory();
     void reloadsProjectWithoutLosingFieldWorkspaceContext();
     void confirmsDiscardBeforeReloadingDirtyProject();
     void protectsUnsavedChangesWhenClosing();
@@ -176,6 +177,7 @@ public:
             application);
         QSettings settings;
         settings.remove(QStringLiteral("ui"));
+        settings.remove(QStringLiteral("projects"));
         settings.sync();
     }
 
@@ -183,6 +185,7 @@ public:
     {
         QSettings settings;
         settings.remove(QStringLiteral("ui"));
+        settings.remove(QStringLiteral("projects"));
         settings.sync();
         QCoreApplication::setOrganizationName(
             organization_);
@@ -3022,6 +3025,92 @@ void GuiSmokeTests::reportsExplicitOpenFailure()
 
     makeGeneratedFilesWritable(
         root.filePath(QStringLiteral("current")));
+}
+
+void GuiSmokeTests::opensStartupProjectWithFeedbackAndHistory()
+{
+    QApplication::setAttribute(Qt::AA_DontUseNativeDialogs, true);
+    SettingsScope settingsScope(
+        QStringLiteral("StartupProjectOpenTest"));
+
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString validManifest =
+        directory.filePath(QStringLiteral("valid.regmap.yaml"));
+    const QString brokenManifest =
+        directory.filePath(QStringLiteral("broken.regmap.yaml"));
+    createProject(validManifest);
+    QFile brokenFile(brokenManifest);
+    QVERIFY(brokenFile.open(
+        QIODevice::WriteOnly | QIODevice::Text |
+        QIODevice::Truncate));
+    const QByteArray brokenText("schema_version: [\n");
+    QCOMPARE(brokenFile.write(brokenText), brokenText.size());
+    brokenFile.close();
+
+    MainWindow validWindow;
+    validWindow.resize(1100, 720);
+    validWindow.show();
+    QVERIFY(validWindow.openStartupProjectPath(validManifest));
+
+    auto* validController =
+        validWindow.findChild<ProjectController*>();
+    QVERIFY(validController != nullptr);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        validController->manifestPath(),
+        std::filesystem::path(
+            validManifest.toStdWString()), 2000);
+
+    QSettings settings;
+    settings.sync();
+    const QString normalizedValid =
+        QDir::cleanPath(
+            QFileInfo(validManifest).absoluteFilePath());
+    const QStringList recentProjects =
+        settings.value(QStringLiteral("projects/recent"))
+            .toStringList();
+    QCOMPARE(recentProjects.size(), 1);
+    QCOMPARE(recentProjects.front(), normalizedValid);
+
+    MainWindow brokenWindow;
+    brokenWindow.resize(1100, 720);
+    brokenWindow.show();
+    bool errorSeen = false;
+    bool recoveryDescribed = false;
+    QTimer::singleShot(0, &brokenWindow, [&] {
+        auto* dialog = qobject_cast<QMessageBox*>(
+            QApplication::activeModalWidget());
+        if (dialog == nullptr) {
+            return;
+        }
+        errorSeen = true;
+        recoveryDescribed =
+            dialog->windowTitle() ==
+                QStringLiteral("Open Project") &&
+            dialog->icon() == QMessageBox::Critical &&
+            dialog->text().contains(
+                QStringLiteral("broken.regmap.yaml")) &&
+            dialog->text().contains(
+                QStringLiteral("Cannot parse manifest"));
+        QTest::mouseClick(
+            dialog->button(QMessageBox::Ok), Qt::LeftButton);
+    });
+    QVERIFY(!brokenWindow.openStartupProjectPath(
+        brokenManifest));
+    QVERIFY(errorSeen);
+    QVERIFY(recoveryDescribed);
+
+    auto* brokenController =
+        brokenWindow.findChild<ProjectController*>();
+    QVERIFY(brokenController != nullptr);
+    QVERIFY(brokenController->workspace() == nullptr);
+    settings.sync();
+    QCOMPARE(
+        settings.value(QStringLiteral("projects/recent"))
+            .toStringList(),
+        recentProjects);
+
+    makeGeneratedFilesWritable(directory.path());
 }
 
 void GuiSmokeTests::reloadsProjectWithoutLosingFieldWorkspaceContext()

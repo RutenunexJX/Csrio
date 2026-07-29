@@ -376,10 +376,21 @@ void ProjectController::reloadImpl(bool automatic, regmap::ProjectOpenResult* pr
     rebuildDiagnostics();
     refreshWatchPaths();
     emit diagnosticsChanged();
+    const auto firstError = std::ranges::find_if(
+        loadDiagnostics_, [](const regmap::Diagnostic& diagnostic) {
+            return diagnostic.severity ==
+                regmap::DiagnosticSeverity::error;
+        });
+    const QString fileName =
+        QFileInfo(fromPath(manifestPath_)).fileName();
+    const QString detail = firstError == loadDiagnostics_.end()
+        ? QString {}
+        : QStringLiteral(": %1").arg(fromUtf8(firstError->message));
     emit syncStatusChanged(
         lastAcceptedModelWasValid_
             ? QStringLiteral("Synchronization rejected; retaining the last loadable model")
-            : QStringLiteral("Project contains structural errors"));
+            : QStringLiteral("Could not open %1%2; no project loaded")
+                  .arg(fileName, detail));
 }
 
 void ProjectController::initializeSynchronization()

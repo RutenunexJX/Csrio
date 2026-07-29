@@ -3345,6 +3345,16 @@ bool MainWindow::openProjectPath(const QString& path)
     return controller_.openProject(path);
 }
 
+bool MainWindow::openStartupProjectPath(const QString& path)
+{
+    if (!openProjectPath(path)) {
+        reportProjectOpenFailure();
+        return false;
+    }
+    rememberRecentProject(fromPath(controller_.manifestPath()));
+    return true;
+}
+
 void MainWindow::reportProjectOpenFailure()
 {
     const QString detail =
