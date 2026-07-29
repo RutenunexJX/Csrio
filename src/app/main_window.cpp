@@ -4229,7 +4229,7 @@ void MainWindow::refreshGenerated()
         {QStringLiteral("Target"), QStringLiteral("Path"), QStringLiteral("Status"),
          QStringLiteral("Updated")});
     const auto& artifacts = controller_.artifacts();
-    bool retryNeeded = false;
+    int retryCount = 0;
     const bool modelDirty = controller_.isDirty();
     for (std::size_t index = 0; index < artifacts.size(); ++index) {
         const auto& artifact = artifacts[index];
@@ -4248,12 +4248,15 @@ void MainWindow::refreshGenerated()
         QString status = QStringLiteral("Synchronized");
         if (!failure.isEmpty()) {
             status = QStringLiteral("Failed");
-            retryNeeded = true;
+            ++retryCount;
         } else if (!information.exists()) {
             status = QStringLiteral("Missing");
-            retryNeeded = true;
+            ++retryCount;
         } else if (modelDirty) {
             status = QStringLiteral("Out of date");
+        } else if (!controller_.generatedArtifactIsCurrent(index)) {
+            status = QStringLiteral("Externally changed");
+            ++retryCount;
         }
         auto* statusItem = item(status);
         if (!failure.isEmpty()) {
@@ -4264,8 +4267,14 @@ void MainWindow::refreshGenerated()
         } else if (status == QStringLiteral("Out of date")) {
             statusItem->setToolTip(
                 QStringLiteral("Save & Sync to update this output."));
+        } else if (status == QStringLiteral("Externally changed")) {
+            statusItem->setToolTip(
+                QStringLiteral(
+                    "This read-only output differs from the saved "
+                    "Workbench model; use Retry outputs to restore it."));
         }
-        if (status == QStringLiteral("Out of date")) {
+        if (status == QStringLiteral("Out of date") ||
+            status == QStringLiteral("Externally changed")) {
             statusItem->setForeground(
                 QColor(QStringLiteral("#8A5A00")));
         } else if (status != QStringLiteral("Synchronized")) {
@@ -4277,10 +4286,14 @@ void MainWindow::refreshGenerated()
                       ? information.lastModified().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"))
                       : QStringLiteral("—"))});
     }
+    generatedOutputsNeedingRetry_ = retryCount;
     generatedView_->resizeColumnsToContents();
     tabs_->setTabText(1, QStringLiteral("Generated (%1)").arg(artifacts.size()));
     retryOutputsButton_->setVisible(
-        retryNeeded && !modelDirty);
+        retryCount > 0 && !modelDirty);
+    if (retryCount > 0 && !modelDirty) {
+        tabs_->setCurrentIndex(1);
+    }
     updateBottomPanelVisibility();
     updateSyncPresentation();
 }
@@ -4400,6 +4413,15 @@ void MainWindow::updateSyncPresentation(const QString& message)
     } else if (outputFailure) {
         state = QStringLiteral("partial");
         text = QStringLiteral("Saved · output failed");
+    } else if (generatedOutputsNeedingRetry_ > 0) {
+        state = QStringLiteral("partial");
+        text =
+            generatedOutputsNeedingRetry_ == 1
+                ? QStringLiteral(
+                      "Saved · 1 output needs regeneration")
+                : QStringLiteral(
+                      "Saved · %1 outputs need regeneration")
+                      .arg(generatedOutputsNeedingRetry_);
     } else if (busy) {
         state = QStringLiteral("busy");
         text = QStringLiteral("Synchronizing…");
@@ -4409,7 +4431,14 @@ void MainWindow::updateSyncPresentation(const QString& message)
     }
 
     syncStateLabel_->setText(text);
-    syncStateLabel_->setToolTip(lastSyncMessage_);
+    syncStateLabel_->setToolTip(
+        generatedOutputsNeedingRetry_ > 0 &&
+                !controller_.isDirty() && !outputFailure
+            ? QStringLiteral(
+                  "One or more read-only outputs differ from the "
+                  "saved Workbench model. Open Generated and use "
+                  "Retry outputs.")
+            : lastSyncMessage_);
     if (syncStateLabel_->property("state").toString() != state) {
         syncStateLabel_->setProperty("state", state);
         syncStateLabel_->style()->unpolish(syncStateLabel_);

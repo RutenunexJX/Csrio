@@ -129,6 +129,7 @@ private slots:
     void insertsRegisterBetweenRows();
     void showsUnifiedSyncStateAndGeneratedResults();
     void restoresGeneratedStateWhenUndoReturnsToSavedModel();
+    void detectsExternallyChangedGeneratedOutputs();
     void reportsBlockedUnsavedSyncAndRecovers();
     void searchesAndNavigatesProblems();
     void refreshesSearchResultsAfterModelChanges();
@@ -8113,6 +8114,143 @@ void GuiSmokeTests::restoresGeneratedStateWhenUndoReturnsToSavedModel()
 
     controller->undo();
     QTRY_VERIFY_WITH_TIMEOUT(!controller->isDirty(), 2000);
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::detectsExternallyChangedGeneratedOutputs()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest =
+        directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createProject(manifest);
+
+    MainWindow window;
+    QVERIFY(window.openProjectPath(manifest));
+    window.resize(1200, 760);
+    window.show();
+    QTest::qWait(50);
+
+    auto* state =
+        window.findChild<QLabel*>(
+            QStringLiteral("syncStateBadge"));
+    auto* generated =
+        window.findChild<QTableView*>(
+            QStringLiteral("generatedView"));
+    auto* retry =
+        window.findChild<QPushButton*>(
+            QStringLiteral("retryOutputsButton"));
+    auto* tabs =
+        window.findChild<QTabWidget*>(
+            QStringLiteral("resultTabs"));
+    auto* controller =
+        window.findChild<ProjectController*>();
+    QVERIFY(state != nullptr);
+    QVERIFY(generated != nullptr);
+    QVERIFY(retry != nullptr);
+    QVERIFY(tabs != nullptr);
+    QVERIFY(controller != nullptr);
+
+    QTRY_COMPARE_WITH_TIMEOUT(
+        generated->model()->rowCount(), 3, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        state->text().startsWith(
+            QStringLiteral("Synchronized")),
+        2000);
+
+    const auto markdown =
+        std::ranges::find_if(
+            controller->artifacts(),
+            [](const regmap::GeneratedArtifact& artifact) {
+                return artifact.kind ==
+                    regmap::GenerationTargetKind::markdown;
+            });
+    QVERIFY(markdown != controller->artifacts().end());
+    const QString markdownPath =
+        QString::fromStdWString(markdown->path.wstring());
+    const QByteArray expectedMarkdown(
+        markdown->content.data(),
+        static_cast<qsizetype>(markdown->content.size()));
+    QVERIFY(QFile::setPermissions(
+        markdownPath,
+        QFile::permissions(markdownPath) |
+            QFileDevice::WriteOwner));
+    QFile modifiedMarkdown(markdownPath);
+    QVERIFY(modifiedMarkdown.open(
+        QIODevice::WriteOnly |
+        QIODevice::Truncate));
+    QCOMPARE(
+        modifiedMarkdown.write(
+            QByteArrayLiteral("# external edit\n")),
+        qint64{16});
+    modifiedMarkdown.close();
+
+    QTRY_VERIFY_WITH_TIMEOUT(
+        state->text().contains(
+            QStringLiteral("1 output needs regeneration")),
+        5000);
+    int markdownRow = -1;
+    for (int row = 0;
+         row < generated->model()->rowCount(); ++row) {
+        if (generated->model()->index(row, 0)
+                .data().toString() ==
+            QStringLiteral("markdown")) {
+            markdownRow = row;
+            break;
+        }
+    }
+    QVERIFY(markdownRow >= 0);
+    QCOMPARE(
+        generated->model()->index(markdownRow, 2)
+            .data().toString(),
+        QStringLiteral("Externally changed"));
+    QVERIFY(
+        generated->model()->index(markdownRow, 2)
+            .data(Qt::ToolTipRole).toString()
+            .contains(QStringLiteral("Retry outputs")));
+    QVERIFY(retry->isVisible());
+    QCOMPARE(tabs->currentIndex(), 1);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("changed outside Workbench")));
+
+    QTest::mouseClick(retry, Qt::LeftButton);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        state->text().startsWith(
+            QStringLiteral("Synchronized")),
+        5000);
+    QTRY_VERIFY_WITH_TIMEOUT(retry->isHidden(), 2000);
+    QCOMPARE(
+        generated->model()->index(markdownRow, 2)
+            .data().toString(),
+        QStringLiteral("Synchronized"));
+    QFile restoredMarkdown(markdownPath);
+    QVERIFY(restoredMarkdown.open(
+        QIODevice::ReadOnly | QIODevice::Text));
+    QCOMPARE(restoredMarkdown.readAll(), expectedMarkdown);
+    restoredMarkdown.close();
+
+    QVERIFY(QFile::setPermissions(
+        markdownPath,
+        QFile::permissions(markdownPath) |
+            QFileDevice::WriteOwner));
+    QVERIFY(QFile::remove(markdownPath));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        generated->model()->index(markdownRow, 2)
+            .data().toString(),
+        QStringLiteral("Missing"), 5000);
+    QTRY_VERIFY_WITH_TIMEOUT(retry->isVisible(), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        state->text().contains(
+            QStringLiteral("1 output needs regeneration")),
+        2000);
+
+    QTest::mouseClick(retry, Qt::LeftButton);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        generated->model()->index(markdownRow, 2)
+            .data().toString() ==
+            QStringLiteral("Synchronized"),
+        5000);
+    QVERIFY(QFileInfo::exists(markdownPath));
     makeGeneratedFilesWritable(directory.path());
 }
 

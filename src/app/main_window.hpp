@@ -141,6 +141,7 @@ private:
     QString searchQuery_;
     std::vector<std::string> searchResults_;
     int searchResultIndex_{-1};
+    int generatedOutputsNeedingRetry_{0};
 
     void buildUi();
     void buildActions();

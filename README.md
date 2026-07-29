@@ -92,6 +92,8 @@ Workspace -> Page (Address Space) -> Register Block -> Register -> Field -> Enum
 - Per-output status and update time for XLSX, C header, and Markdown, with a direct retry action.
   Unsaved edits keep these rows visible as **Out of date**; Undo back to the saved model restores
   **Synchronized** without rewriting unchanged files.
+  External edits or deletion of these read-only files are detected automatically and surfaced in
+  **Generated** with a direct retry path.
 - Global `Ctrl+F` search across pages, blocks, register/field names, addresses, tags, enum values,
   and descriptions; Enter/F3 cycles results and selects the matching Workbench object.
 - Spreadsheet-style cell selection plus tab-separated copy and paste for editable table cells.

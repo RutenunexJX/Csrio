@@ -4,6 +4,8 @@
 #include "regmap/core/rtl_sync.hpp"
 #include "regmap/core/serialization.hpp"
 
+#include <QByteArray>
+#include <QFile>
 #include <QFileInfo>
 #include <QUuid>
 
@@ -73,16 +75,28 @@ ProjectController::ProjectController(QObject* parent)
 {
     stabilityTimer_.setSingleShot(true);
     stabilityTimer_.setInterval(350);
+    generatedFileRefreshTimer_.setSingleShot(true);
+    generatedFileRefreshTimer_.setInterval(350);
     connect(
         &watcher_,
         &QFileSystemWatcher::fileChanged,
         this,
         &ProjectController::onWatchedFileChanged);
     connect(
+        &watcher_,
+        &QFileSystemWatcher::directoryChanged,
+        this,
+        &ProjectController::onWatchedDirectoryChanged);
+    connect(
         &stabilityTimer_,
         &QTimer::timeout,
         this,
         &ProjectController::checkPendingFiles);
+    connect(
+        &generatedFileRefreshTimer_,
+        &QTimer::timeout,
+        this,
+        &ProjectController::refreshGeneratedFileState);
 }
 
 bool ProjectController::createProject(const QString& manifestPath)
@@ -179,6 +193,38 @@ const std::vector<regmap::Diagnostic>& ProjectController::diagnostics() const no
 const std::vector<regmap::GeneratedArtifact>& ProjectController::artifacts() const noexcept
 {
     return artifacts_;
+}
+
+bool ProjectController::generatedArtifactIsCurrent(
+    std::size_t index) const
+{
+    if (index >= artifacts_.size()) {
+        return false;
+    }
+    const auto& artifact = artifacts_[index];
+    QFile file(fromPath(artifact.path));
+    const QIODevice::OpenMode mode =
+        artifact.isBinary()
+            ? QIODevice::ReadOnly
+            : QIODevice::ReadOnly | QIODevice::Text;
+    if (!file.open(mode)) {
+        return false;
+    }
+    const QByteArray expected =
+        artifact.isBinary()
+            ? QByteArray(
+                  reinterpret_cast<const char*>(
+                      artifact.binaryContent.data()),
+                  static_cast<qsizetype>(
+                      artifact.binaryContent.size()))
+            : QByteArray(
+                  artifact.content.data(),
+                  static_cast<qsizetype>(artifact.content.size()));
+    if (artifact.isBinary() &&
+        file.size() != expected.size()) {
+        return false;
+    }
+    return file.readAll() == expected;
 }
 
 const std::vector<regmap::ModelChange>& ProjectController::changes() const noexcept
@@ -681,6 +727,9 @@ bool ProjectController::persistSynchronizedModel()
     if (!watcher_.files().isEmpty()) {
         watcher_.removePaths(watcher_.files());
     }
+    if (!watcher_.directories().isEmpty()) {
+        watcher_.removePaths(watcher_.directories());
+    }
     syncDiagnostics_.clear();
     appendDiagnostics(
         syncDiagnostics_, regmap::saveProjectFile(*manifest_, *store_.workspace()));
@@ -795,16 +844,35 @@ void ProjectController::refreshWatchPaths()
     if (!watcher_.files().isEmpty()) {
         watcher_.removePaths(watcher_.files());
     }
+    if (!watcher_.directories().isEmpty()) {
+        watcher_.removePaths(watcher_.directories());
+    }
 
-    QStringList paths;
+    QStringList files;
+    QStringList directories;
     if (manifest_) {
         const QString rtlFile = fromPath(manifest_->rtl.path.resolved);
-        if (QFileInfo::exists(rtlFile) && !paths.contains(rtlFile)) {
-            paths.push_back(rtlFile);
+        if (QFileInfo::exists(rtlFile) && !files.contains(rtlFile)) {
+            files.push_back(rtlFile);
         }
     }
-    if (!paths.empty()) {
-        watcher_.addPaths(paths);
+    for (const auto& artifact : artifacts_) {
+        const QString outputFile = fromPath(artifact.path);
+        const QFileInfo information(outputFile);
+        if (information.exists() && !files.contains(outputFile)) {
+            files.push_back(outputFile);
+        }
+        const QString directory = information.absolutePath();
+        if (QFileInfo(directory).isDir() &&
+            !directories.contains(directory)) {
+            directories.push_back(directory);
+        }
+    }
+    if (!files.empty()) {
+        watcher_.addPaths(files);
+    }
+    if (!directories.empty()) {
+        watcher_.addPaths(directories);
     }
 }
 
@@ -819,13 +887,28 @@ void ProjectController::notifyModelEdited()
     emit generationChanged();
     emit editStateChanged();
     if (!store_.dirty()) {
-        emit syncStatusChanged(
-            containsErrors(generationDiagnostics_)
-                ? QStringLiteral(
-                      "Saved model restored; one or more read-only outputs "
-                      "remain failed")
-                : QStringLiteral(
-                      "Saved model restored; read-only outputs are current"));
+        if (containsErrors(generationDiagnostics_)) {
+            emit syncStatusChanged(
+                QStringLiteral(
+                    "Saved model restored; one or more read-only outputs "
+                    "remain failed"));
+        } else {
+            bool outputsCurrent = true;
+            for (std::size_t index = 0;
+                 index < artifacts_.size(); ++index) {
+                if (!generatedArtifactIsCurrent(index)) {
+                    outputsCurrent = false;
+                    break;
+                }
+            }
+            emit syncStatusChanged(
+                outputsCurrent
+                    ? QStringLiteral(
+                          "Saved model restored; read-only outputs are current")
+                    : QStringLiteral(
+                          "Saved model restored; one or more read-only "
+                          "outputs need regeneration"));
+        }
     } else {
         emit syncStatusChanged(
             hasProjectErrors()
@@ -847,11 +930,52 @@ std::filesystem::path ProjectController::baselinePath() const
 
 void ProjectController::onWatchedFileChanged(const QString& path)
 {
+    const bool generatedOutput =
+        std::ranges::any_of(
+            artifacts_, [&](const regmap::GeneratedArtifact& artifact) {
+                return fromPath(artifact.path) == path;
+            });
+    if (generatedOutput) {
+        generatedFileRefreshTimer_.start();
+        return;
+    }
     pendingFiles_.insert(path);
     fileSnapshots_.remove(path);
     stabilityAttempts_ = 0;
     emit syncStatusChanged(QStringLiteral("Waiting for the saved editable file to become stable..."));
     stabilityTimer_.start();
+}
+
+void ProjectController::onWatchedDirectoryChanged(
+    const QString&)
+{
+    if (!artifacts_.empty()) {
+        generatedFileRefreshTimer_.start();
+    }
+}
+
+void ProjectController::refreshGeneratedFileState()
+{
+    refreshWatchPaths();
+    std::size_t changedCount = 0;
+    for (std::size_t index = 0;
+         index < artifacts_.size(); ++index) {
+        if (!generatedArtifactIsCurrent(index)) {
+            ++changedCount;
+        }
+    }
+    emit generationChanged();
+    if (changedCount == 0) {
+        return;
+    }
+    emit syncStatusChanged(
+        store_.dirty()
+            ? QStringLiteral(
+                  "Read-only output changed outside Workbench; "
+                  "Save & Sync will replace it with current Workbench data")
+            : QStringLiteral(
+                  "Read-only output changed outside Workbench; "
+                  "use Retry outputs to restore it"));
 }
 
 void ProjectController::checkPendingFiles()

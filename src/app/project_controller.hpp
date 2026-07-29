@@ -37,6 +37,8 @@ public:
     [[nodiscard]] const regmap::Workspace* workspace() const noexcept;
     [[nodiscard]] const std::vector<regmap::Diagnostic>& diagnostics() const noexcept;
     [[nodiscard]] const std::vector<regmap::GeneratedArtifact>& artifacts() const noexcept;
+    [[nodiscard]] bool generatedArtifactIsCurrent(
+        std::size_t index) const;
     [[nodiscard]] const std::vector<regmap::ModelChange>& changes() const noexcept;
     [[nodiscard]] const std::filesystem::path& manifestPath() const noexcept;
     [[nodiscard]] bool hasProjectErrors() const noexcept;
@@ -76,11 +78,14 @@ signals:
 
 private slots:
     void onWatchedFileChanged(const QString& path);
+    void onWatchedDirectoryChanged(const QString& path);
     void checkPendingFiles();
+    void refreshGeneratedFileState();
 
 private:
     QFileSystemWatcher watcher_;
     QTimer stabilityTimer_;
+    QTimer generatedFileRefreshTimer_;
     QSet<QString> pendingFiles_;
     QHash<QString, std::pair<qint64, QDateTime>> fileSnapshots_;
     int stabilityAttempts_ {0};
