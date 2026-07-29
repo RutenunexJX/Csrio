@@ -2531,6 +2531,20 @@ void MainWindow::buildActions()
     pasteAction_->setShortcut(QKeySequence::Paste);
     connect(pasteAction_, &QAction::triggered, this, &MainWindow::pasteSelection);
 
+    duplicateAction_ =
+        new QAction(QStringLiteral("Duplicate Register / Field"), this);
+    duplicateAction_->setObjectName(
+        QStringLiteral("duplicateSelectionAction"));
+    duplicateAction_->setShortcut(
+        QKeySequence(QStringLiteral("Ctrl+D")));
+    duplicateAction_->setShortcutContext(
+        Qt::WidgetWithChildrenShortcut);
+    duplicateAction_->setEnabled(false);
+    registerView_->addAction(duplicateAction_);
+    fieldView_->addAction(duplicateAction_);
+    connect(duplicateAction_, &QAction::triggered,
+            this, &MainWindow::duplicateFocusedObject);
+
     auto* findAction = new QAction(QStringLiteral("Find"), this);
     findAction->setShortcut(QKeySequence::Find);
     connect(findAction, &QAction::triggered, this, [this] {
@@ -2573,6 +2587,7 @@ void MainWindow::buildActions()
     editMenu->addSeparator();
     editMenu->addAction(copyAction_);
     editMenu->addAction(pasteAction_);
+    editMenu->addAction(duplicateAction_);
     editMenu->addSeparator();
     editMenu->addAction(findAction);
     editMenu->addAction(findNextAction);
@@ -6567,6 +6582,71 @@ void MainWindow::closeFields()
         3000);
 }
 
+void MainWindow::duplicateFocusedObject()
+{
+    QWidget* focus = QApplication::focusWidget();
+    const auto focusInside = [focus](const QWidget* widget) {
+        return focus == widget ||
+               (focus != nullptr && widget->isAncestorOf(focus));
+    };
+    const bool fieldFocused = focusInside(fieldView_);
+    const bool registerFocused =
+        !fieldFocused && focusInside(registerView_);
+    QTableView* view =
+        fieldFocused
+            ? fieldView_
+            : (registerFocused ? registerView_ : nullptr);
+    if (view == nullptr) {
+        return;
+    }
+
+    const QModelIndex current = view->currentIndex();
+    const std::string objectId =
+        current.data(objectIdRole).toString().toUtf8().toStdString();
+    if (!current.isValid() ||
+        current.data(addRowRole).toBool() ||
+        objectId.empty()) {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Duplicate skipped: select an existing %1 row")
+                .arg(fieldFocused
+                         ? QStringLiteral("Field")
+                         : QStringLiteral("Register")),
+            5000);
+        return;
+    }
+    if (!commitActiveEditor()) {
+        return;
+    }
+
+    if (fieldFocused) {
+        if (controller_.workspace() == nullptr ||
+            regmap::findField(*controller_.workspace(),
+                              objectId) == nullptr) {
+            statusBar()->showMessage(
+                QStringLiteral(
+                    "Duplicate skipped: the selected Field no longer exists"),
+                5000);
+            return;
+        }
+        selectedFieldId_ = objectId;
+        duplicateSelectedField();
+        return;
+    }
+
+    if (controller_.workspace() == nullptr ||
+        regmap::findRegister(*controller_.workspace(),
+                             objectId) == nullptr) {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Duplicate skipped: the selected Register no longer exists"),
+            5000);
+        return;
+    }
+    selectedRegisterId_ = objectId;
+    duplicateSelectedRegister();
+}
+
 void MainWindow::duplicateSelectedRegister()
 {
     const auto* workspace = controller_.workspace();
@@ -6710,6 +6790,9 @@ void MainWindow::showRegisterContextMenu(const QPoint& position)
     QAction* duplicate =
         menu.addAction(QStringLiteral("Duplicate Register"));
     duplicate->setObjectName(QStringLiteral("duplicateRegisterAction"));
+    duplicate->setShortcut(
+        QKeySequence(QStringLiteral("Ctrl+D")));
+    duplicate->setShortcutContext(Qt::WidgetShortcut);
     QAction* editTags = menu.addAction(QStringLiteral("编辑标签…"));
     menu.addSeparator();
     QAction* reserve = menu.addAction(QStringLiteral("设为 Reserved（保留偏移）"));
@@ -6908,6 +6991,9 @@ void MainWindow::showFieldContextMenu(const QPoint& position)
         menu.addAction(QStringLiteral("Duplicate Field"));
     duplicate->setObjectName(
         QStringLiteral("duplicateFieldAction"));
+    duplicate->setShortcut(
+        QKeySequence(QStringLiteral("Ctrl+D")));
+    duplicate->setShortcutContext(Qt::WidgetShortcut);
     menu.addSeparator();
     QMenu* typeMenu = menu.addMenu(QStringLiteral("设置类型"));
     const std::vector<QString> types{
@@ -8470,6 +8556,7 @@ void MainWindow::updateEditActions()
     const bool hasWorkspace = controller_.workspace() != nullptr;
     saveAction_->setEnabled(hasWorkspace);
     synchronizeAction_->setEnabled(hasWorkspace);
+    duplicateAction_->setEnabled(hasWorkspace);
     useWorkbenchAction_->setEnabled(controller_.hasConflicts());
     useRtlAction_->setEnabled(controller_.hasConflicts());
     undoAction_->setEnabled(controller_.canUndo());

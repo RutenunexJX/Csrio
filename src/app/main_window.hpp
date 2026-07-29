@@ -104,6 +104,7 @@ private:
     QAction* deleteAction_{nullptr};
     QAction* copyAction_{nullptr};
     QAction* pasteAction_{nullptr};
+    QAction* duplicateAction_{nullptr};
     QAction* showAdvancedFieldsAction_{nullptr};
     QMenu* recentProjectsMenu_{nullptr};
 
@@ -199,6 +200,7 @@ private:
     void showHierarchyContextMenu(const QPoint& position);
     void showRegisterContextMenu(const QPoint& position);
     void showFieldContextMenu(const QPoint& position);
+    void duplicateFocusedObject();
     void duplicateSelectedRegister();
     void duplicateSelectedField();
     void convertSelectedRegisterToReserved();

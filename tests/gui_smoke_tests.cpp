@@ -124,6 +124,7 @@ private slots:
     void protectsNumericRangesDuringShapeChanges();
     void duplicatesCompleteRegisterSafely();
     void duplicatesCompleteFieldSafely();
+    void duplicatesFocusedObjectsWithShortcut();
     void confirmsReservedConversionBeforeClearingContent();
     void rejectsAddressEditsThatIntroduceConflicts();
     void rejectsRecoveryEditsThatReplaceAddressProblems();
@@ -8465,6 +8466,227 @@ void GuiSmokeTests::duplicatesCompleteFieldSafely()
 
         makeGeneratedFilesWritable(directory.path());
     }
+}
+
+void GuiSmokeTests::duplicatesFocusedObjectsWithShortcut()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest =
+        directory.filePath(
+            QStringLiteral("duplicate-shortcut.regmap.yaml"));
+    createProject(manifest);
+
+    MainWindow window;
+    QVERIFY(window.openProjectPath(manifest));
+    window.resize(1100, 720);
+    window.show();
+    window.activateWindow();
+    QTest::qWait(50);
+
+    auto* controller =
+        window.findChild<ProjectController*>();
+    auto* registers =
+        window.findChild<QTableView*>(
+            QStringLiteral("registerView"));
+    auto* fields =
+        window.findChild<QTableView*>(
+            QStringLiteral("fieldView"));
+    auto* search =
+        window.findChild<QLineEdit*>(
+            QStringLiteral("globalSearchEdit"));
+    auto* duplicate =
+        window.findChild<QAction*>(
+            QStringLiteral("duplicateSelectionAction"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+    QVERIFY(search != nullptr);
+    QVERIFY(duplicate != nullptr);
+    QCOMPARE(duplicate->shortcut(),
+             QKeySequence(QStringLiteral("Ctrl+D")));
+    QCOMPARE(duplicate->shortcutContext(),
+             Qt::WidgetWithChildrenShortcut);
+    QTRY_VERIFY_WITH_TIMEOUT(duplicate->isEnabled(), 2000);
+
+    const std::size_t initialUndoDepth =
+        controller->undoDepth();
+    search->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
+    QTest::keyClick(search, Qt::Key_D,
+                    Qt::ControlModifier);
+    QCoreApplication::processEvents();
+    QCOMPARE(
+        regmap::findRegisterBlock(
+            *controller->workspace(), "block-control")
+            ->registers.size(),
+        std::size_t{1});
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+
+    const int addRegisterRow =
+        registers->model()->rowCount() - 1;
+    registers->setCurrentIndex(
+        registers->model()->index(addRegisterRow, 0));
+    registers->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
+    QTest::keyClick(registers, Qt::Key_D,
+                    Qt::ControlModifier);
+    QCoreApplication::processEvents();
+    QCOMPARE(
+        regmap::findRegisterBlock(
+            *controller->workspace(), "block-control")
+            ->registers.size(),
+        std::size_t{1});
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral(
+            "select an existing Register row")));
+
+    registers->setCurrentIndex(
+        registers->model()->index(0, 0));
+    registers->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
+    QTest::keyClick(registers, Qt::Key_D,
+                    Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        regmap::findRegisterBlock(
+            *controller->workspace(), "block-control")
+            ->registers.size(),
+        std::size_t{2}, 2000);
+    const auto* block = regmap::findRegisterBlock(
+        *controller->workspace(), "block-control");
+    QVERIFY(block != nullptr);
+    QCOMPARE(block->registers[1].name,
+             std::string("STATUS Copy"));
+    QCOMPARE(block->registers[1].offset,
+             std::uint64_t{4});
+    QCOMPARE(controller->undoDepth(),
+             initialUndoDepth + 1);
+    controller->undo();
+    QTRY_COMPARE_WITH_TIMEOUT(
+        regmap::findRegisterBlock(
+            *controller->workspace(), "block-control")
+            ->registers.size(),
+        std::size_t{1}, 2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+
+    Q_EMIT registers->clicked(
+        registers->model()->index(0, 5));
+    QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
+    fields->setCurrentIndex(
+        fields->model()->index(0, 0));
+    fields->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
+    QTest::keyClick(fields, Qt::Key_D,
+                    Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        regmap::findRegister(
+            *controller->workspace(), "reg-status")
+            ->fields.size(),
+        std::size_t{2}, 2000);
+    const auto* readyCopy = &regmap::findRegister(
+        *controller->workspace(), "reg-status")
+                                  ->fields[1];
+    QCOMPARE(readyCopy->name,
+             std::string("READY Copy"));
+    QCOMPARE(readyCopy->msb, std::uint32_t{1});
+    QCOMPARE(readyCopy->lsb, std::uint32_t{1});
+    QCOMPARE(controller->undoDepth(),
+             initialUndoDepth + 1);
+    controller->undo();
+    QTRY_COMPARE_WITH_TIMEOUT(
+        regmap::findRegister(
+            *controller->workspace(), "reg-status")
+            ->fields.size(),
+        std::size_t{1}, 2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+
+    const auto visibleEditor =
+        [](QTableView* view) -> QLineEdit* {
+            for (auto* editor :
+                 view->findChildren<QLineEdit*>()) {
+                if (editor->isVisible()) {
+                    return editor;
+                }
+            }
+            return nullptr;
+        };
+
+    const QModelIndex name =
+        registers->model()->index(0, 0);
+    registers->setCurrentIndex(name);
+    registers->scrollTo(name);
+    registers->setFocus(Qt::OtherFocusReason);
+    registers->edit(name);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        visibleEditor(registers) != nullptr, 2000);
+    auto* nameEditor = visibleEditor(registers);
+    nameEditor->selectAll();
+    QTest::keyClicks(
+        nameEditor, QStringLiteral("STATUS_FAST"));
+    QTest::keyClick(nameEditor, Qt::Key_D,
+                    Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        QString::fromStdString(
+            regmap::findRegister(
+                *controller->workspace(), "reg-status")
+                ->name),
+        QStringLiteral("STATUS_FAST"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        regmap::findRegisterBlock(
+            *controller->workspace(), "block-control")
+            ->registers.size(),
+        std::size_t{2}, 2000);
+    block = regmap::findRegisterBlock(
+        *controller->workspace(), "block-control");
+    QCOMPARE(block->registers[1].name,
+             std::string("STATUS_FAST Copy"));
+    QCOMPARE(controller->undoDepth(),
+             initialUndoDepth + 2);
+
+    controller->undo();
+    controller->undo();
+    QTRY_COMPARE_WITH_TIMEOUT(
+        regmap::findRegisterBlock(
+            *controller->workspace(), "block-control")
+            ->registers.size(),
+        std::size_t{1}, 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        QString::fromStdString(
+            regmap::findRegister(
+                *controller->workspace(), "reg-status")
+                ->name),
+        QStringLiteral("STATUS"), 2000);
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+
+    const QModelIndex width =
+        registers->model()->index(0, 3);
+    registers->setCurrentIndex(width);
+    registers->scrollTo(width);
+    registers->setFocus(Qt::OtherFocusReason);
+    registers->edit(width);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        visibleEditor(registers) != nullptr, 2000);
+    auto* invalidEditor = visibleEditor(registers);
+    invalidEditor->selectAll();
+    QTest::keyClicks(
+        invalidEditor, QStringLiteral("invalid-width"));
+    QTest::keyClick(invalidEditor, Qt::Key_D,
+                    Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()->index(0, 3)
+            .data().toString(),
+        QStringLiteral("32"), 2000);
+    QCOMPARE(
+        regmap::findRegisterBlock(
+            *controller->workspace(), "block-control")
+            ->registers.size(),
+        std::size_t{1});
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Edit rejected: expected")));
+
+    makeGeneratedFilesWritable(directory.path());
 }
 
 void GuiSmokeTests::confirmsReservedConversionBeforeClearingContent()
