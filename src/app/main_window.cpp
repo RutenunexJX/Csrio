@@ -2292,9 +2292,16 @@ void MainWindow::buildUi()
     fieldHeaderLayout->addWidget(fieldContextLabel_);
     fieldHeaderLayout->addStretch(1);
     fieldHeaderLayout->addWidget(closeFieldsButton_);
-    enumContextLabel_ = new QLabel(QStringLiteral("Enum Values"), fieldPanel);
+    enumPanel_ = new QWidget(fieldPanel);
+    enumPanel_->setObjectName(QStringLiteral("enumPanel"));
+    enumPanel_->setSizePolicy(
+        QSizePolicy::Expanding, QSizePolicy::Fixed);
+    auto* enumLayout = new QVBoxLayout(enumPanel_);
+    enumLayout->setContentsMargins(0, 0, 0, 0);
+    enumLayout->setSpacing(4);
+    enumContextLabel_ = new QLabel(QStringLiteral("Enum Values"), enumPanel_);
     enumContextLabel_->setObjectName(QStringLiteral("contextTitle"));
-    enumView_ = new QTableView(fieldPanel);
+    enumView_ = new QTableView(enumPanel_);
     enumView_->setObjectName(QStringLiteral("enumView"));
     enumView_->setModel(enumModel_);
     configureTable(enumView_);
@@ -2302,12 +2309,13 @@ void MainWindow::buildUi()
         QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
     enumView_->setContextMenuPolicy(Qt::CustomContextMenu);
     enumView_->setFixedHeight(112);
+    enumLayout->addWidget(enumContextLabel_);
+    enumLayout->addWidget(enumView_);
 
     fieldLayout->addWidget(fieldHeaderBar_);
     fieldLayout->addWidget(bitfieldView_);
     fieldLayout->addWidget(fieldView_, 1);
-    fieldLayout->addWidget(enumContextLabel_);
-    fieldLayout->addWidget(enumView_);
+    fieldLayout->addWidget(enumPanel_, 0, Qt::AlignTop);
 
     editorSplitter_ = new QSplitter(Qt::Vertical, this);
     editorSplitter_->setObjectName(
@@ -3890,8 +3898,7 @@ void MainWindow::populateEnumValues(const regmap::Register* reg, const regmap::F
     const bool visible =
         enumValues != nullptr && (type == regmap::FieldType::boolean ||
                                   type == regmap::FieldType::enumeration || !enumValues->empty());
-    enumContextLabel_->setVisible(visible);
-    enumView_->setVisible(visible);
+    enumPanel_->setVisible(visible);
     const bool hasOpenFieldEditor =
         reg != nullptr && !reg->reserved && reg->type == regmap::FieldType::structure &&
         openFieldsRegisterId_ == reg->id;

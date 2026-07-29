@@ -70,6 +70,7 @@ private:
     QWidget* fieldHeaderBar_{nullptr};
     QLabel* fieldContextLabel_{nullptr};
     QPushButton* closeFieldsButton_{nullptr};
+    QWidget* enumPanel_{nullptr};
     QLabel* enumContextLabel_{nullptr};
     QTableView* enumView_{nullptr};
     QTabWidget* tabs_{nullptr};

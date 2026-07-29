@@ -82,6 +82,7 @@ private slots:
     void detectsStructuralDifferenceWithoutBaseline();
     void opensProjectAndPopulatesEditableViews();
     void persistsWorkbenchLayoutPreferences();
+    void keepsEnumEditorCompact();
     void navigatesHierarchyAndOpensFieldsExplicitly();
     void hierarchyContextActionsUseRightClickedTarget();
     void confirmsHierarchyDeletionImpactAndRestoresIt();
@@ -1176,6 +1177,115 @@ void GuiSmokeTests::persistsWorkbenchLayoutPreferences()
     QCOMPARE(results->sizes(), resultsSizes);
     QVERIFY(advanced->isChecked());
     QVERIFY(restored.close());
+}
+
+void GuiSmokeTests::keepsEnumEditorCompact()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest =
+        directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createTwoRegisterProject(manifest);
+
+    MainWindow window;
+    window.openProjectPath(manifest);
+    window.resize(1200, 800);
+    window.show();
+    QTest::qWait(50);
+
+    auto* registers =
+        window.findChild<QTableView*>(
+            QStringLiteral("registerView"));
+    auto* fields =
+        window.findChild<QTableView*>(
+            QStringLiteral("fieldView"));
+    auto* fieldPanel =
+        window.findChild<QWidget*>(
+            QStringLiteral("fieldPanel"));
+    auto* enumPanel =
+        window.findChild<QWidget*>(
+            QStringLiteral("enumPanel"));
+    auto* enumContext =
+        enumPanel == nullptr
+            ? nullptr
+            : enumPanel->findChild<QLabel*>(
+                  QStringLiteral("contextTitle"));
+    auto* enums =
+        window.findChild<QTableView*>(
+            QStringLiteral("enumView"));
+    auto* editor =
+        window.findChild<QSplitter*>(
+            QStringLiteral("editorSplitter"));
+    auto* controller =
+        window.findChild<ProjectController*>();
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+    QVERIFY(fieldPanel != nullptr);
+    QVERIFY(enumPanel != nullptr);
+    QVERIFY(enumContext != nullptr);
+    QVERIFY(enums != nullptr);
+    QVERIFY(editor != nullptr);
+    QVERIFY(controller != nullptr);
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Configure scalar Boolean fixture"),
+        [](regmap::Workspace& workspace) {
+            if (auto* reg =
+                    regmap::findRegister(
+                        workspace, "reg-control")) {
+                reg->width = 1;
+                reg->type =
+                    regmap::FieldType::boolean;
+                reg->minimumValue.reset();
+                reg->maximumValue.reset();
+                reg->enumValues.clear();
+            }
+        }));
+    QVERIFY(regmap::validateWorkspace(
+                *controller->workspace())
+                .empty());
+
+    const QModelIndex scalar =
+        registers->model()->index(1, 0);
+    registers->setCurrentIndex(scalar);
+    registers->selectionModel()->select(
+        scalar, QItemSelectionModel::ClearAndSelect);
+    QCoreApplication::processEvents();
+    editor->setSizes({430, 300});
+    QCoreApplication::processEvents();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fieldPanel->isVisible(), 2000);
+    QVERIFY(!fields->isVisible());
+    QVERIFY(enumPanel->isVisible());
+    QVERIFY(enumContext->isVisible());
+    QVERIFY(enums->isVisible());
+    QCOMPARE(enums->model()->rowCount(), 2);
+    QVERIFY(enumPanel->y() <= 2);
+    const int enumGap =
+        enums->mapTo(enumPanel, QPoint(0, 0)).y() -
+        (enumContext->mapTo(enumPanel, QPoint(0, 0)).y() +
+         enumContext->height());
+    QVERIFY(enumGap >= 0);
+    QVERIFY(enumGap <= 8);
+    QVERIFY(enumPanel->height() <
+            fieldPanel->height());
+
+    const QModelIndex openFields =
+        registers->model()->index(0, 5);
+    registers->setCurrentIndex(openFields);
+    registers->selectionModel()->select(
+        openFields, QItemSelectionModel::ClearAndSelect);
+    registers->setFocus(Qt::OtherFocusReason);
+    QTest::keyClick(registers, Qt::Key_Space);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fields->isVisible(), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        enumPanel->isVisible(), 2000);
+    QVERIFY(enumPanel->y() >
+            fields->geometry().bottom());
+
+    makeGeneratedFilesWritable(
+        directory.path());
 }
 
 void GuiSmokeTests::navigatesHierarchyAndOpensFieldsExplicitly()
