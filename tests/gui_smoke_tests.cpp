@@ -73,6 +73,7 @@ class GuiSmokeTests final : public QObject {
 
 private slots:
     void appliesWorkbookTheme();
+    void startsWithCleanNoProjectState();
     void createsWorkbenchFirstProject();
     void treatsInvalidInitialRtlAsRecoverableAfterCreation();
     void establishesMissingBaselineForIdenticalSources();
@@ -515,6 +516,74 @@ void GuiSmokeTests::appliesWorkbookTheme()
     QVERIFY(qApp->styleSheet().contains(QStringLiteral("#C6D2E1")));
     QVERIFY(qApp->styleSheet().contains(QStringLiteral("font-weight: 600")));
     QVERIFY(!qApp->styleSheet().contains(QStringLiteral("font-weight: 700")));
+}
+
+void GuiSmokeTests::startsWithCleanNoProjectState()
+{
+    MainWindow window;
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+
+    auto* hierarchy =
+        window.findChild<QTreeView*>(
+            QStringLiteral("hierarchyView"));
+    auto* registers =
+        window.findChild<QTableView*>(
+            QStringLiteral("registerView"));
+    auto* fields =
+        window.findChild<QTableView*>(
+            QStringLiteral("fieldView"));
+    auto* enums =
+        window.findChild<QTableView*>(
+            QStringLiteral("enumView"));
+    auto* fieldPanel =
+        window.findChild<QWidget*>(
+            QStringLiteral("fieldPanel"));
+    auto* results =
+        window.findChild<QTabWidget*>(
+            QStringLiteral("resultTabs"));
+    auto* hierarchyAdd =
+        window.findChild<QPushButton*>(
+            QStringLiteral("hierarchyAddButton"));
+    auto* pageBase =
+        window.findChild<QLineEdit*>(
+            QStringLiteral("pageBaseEdit"));
+    auto* blockBase =
+        window.findChild<QLineEdit*>(
+            QStringLiteral("blockBaseEdit"));
+    auto* save =
+        window.findChild<QAction*>(
+            QStringLiteral("saveSyncAction"));
+    auto* syncState =
+        window.findChild<QLabel*>(
+            QStringLiteral("syncStateBadge"));
+    QVERIFY(hierarchy != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+    QVERIFY(enums != nullptr);
+    QVERIFY(fieldPanel != nullptr);
+    QVERIFY(results != nullptr);
+    QVERIFY(hierarchyAdd != nullptr);
+    QVERIFY(pageBase != nullptr);
+    QVERIFY(blockBase != nullptr);
+    QVERIFY(save != nullptr);
+    QVERIFY(syncState != nullptr);
+
+    QCOMPARE(hierarchy->model()->rowCount(), 0);
+    QCOMPARE(registers->model()->rowCount(), 0);
+    QCOMPARE(fields->model()->rowCount(), 0);
+    QCOMPARE(enums->model()->rowCount(), 0);
+    QVERIFY(!fieldPanel->isVisible());
+    QVERIFY(!results->isVisible());
+    QVERIFY(!hierarchyAdd->isEnabled());
+    QVERIFY(!pageBase->isEnabled());
+    QVERIFY(!blockBase->isEnabled());
+    QVERIFY(!save->isEnabled());
+    QCOMPARE(syncState->text(),
+             QStringLiteral("No project"));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Open a .regmap.yaml project")));
 }
 
 void GuiSmokeTests::createsWorkbenchFirstProject()
@@ -1079,13 +1148,21 @@ void GuiSmokeTests::persistsWorkbenchLayoutPreferences()
 {
     SettingsScope settingsScope(
         QStringLiteral("UiStatePersistenceTest"));
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest =
+        directory.filePath(
+            QStringLiteral("project.regmap.yaml"));
+    createProject(manifest);
 
     QByteArray geometry;
     QList<int> workspaceSizes;
     QList<int> editorSizes;
-    QList<int> resultsSizes;
+    QByteArray editorState;
+    QByteArray resultsState;
     {
         MainWindow first;
+        QVERIFY(first.openProjectPath(manifest));
         first.resize(700, 650);
         first.move(20, 20);
         first.show();
@@ -1104,10 +1181,26 @@ void GuiSmokeTests::persistsWorkbenchLayoutPreferences()
         auto* advanced =
             first.findChild<QAction*>(
                 QStringLiteral("showAdvancedFieldsAction"));
+        auto* registers =
+            first.findChild<QTableView*>(
+                QStringLiteral("registerView"));
+        auto* fields =
+            first.findChild<QTableView*>(
+                QStringLiteral("fieldView"));
         QVERIFY(workspace != nullptr);
         QVERIFY(editor != nullptr);
         QVERIFY(results != nullptr);
         QVERIFY(advanced != nullptr);
+        QVERIFY(registers != nullptr);
+        QVERIFY(fields != nullptr);
+
+        const QModelIndex openFields =
+            registers->model()->index(0, 5);
+        registers->setCurrentIndex(openFields);
+        registers->setFocus(Qt::OtherFocusReason);
+        QTest::keyClick(registers, Qt::Key_Space);
+        QTRY_VERIFY_WITH_TIMEOUT(
+            fields->isVisible(), 2000);
 
         workspace->setSizes({315, 865});
         editor->setSizes({430, 326});
@@ -1118,7 +1211,8 @@ void GuiSmokeTests::persistsWorkbenchLayoutPreferences()
         geometry = first.saveGeometry();
         workspaceSizes = workspace->sizes();
         editorSizes = editor->sizes();
-        resultsSizes = results->sizes();
+        editorState = editor->saveState();
+        resultsState = results->saveState();
         QVERIFY(!geometry.isEmpty());
         QVERIFY(advanced->isChecked());
         QVERIFY(first.close());
@@ -1141,6 +1235,18 @@ void GuiSmokeTests::persistsWorkbenchLayoutPreferences()
                 .toBool());
     QCOMPARE(
         settings.value(
+                    QStringLiteral(
+                        "ui/v1/editorSplitter"))
+            .toByteArray(),
+        editorState);
+    QCOMPARE(
+        settings.value(
+                    QStringLiteral(
+                        "ui/v1/resultsSplitter"))
+            .toByteArray(),
+        resultsState);
+    QCOMPARE(
+        settings.value(
                     QStringLiteral("ui/v1/mainWindowGeometry"))
             .toByteArray(),
         geometry);
@@ -1160,6 +1266,7 @@ void GuiSmokeTests::persistsWorkbenchLayoutPreferences()
     settings.sync();
 
     MainWindow restored;
+    QVERIFY(restored.openProjectPath(manifest));
     QVERIFY(restored.saveGeometry() != defaultGeometry);
     restored.show();
     restored.activateWindow();
@@ -1176,15 +1283,49 @@ void GuiSmokeTests::persistsWorkbenchLayoutPreferences()
     auto* advanced =
         restored.findChild<QAction*>(
             QStringLiteral("showAdvancedFieldsAction"));
+    auto* registers =
+        restored.findChild<QTableView*>(
+            QStringLiteral("registerView"));
+    auto* fields =
+        restored.findChild<QTableView*>(
+            QStringLiteral("fieldView"));
     QVERIFY(workspace != nullptr);
     QVERIFY(editor != nullptr);
     QVERIFY(results != nullptr);
     QVERIFY(advanced != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+    const QModelIndex openFields =
+        registers->model()->index(0, 5);
+    registers->setCurrentIndex(openFields);
+    registers->setFocus(Qt::OtherFocusReason);
+    QTest::keyClick(registers, Qt::Key_Space);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fields->isVisible(), 2000);
     QCOMPARE(workspace->sizes(), workspaceSizes);
-    QCOMPARE(editor->sizes(), editorSizes);
-    QCOMPARE(results->sizes(), resultsSizes);
+    const QList<int> restoredEditorSizes =
+        editor->sizes();
+    QCOMPARE(restoredEditorSizes.size(), 2);
+    const double expectedEditorFraction =
+        static_cast<double>(editorSizes[1]) /
+        static_cast<double>(
+            editorSizes[0] + editorSizes[1]);
+    const double restoredEditorFraction =
+        static_cast<double>(
+            restoredEditorSizes[1]) /
+        static_cast<double>(
+            restoredEditorSizes[0] +
+            restoredEditorSizes[1]);
+    QVERIFY(qAbs(restoredEditorFraction -
+                 expectedEditorFraction) < 0.08);
+    const QList<int> restoredResultsSizes =
+        results->sizes();
+    QCOMPARE(restoredResultsSizes.size(), 2);
+    QVERIFY(restoredResultsSizes[0] > 0);
+    QVERIFY(restoredResultsSizes[1] >= 170);
     QVERIFY(advanced->isChecked());
     QVERIFY(restored.close());
+    makeGeneratedFilesWritable(directory.path());
 }
 
 void GuiSmokeTests::keepsEnumEditorCompact()

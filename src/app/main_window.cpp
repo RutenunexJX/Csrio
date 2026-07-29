@@ -2106,6 +2106,7 @@ MainWindow::MainWindow(QWidget* parent)
     connectSignals();
     resize(1500, 920);
     restoreUiState();
+    refreshProject();
     statusBar()->setSizeGripEnabled(false);
     statusBar()->showMessage(QStringLiteral("Open a .regmap.yaml project to begin"));
     setWindowTitle(QStringLiteral("Register Map Workbench"));
