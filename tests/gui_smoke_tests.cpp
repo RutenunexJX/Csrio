@@ -155,6 +155,7 @@ private slots:
     void requiresExplicitCellEditing();
     void keepsUndoRedoInsideActiveEditor();
     void savesActiveEditorWithShortcut();
+    void tabsAcrossEditableRegisterCells();
     void savesActiveChoiceEditorWithShortcut();
     void rejectsInvalidActiveEditorBeforeSave();
     void deletesFocusedRegisterAndRestoresIt();
@@ -13087,6 +13088,116 @@ void GuiSmokeTests::savesActiveEditorWithShortcut()
                  regmap::findRegister(*reopened.workspace, "reg-status")->name),
              savedName);
 
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::tabsAcrossEditableRegisterCells()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest =
+        directory.filePath(
+            QStringLiteral("tab-navigation.regmap.yaml"));
+    createTwoRegisterProject(manifest);
+
+    MainWindow window;
+    QVERIFY(window.openProjectPath(manifest));
+    window.resize(1100, 720);
+    window.show();
+    window.activateWindow();
+    QTest::qWait(50);
+
+    auto* registers =
+        window.findChild<QTableView*>(
+            QStringLiteral("registerView"));
+    auto* controller =
+        window.findChild<ProjectController*>();
+    QVERIFY(registers != nullptr);
+    QVERIFY(controller != nullptr);
+
+    const auto visibleLineEditor =
+        [registers]() -> QLineEdit* {
+        for (auto* editor :
+             registers->findChildren<QLineEdit*>()) {
+            if (editor->isVisible()) {
+                return editor;
+            }
+        }
+        return nullptr;
+    };
+
+    const QModelIndex name =
+        registers->model()->index(0, 0);
+    registers->setCurrentIndex(name);
+    registers->scrollTo(name);
+    registers->setFocus(Qt::OtherFocusReason);
+    registers->edit(name);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        visibleLineEditor() != nullptr, 2000);
+    auto* editor = visibleLineEditor();
+    editor->selectAll();
+    QTest::keyClicks(editor, QStringLiteral("STATUS_NEXT"));
+    QTest::keyClick(editor, Qt::Key_Tab);
+
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()->index(0, 0).data().toString(),
+        QStringLiteral("STATUS_NEXT"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->currentIndex().column(), 1, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        visibleLineEditor() != nullptr, 2000);
+    editor = visibleLineEditor();
+    QCOMPARE(editor->text(), QStringLiteral("0x0"));
+
+    QTest::keyClick(editor, Qt::Key_Tab);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->currentIndex().column(), 3, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        visibleLineEditor() != nullptr, 2000);
+    editor = visibleLineEditor();
+    QCOMPARE(editor->text(), QStringLiteral("32"));
+
+    QTest::keyClick(editor, Qt::Key_Backtab);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->currentIndex().column(), 1, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        visibleLineEditor() != nullptr, 2000);
+    QCOMPARE(visibleLineEditor()->text(), QStringLiteral("0x0"));
+    QVERIFY(controller->isDirty());
+
+    QTest::keyClick(visibleLineEditor(), Qt::Key_Escape);
+    const QModelIndex reset =
+        registers->model()->index(0, 8);
+    registers->setCurrentIndex(reset);
+    registers->edit(reset);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        visibleLineEditor() != nullptr, 2000);
+    QTest::keyClick(visibleLineEditor(), Qt::Key_Tab);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->currentIndex().column(), 9, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        visibleLineEditor() == nullptr, 2000);
+
+    QTest::keyClick(registers, Qt::Key_Return);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        QApplication::activePopupWidget() != nullptr,
+        2000);
+    auto* accessPopup =
+        qobject_cast<QFrame*>(
+            QApplication::activePopupWidget());
+    QVERIFY(accessPopup != nullptr);
+    QCOMPARE(accessPopup->objectName(),
+             QStringLiteral("accessPopup"));
+    QTest::keyClick(
+        QApplication::focusWidget(), Qt::Key_Escape);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        QApplication::activePopupWidget() == nullptr,
+        2000);
+
+    controller->undo();
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()->index(0, 0).data().toString(),
+        QStringLiteral("STATUS"), 2000);
     makeGeneratedFilesWritable(directory.path());
 }
 

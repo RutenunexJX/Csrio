@@ -1012,6 +1012,53 @@ public:
     }
 
 protected:
+    [[nodiscard]] QModelIndex moveCursor(
+        CursorAction cursorAction,
+        Qt::KeyboardModifiers modifiers) override
+    {
+        if ((cursorAction != MoveNext &&
+             cursorAction != MovePrevious) ||
+            model() == nullptr ||
+            model()->rowCount() == 0 ||
+            model()->columnCount() == 0) {
+            return QTableView::moveCursor(
+                cursorAction, modifiers);
+        }
+
+        const QModelIndex current = currentIndex();
+        if (!current.isValid()) {
+            return QTableView::moveCursor(
+                cursorAction, modifiers);
+        }
+        const int columns = model()->columnCount();
+        const int cellCount = model()->rowCount() * columns;
+        const int startingCell =
+            current.row() * columns + current.column();
+        const int direction =
+            cursorAction == MoveNext ? 1 : -1;
+        for (int distance = 1;
+             distance < cellCount;
+             ++distance) {
+            const int candidateCell =
+                (startingCell + direction * distance +
+                 cellCount) %
+                cellCount;
+            const QModelIndex candidate =
+                model()->index(candidateCell / columns,
+                               candidateCell % columns);
+            const bool keyboardAction =
+                keyboardActionPredicate_ &&
+                keyboardActionPredicate_(candidate);
+            if (!isColumnHidden(candidate.column()) &&
+                (candidate.flags() & Qt::ItemIsEnabled) &&
+                ((candidate.flags() & Qt::ItemIsEditable) ||
+                 keyboardAction)) {
+                return candidate;
+            }
+        }
+        return current;
+    }
+
     void keyPressEvent(QKeyEvent* event) override
     {
         const QModelIndex index = currentIndex();
