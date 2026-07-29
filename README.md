@@ -168,7 +168,8 @@ which capacity to adjust.
 Double-click a register **Tags** cell to open the tag selector: typing filters the drop-down,
 clicking an existing tag selects it, and the adjacent `+` creates a tag only when its name is
 unique. A Register created while **Tag Filter** is active inherits that tag and remains visible
-in the filtered table.
+in the filtered table. If an edit temporarily leaves the active Tag with no matches, the filter
+stays selected so Undo/Redo restores the same view; choose **All tags** to clear it explicitly.
 The register context menu can convert a register to a red, bold reserved slot or delete
 it while shifting subsequent offsets upward. When a Tag Filter hides following Registers, the
 delete confirmation states how many hidden Registers will still shift and defaults to cancel.

@@ -125,6 +125,7 @@ private slots:
     void keepsAccessAndEffectsConsistentDuringEditing();
     void closesTagPopupWhenFilteredRegisterDisappears();
     void keepsNewRegisterVisibleUnderActiveTagFilter();
+    void keepsZeroMatchTagFilterThroughUndoAndRedo();
     void insertsRegisterBetweenRows();
     void showsUnifiedSyncStateAndGeneratedResults();
     void reportsBlockedUnsavedSyncAndRecovers();
@@ -7668,6 +7669,108 @@ void GuiSmokeTests::keepsNewRegisterVisibleUnderActiveTagFilter()
     QCOMPARE(
         tagFilter->currentText(),
         QStringLiteral("existing"));
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::keepsZeroMatchTagFilterThroughUndoAndRedo()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest =
+        directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createTwoRegisterProject(manifest);
+
+    MainWindow window;
+    QVERIFY(window.openProjectPath(manifest));
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+
+    auto* controller =
+        window.findChild<ProjectController*>();
+    auto* registers =
+        window.findChild<QTableView*>(
+            QStringLiteral("registerView"));
+    auto* tagFilter =
+        window.findChild<QComboBox*>(
+            QStringLiteral("tagFilter"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(tagFilter != nullptr);
+
+    const int existingFilter =
+        tagFilter->findText(QStringLiteral("existing"));
+    QVERIFY(existingFilter > 0);
+    tagFilter->setCurrentIndex(existingFilter);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()->rowCount(), 2, 2000);
+    QCOMPARE(
+        registers->model()->index(0, 0)
+            .data(Qt::UserRole + 1)
+            .toString(),
+        QStringLiteral("reg-status"));
+
+    const std::size_t undoDepth =
+        controller->undoDepth();
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Remove final matching tag"),
+        [](regmap::Workspace& workspace) {
+            auto* status = regmap::findRegister(
+                workspace, "reg-status");
+            QVERIFY(status != nullptr);
+            status->tags.clear();
+        }));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()->rowCount(), 1, 2000);
+    QCOMPARE(
+        registers->model()->index(0, 0).data().toString(),
+        QStringLiteral("+"));
+    QCOMPARE(
+        tagFilter->currentText(),
+        QStringLiteral("existing"));
+    QVERIFY(tagFilter->findText(
+                QStringLiteral("existing")) > 0);
+    QVERIFY(tagFilter->toolTip().contains(
+        QStringLiteral("No Registers currently use")));
+    QVERIFY(tagFilter->toolTip().contains(
+        QStringLiteral("Undo")));
+    QCOMPARE(controller->undoDepth(), undoDepth + 1);
+
+    controller->undo();
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()->rowCount(), 2, 2000);
+    QCOMPARE(
+        registers->model()->index(0, 0)
+            .data(Qt::UserRole + 1)
+            .toString(),
+        QStringLiteral("reg-status"));
+    QCOMPARE(
+        tagFilter->currentText(),
+        QStringLiteral("existing"));
+    QVERIFY(tagFilter->toolTip().contains(
+        QStringLiteral("Showing Registers tagged")));
+
+    controller->redo();
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()->rowCount(), 1, 2000);
+    QCOMPARE(
+        tagFilter->currentText(),
+        QStringLiteral("existing"));
+    QVERIFY(tagFilter->toolTip().contains(
+        QStringLiteral("No Registers currently use")));
+
+    tagFilter->setCurrentIndex(0);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()->rowCount(), 3, 2000);
+    QCOMPARE(
+        tagFilter->currentText(),
+        QStringLiteral("All tags"));
+    QCOMPARE(
+        tagFilter->findText(QStringLiteral("existing")),
+        -1);
+    QVERIFY(tagFilter->toolTip().contains(
+        QStringLiteral("Show all Registers")));
 
     makeGeneratedFilesWritable(directory.path());
 }

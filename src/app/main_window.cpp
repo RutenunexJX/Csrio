@@ -3012,8 +3012,15 @@ void MainWindow::connectSignals()
         if (refreshing_) {
             return;
         }
+        const bool clearingFilter = index <= 0;
         selectedTagFilter_ =
-            index <= 0 ? std::string{} : tagFilter_->itemText(index).toUtf8().toStdString();
+            clearingFilter
+                ? std::string{}
+                : tagFilter_->itemText(index)
+                      .toUtf8().toStdString();
+        if (clearingFilter) {
+            updateTagFilter();
+        }
         populateRegisters();
     });
     connect(pageBaseEdit_, &QLineEdit::editingFinished, this, [this] {
@@ -6526,8 +6533,11 @@ void MainWindow::updateTagFilter()
             }
         }
     }
-    if (!selectedTagFilter_.empty() && !tags.contains(selectedTagFilter_)) {
-        selectedTagFilter_.clear();
+    const bool activeFilterHasMatches =
+        selectedTagFilter_.empty() ||
+        tags.contains(selectedTagFilter_);
+    if (!selectedTagFilter_.empty()) {
+        tags.insert(selectedTagFilter_);
     }
     const QSignalBlocker blocker(tagFilter_);
     tagFilter_->clear();
@@ -6540,6 +6550,22 @@ void MainWindow::updateTagFilter()
         }
     }
     tagFilter_->setCurrentIndex(selectedIndex);
+    if (selectedTagFilter_.empty()) {
+        tagFilter_->setToolTip(
+            QStringLiteral(
+                "Show all Registers or filter by Tag."));
+    } else if (activeFilterHasMatches) {
+        tagFilter_->setToolTip(
+            QStringLiteral("Showing Registers tagged \"%1\".")
+                .arg(fromUtf8(selectedTagFilter_)));
+    } else {
+        tagFilter_->setToolTip(
+            QStringLiteral(
+                "No Registers currently use Tag \"%1\". The filter is kept "
+                "so Undo or a new Register can restore a match; choose All "
+                "tags to clear it.")
+                .arg(fromUtf8(selectedTagFilter_)));
+    }
 }
 
 void MainWindow::editRegisterTags(const QModelIndex& index)
