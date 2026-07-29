@@ -6585,13 +6585,21 @@ void MainWindow::closeFields()
 void MainWindow::duplicateFocusedObject()
 {
     QWidget* focus = QApplication::focusWidget();
-    const auto focusInside = [focus](const QWidget* widget) {
-        return focus == widget ||
-               (focus != nullptr && widget->isAncestorOf(focus));
+    const auto focusBelongsToTable = [focus](const QWidget* table) {
+        for (const QWidget* current = focus; current != nullptr;
+             current = current->parentWidget()) {
+            if (current->windowType() == Qt::Popup) {
+                return false;
+            }
+            if (current == table) {
+                return true;
+            }
+        }
+        return false;
     };
-    const bool fieldFocused = focusInside(fieldView_);
+    const bool fieldFocused = focusBelongsToTable(fieldView_);
     const bool registerFocused =
-        !fieldFocused && focusInside(registerView_);
+        !fieldFocused && focusBelongsToTable(registerView_);
     QTableView* view =
         fieldFocused
             ? fieldView_

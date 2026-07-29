@@ -8542,6 +8542,84 @@ void GuiSmokeTests::duplicatesFocusedObjectsWithShortcut()
         QStringLiteral(
             "select an existing Register row")));
 
+    const QModelIndex tagIndex =
+        registers->model()->index(0, 10);
+    registers->setCurrentIndex(tagIndex);
+    Q_EMIT registers->doubleClicked(tagIndex);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        QApplication::activePopupWidget() != nullptr, 2000);
+    auto* tagPopup =
+        qobject_cast<QFrame*>(
+            QApplication::activePopupWidget());
+    QVERIFY(tagPopup != nullptr);
+    QCOMPARE(tagPopup->objectName(),
+             QStringLiteral("tagPopup"));
+    auto* tagSearch =
+        tagPopup->findChild<QLineEdit*>(
+            QStringLiteral("tagSearch"));
+    QVERIFY(tagSearch != nullptr);
+    tagSearch->setText(QStringLiteral("status"));
+    tagSearch->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
+    QTest::keyClick(tagSearch, Qt::Key_D,
+                    Qt::ControlModifier);
+    duplicate->trigger();
+    QCoreApplication::processEvents();
+    QCOMPARE(
+        regmap::findRegisterBlock(
+            *controller->workspace(), "block-control")
+            ->registers.size(),
+        std::size_t{1});
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+    QCOMPARE(QApplication::activePopupWidget(),
+             tagPopup);
+    QVERIFY(tagSearch->hasFocus());
+    QCOMPARE(tagSearch->text(),
+             QStringLiteral("status"));
+    tagPopup->close();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        QApplication::activePopupWidget() == nullptr, 2000);
+
+    const QModelIndex accessIndex =
+        registers->model()->index(0, 9);
+    registers->setCurrentIndex(accessIndex);
+    Q_EMIT registers->doubleClicked(accessIndex);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        QApplication::activePopupWidget() != nullptr, 2000);
+    auto* accessPopup =
+        qobject_cast<QFrame*>(
+            QApplication::activePopupWidget());
+    QVERIFY(accessPopup != nullptr);
+    QCOMPARE(accessPopup->objectName(),
+             QStringLiteral("accessPopup"));
+    auto* accessOptions =
+        accessPopup->findChild<QListWidget*>(
+            QStringLiteral("accessOptions"));
+    QVERIFY(accessOptions != nullptr);
+    QVERIFY(accessOptions->currentItem() != nullptr);
+    const QString accessBefore =
+        accessOptions->currentItem()->text();
+    accessOptions->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
+    QTest::keyClick(accessOptions, Qt::Key_D,
+                    Qt::ControlModifier);
+    duplicate->trigger();
+    QCoreApplication::processEvents();
+    QCOMPARE(
+        regmap::findRegisterBlock(
+            *controller->workspace(), "block-control")
+            ->registers.size(),
+        std::size_t{1});
+    QCOMPARE(controller->undoDepth(), initialUndoDepth);
+    QCOMPARE(QApplication::activePopupWidget(),
+             accessPopup);
+    QVERIFY(accessOptions->hasFocus());
+    QCOMPARE(accessOptions->currentItem()->text(),
+             accessBefore);
+    accessPopup->close();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        QApplication::activePopupWidget() == nullptr, 2000);
+
     registers->setCurrentIndex(
         registers->model()->index(0, 0));
     registers->setFocus(Qt::OtherFocusReason);

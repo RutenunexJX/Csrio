@@ -86,7 +86,8 @@ Workspace -> Page (Address Space) -> Register Block -> Register -> Field -> Enum
 - Spreadsheet-style cell selection plus tab-separated copy and paste for editable table cells.
 - `Ctrl+D` duplicates the current Register or Field only while its table (or active cell editor)
   has focus. It commits a valid in-place edit before copying, rejects an invalid edit without
-  creating a copy, and never acts from search, navigation, Enum, or result panes.
+  creating a copy, and never acts from Tag/Access popups, search, navigation, Enum, or result
+  panes.
 - Managed RTL generation and reverse synchronization through an explicitly marked region.
 - Stable-ID, property-level three-way merge using the last synchronized model as the base.
 - Automatic merge for independent changes and explicit Workbench/RTL conflict resolution from
