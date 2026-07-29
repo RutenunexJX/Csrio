@@ -42,6 +42,7 @@
 #include <QPointer>
 #include <QSettings>
 #include <QShortcut>
+#include <QScrollBar>
 #include <QSplitter>
 #include <QStandardItemModel>
 #include <QSignalSpy>
@@ -1215,7 +1216,34 @@ void GuiSmokeTests::persistsWorkbenchLayoutPreferences()
         registers->setColumnWidth(10, 181);
         fields->setColumnWidth(0, 223);
         fields->setColumnWidth(5, 149);
+        registers->setColumnWidth(1, 500);
+        registers->setColumnWidth(6, 500);
+        fields->setColumnWidth(6, 500);
+        fields->setColumnWidth(7, 500);
         QCoreApplication::processEvents();
+
+        const QModelIndex registerTarget =
+            registers->model()->index(0, 10);
+        registers->setCurrentIndex(registerTarget);
+        registers->selectionModel()->select(
+            registerTarget,
+            QItemSelectionModel::ClearAndSelect);
+        const QModelIndex fieldTarget =
+            fields->model()->index(0, 5);
+        fields->setCurrentIndex(fieldTarget);
+        fields->selectionModel()->select(
+            fieldTarget,
+            QItemSelectionModel::ClearAndSelect);
+        QVERIFY(registers->horizontalScrollBar()->maximum() > 0);
+        QVERIFY(fields->horizontalScrollBar()->maximum() > 0);
+        registers->horizontalScrollBar()->setValue(
+            registers->horizontalScrollBar()->maximum() / 2);
+        fields->horizontalScrollBar()->setValue(
+            fields->horizontalScrollBar()->maximum() / 2);
+        const int registerScroll =
+            registers->horizontalScrollBar()->value();
+        const int fieldScroll =
+            fields->horizontalScrollBar()->value();
 
         QVERIFY(controller->editWorkspace(
             QStringLiteral(
@@ -1236,6 +1264,10 @@ void GuiSmokeTests::persistsWorkbenchLayoutPreferences()
             fields->columnWidth(0), 223, 2000);
         QTRY_COMPARE_WITH_TIMEOUT(
             fields->columnWidth(5), 149, 2000);
+        QTRY_COMPARE_WITH_TIMEOUT(
+            registers->horizontalScrollBar()->value(), registerScroll, 2000);
+        QTRY_COMPARE_WITH_TIMEOUT(
+            fields->horizontalScrollBar()->value(), fieldScroll, 2000);
         controller->undo();
         QTRY_VERIFY_WITH_TIMEOUT(
             !controller->isDirty(), 2000);
@@ -1243,6 +1275,10 @@ void GuiSmokeTests::persistsWorkbenchLayoutPreferences()
             registers->columnWidth(0), 237, 2000);
         QTRY_COMPARE_WITH_TIMEOUT(
             fields->columnWidth(0), 223, 2000);
+        QTRY_COMPARE_WITH_TIMEOUT(
+            registers->horizontalScrollBar()->value(), registerScroll, 2000);
+        QTRY_COMPARE_WITH_TIMEOUT(
+            fields->horizontalScrollBar()->value(), fieldScroll, 2000);
 
         geometry = first.saveGeometry();
         workspaceSizes = workspace->sizes();

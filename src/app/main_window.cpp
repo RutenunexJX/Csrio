@@ -49,6 +49,7 @@
 #include <QRegularExpression>
 #include <QScopedValueRollback>
 #include <QScreen>
+#include <QScrollBar>
 #include <QSignalBlocker>
 #include <QShortcut>
 #include <QSettings>
@@ -425,6 +426,8 @@ struct TableCellReference {
 struct TableSelectionSnapshot {
     std::vector<TableCellReference> selected;
     std::optional<TableCellReference> current;
+    int horizontalScroll{0};
+    int verticalScroll{0};
 };
 
 [[nodiscard]] std::optional<TableCellReference>
@@ -459,6 +462,10 @@ captureTableSelection(QTableView* view, int objectRole, int propertyRole)
     }
     snapshot.current =
         tableCellReference(view->currentIndex(), objectRole, propertyRole);
+    snapshot.horizontalScroll =
+        view->horizontalScrollBar()->value();
+    snapshot.verticalScroll =
+        view->verticalScrollBar()->value();
     return snapshot;
 }
 
@@ -493,6 +500,10 @@ void restoreTableSelection(QTableView* view, const TableSelectionSnapshot& snaps
     if (restoredCurrent.isValid()) {
         view->selectionModel()->setCurrentIndex(
             restoredCurrent, QItemSelectionModel::NoUpdate);
+        view->horizontalScrollBar()->setValue(
+            snapshot.horizontalScroll);
+        view->verticalScrollBar()->setValue(
+            snapshot.verticalScroll);
     }
 }
 
