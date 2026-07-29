@@ -152,6 +152,7 @@ private slots:
     void savesActiveChoiceEditorWithShortcut();
     void rejectsInvalidActiveEditorBeforeSave();
     void deletesFocusedRegisterAndRestoresIt();
+    void warnsWhenDeleteShiftAffectsFilteredRegisters();
     void rejectsUnsafeDeleteAndShift();
     void editsUndoesAndSavesProject();
     void rejectsInvalidManagedRtl();
@@ -12689,6 +12690,189 @@ void GuiSmokeTests::deletesFocusedRegisterAndRestoresIt()
     QCOMPARE(threshold->description,
              std::string("Numeric threshold definition."));
     QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::warnsWhenDeleteShiftAffectsFilteredRegisters()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest =
+        directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createTwoRegisterProject(manifest);
+
+    MainWindow window;
+    QVERIFY(window.openProjectPath(manifest));
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+
+    auto* registers =
+        window.findChild<QTableView*>(
+            QStringLiteral("registerView"));
+    auto* tagFilter =
+        window.findChild<QComboBox*>(
+            QStringLiteral("tagFilter"));
+    auto* controller =
+        window.findChild<ProjectController*>();
+    QVERIFY(registers != nullptr);
+    QVERIFY(tagFilter != nullptr);
+    QVERIFY(controller != nullptr);
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Add filtered delete tail"),
+        [](regmap::Workspace& workspace) {
+            auto* block = regmap::findRegisterBlock(
+                workspace, "block-control");
+            QVERIFY(block != nullptr);
+            regmap::Register tail;
+            tail.id = "reg-visible-tail";
+            tail.name = "VISIBLE_TAIL";
+            tail.offset = 8;
+            tail.width = 32;
+            tail.array.count = 1;
+            tail.array.stride = 4;
+            tail.type =
+                regmap::FieldType::unsignedInteger;
+            tail.initialValue =
+                regmap::UnsignedValue(0);
+            tail.resetValue =
+                regmap::UnsignedValue(0);
+            tail.access =
+                regmap::AccessMode::readWrite;
+            tail.tags = {"existing"};
+            block->registers.push_back(std::move(tail));
+        }));
+    QVERIFY(regmap::validateWorkspace(
+                *controller->workspace()).empty());
+
+    int existingFilter = -1;
+    for (int index = 0; index < tagFilter->count(); ++index) {
+        if (tagFilter->itemText(index) ==
+            QStringLiteral("existing")) {
+            existingFilter = index;
+            break;
+        }
+    }
+    QVERIFY(existingFilter > 0);
+    tagFilter->setCurrentIndex(existingFilter);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()->rowCount(), 3, 2000);
+    QCOMPARE(
+        registers->model()->index(0, 0)
+            .data(Qt::UserRole + 1)
+            .toString(),
+        QStringLiteral("reg-status"));
+    QCOMPARE(
+        registers->model()->index(1, 0)
+            .data(Qt::UserRole + 1)
+            .toString(),
+        QStringLiteral("reg-visible-tail"));
+
+    struct Invocation {
+        bool dialogSeen{false};
+        bool filterImpactDescribed{false};
+    };
+    const auto invokeDelete =
+        [&](QMessageBox::StandardButton response) {
+            Invocation result;
+            registers->setCurrentIndex(
+                registers->model()->index(0, 0));
+            registers->setFocus(Qt::OtherFocusReason);
+            window.activateWindow();
+            QCoreApplication::processEvents();
+            QTimer::singleShot(0, &window, [&] {
+                auto* dialog =
+                    qobject_cast<QMessageBox*>(
+                        QApplication::activeModalWidget());
+                if (dialog == nullptr) {
+                    return;
+                }
+                result.dialogSeen = true;
+                result.filterImpactDescribed =
+                    dialog->windowTitle() ==
+                        QStringLiteral(
+                            "Delete and Shift Registers") &&
+                    dialog->text().contains(
+                        QStringLiteral(
+                            "Tag Filter \"existing\"")) &&
+                    dialog->text().contains(
+                        QStringLiteral(
+                            "hides 1 of these 2 following")) &&
+                    dialog->text().contains(
+                        QStringLiteral(
+                            "Hidden registers will still shift")) &&
+                    dialog->text().contains(
+                        QStringLiteral("clear the filter")) &&
+                    dialog->defaultButton() ==
+                        dialog->button(QMessageBox::No);
+                QTest::mouseClick(
+                    dialog->button(response),
+                    Qt::LeftButton);
+            });
+            QTest::keyClick(registers, Qt::Key_Delete);
+            return result;
+        };
+
+    const std::size_t undoDepth =
+        controller->undoDepth();
+    const Invocation cancelled =
+        invokeDelete(QMessageBox::No);
+    QVERIFY(cancelled.dialogSeen);
+    QVERIFY(cancelled.filterImpactDescribed);
+    QCOMPARE(controller->undoDepth(), undoDepth);
+    QCOMPARE(
+        regmap::findRegister(
+            *controller->workspace(), "reg-control")->offset,
+        std::uint64_t{4});
+    QCOMPARE(
+        regmap::findRegister(
+            *controller->workspace(),
+            "reg-visible-tail")->offset,
+        std::uint64_t{8});
+
+    const Invocation confirmed =
+        invokeDelete(QMessageBox::Yes);
+    QVERIFY(confirmed.dialogSeen);
+    QVERIFY(confirmed.filterImpactDescribed);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findRegister(
+            *controller->workspace(), "reg-status") == nullptr,
+        2000);
+    QCOMPARE(
+        regmap::findRegister(
+            *controller->workspace(), "reg-control")->offset,
+        std::uint64_t{0});
+    QCOMPARE(
+        regmap::findRegister(
+            *controller->workspace(),
+            "reg-visible-tail")->offset,
+        std::uint64_t{4});
+    QCOMPARE(
+        tagFilter->currentText(),
+        QStringLiteral("existing"));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral(
+            "1 shifted register hidden by Tag Filter existing")));
+
+    controller->undo();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findRegister(
+            *controller->workspace(), "reg-status") != nullptr,
+        2000);
+    QCOMPARE(
+        regmap::findRegister(
+            *controller->workspace(), "reg-control")->offset,
+        std::uint64_t{4});
+    QCOMPARE(
+        regmap::findRegister(
+            *controller->workspace(),
+            "reg-visible-tail")->offset,
+        std::uint64_t{8});
+    QCOMPARE(
+        tagFilter->currentText(),
+        QStringLiteral("existing"));
 
     makeGeneratedFilesWritable(directory.path());
 }

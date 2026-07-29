@@ -7555,10 +7555,13 @@ void MainWindow::deleteSelectedRegisterAndShift()
     std::uint64_t firstFollowingOffset = 0;
     std::uint64_t lastFollowingOffset = 0;
     std::size_t affectedCount = 0;
+    std::size_t hiddenAffectedCount = 0;
     std::string underflowRegisterName;
     RegisterDeletionImpact contentImpact;
     std::uint64_t underflowOffset = 0;
     const std::string registerId = selectedRegisterId_;
+    const std::string activeTagFilter =
+        selectedTagFilter_;
     for (const auto& space : workspace->addressSpaces) {
         for (const auto& block : space.blocks) {
             const auto iterator =
@@ -7587,6 +7590,20 @@ void MainWindow::deleteSelectedRegisterAndShift()
                 nextId = block.registers[index + 1].id;
                 firstFollowingOffset = block.registers[index + 1].offset;
                 lastFollowingOffset = block.registers.back().offset;
+                if (!activeTagFilter.empty()) {
+                    hiddenAffectedCount =
+                        static_cast<std::size_t>(
+                            std::ranges::count_if(
+                                std::next(iterator),
+                                block.registers.end(),
+                                [&activeTagFilter](
+                                    const regmap::Register& following) {
+                                    return std::ranges::find(
+                                               following.tags,
+                                               activeTagFilter) ==
+                                        following.tags.end();
+                                }));
+                }
                 const auto underflow = std::find_if(
                     std::next(iterator), block.registers.end(),
                     [shift](const regmap::Register& following) {
@@ -7681,12 +7698,22 @@ void MainWindow::deleteSelectedRegisterAndShift()
                   "non-zero Initial/Reset values, or descriptions.")
             : QStringLiteral("Deleting it also removes: %1.")
                   .arg(removedContent.join(QStringLiteral(", ")));
+    const QString filterWarning =
+        hiddenAffectedCount == 0
+            ? QString{}
+            : QStringLiteral(
+                  "\n\nTag Filter \"%1\" hides %2 of these %3 following "
+                  "register(s). Hidden registers will still shift. Choose No "
+                  "and clear the filter to review them first.")
+                  .arg(fromUtf8(activeTagFilter))
+                  .arg(hiddenAffectedCount)
+                  .arg(affectedCount);
     const QString prompt =
         QStringLiteral(
-            "Delete %1 at offset %2?\n\n%3\n\n%4\n\n"
+            "Delete %1 at offset %2?\n\n%3\n\n%4%5\n\n"
             "This can be restored with Ctrl+Z.")
             .arg(fromUtf8(registerName), hex(registerOffset), contentSummary,
-                 shiftImpact);
+                 shiftImpact, filterWarning);
     if (QMessageBox::warning(this, QStringLiteral("Delete and Shift Registers"), prompt,
                              QMessageBox::Yes | QMessageBox::No, QMessageBox::No) !=
         QMessageBox::Yes) {
@@ -7707,10 +7734,24 @@ void MainWindow::deleteSelectedRegisterAndShift()
         if (!nextId.empty()) {
             selectRegister(nextId);
         }
+        const QString hiddenFeedback =
+            hiddenAffectedCount == 0
+                ? QString{}
+                : QStringLiteral(" · %1 hidden by Tag Filter %2")
+                      .arg(
+                          hiddenAffectedCount == 1
+                              ? QStringLiteral(
+                                    "1 shifted register")
+                              : QStringLiteral(
+                                    "%1 shifted registers")
+                                    .arg(hiddenAffectedCount),
+                          fromUtf8(activeTagFilter));
         statusBar()->showMessage(
-            QStringLiteral("Deleted %1 · shifted %2 register(s) · Ctrl+Z to restore")
+            QStringLiteral(
+                "Deleted %1 · shifted %2 register(s)%3 · Ctrl+Z to restore")
                 .arg(fromUtf8(registerName))
-                .arg(affectedCount),
+                .arg(affectedCount)
+                .arg(hiddenFeedback),
             6000);
     }
 }

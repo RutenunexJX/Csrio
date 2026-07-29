@@ -170,7 +170,9 @@ clicking an existing tag selects it, and the adjacent `+` creates a tag only whe
 unique. A Register created while **Tag Filter** is active inherits that tag and remains visible
 in the filtered table.
 The register context menu can convert a register to a red, bold reserved slot or delete
-it while shifting subsequent offsets upward. Page and block properties are shown once in the
+it while shifting subsequent offsets upward. When a Tag Filter hides following Registers, the
+delete confirmation states how many hidden Registers will still shift and defaults to cancel.
+Page and block properties are shown once in the
 highlighted context bar above the register table.
 
 Changing a scalar Register to Type `field` creates its first `NEW_FIELD` in the same undoable
