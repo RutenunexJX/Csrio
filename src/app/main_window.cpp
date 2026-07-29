@@ -4230,6 +4230,7 @@ void MainWindow::refreshGenerated()
          QStringLiteral("Updated")});
     const auto& artifacts = controller_.artifacts();
     bool retryNeeded = false;
+    const bool modelDirty = controller_.isDirty();
     for (std::size_t index = 0; index < artifacts.size(); ++index) {
         const auto& artifact = artifacts[index];
         auto* kind = item(fromUtf8(regmap::toString(artifact.kind)));
@@ -4251,10 +4252,23 @@ void MainWindow::refreshGenerated()
         } else if (!information.exists()) {
             status = QStringLiteral("Missing");
             retryNeeded = true;
+        } else if (modelDirty) {
+            status = QStringLiteral("Out of date");
         }
         auto* statusItem = item(status);
-        statusItem->setToolTip(failure);
-        if (status != QStringLiteral("Synchronized")) {
+        if (!failure.isEmpty()) {
+            statusItem->setToolTip(failure);
+        } else if (status == QStringLiteral("Missing")) {
+            statusItem->setToolTip(
+                QStringLiteral("The generated file is missing; use Retry outputs."));
+        } else if (status == QStringLiteral("Out of date")) {
+            statusItem->setToolTip(
+                QStringLiteral("Save & Sync to update this output."));
+        }
+        if (status == QStringLiteral("Out of date")) {
+            statusItem->setForeground(
+                QColor(QStringLiteral("#8A5A00")));
+        } else if (status != QStringLiteral("Synchronized")) {
             statusItem->setForeground(QColor(QStringLiteral("#B3261E")));
         }
         generatedModel_->appendRow(
@@ -4265,7 +4279,8 @@ void MainWindow::refreshGenerated()
     }
     generatedView_->resizeColumnsToContents();
     tabs_->setTabText(1, QStringLiteral("Generated (%1)").arg(artifacts.size()));
-    retryOutputsButton_->setVisible(retryNeeded);
+    retryOutputsButton_->setVisible(
+        retryNeeded && !modelDirty);
     updateBottomPanelVisibility();
     updateSyncPresentation();
 }
@@ -4363,9 +4378,6 @@ void MainWindow::updateSyncPresentation(const QString& message)
     } else if (controller_.hasConflicts()) {
         state = QStringLiteral("conflict");
         text = QStringLiteral("Conflict · %1").arg(controller_.conflicts().size());
-    } else if (outputFailure) {
-        state = QStringLiteral("partial");
-        text = QStringLiteral("Saved · output failed");
     } else if (controller_.hasProjectErrors()) {
         state = QStringLiteral("blocked");
         if (controller_.isDirty()) {
@@ -4379,7 +4391,15 @@ void MainWindow::updateSyncPresentation(const QString& message)
         }
     } else if (controller_.isDirty()) {
         state = QStringLiteral("dirty");
-        text = QStringLiteral("Unsaved · %1 change(s)").arg(controller_.changes().size());
+        text = QStringLiteral("Unsaved · %1 change(s)%2")
+                   .arg(controller_.changes().size())
+                   .arg(
+                       outputFailure
+                           ? QStringLiteral(" · output failed")
+                           : QString{});
+    } else if (outputFailure) {
+        state = QStringLiteral("partial");
+        text = QStringLiteral("Saved · output failed");
     } else if (busy) {
         state = QStringLiteral("busy");
         text = QStringLiteral("Synchronizing…");

@@ -813,16 +813,27 @@ void ProjectController::notifyModelEdited()
     changes_ = baseline_ && store_.workspace()
         ? regmap::diffWorkspaces(*baseline_, *store_.workspace())
         : std::vector<regmap::ModelChange> {};
-    artifacts_.clear();
-    generationDiagnostics_.clear();
     rebuildDiagnostics();
     emit projectChanged();
     emit diagnosticsChanged();
     emit generationChanged();
     emit editStateChanged();
-    emit syncStatusChanged(
-        hasProjectErrors() ? QStringLiteral("Model edited; resolve validation/synchronization errors")
-                           : QStringLiteral("Model edited; save to merge with RTL and update outputs"));
+    if (!store_.dirty()) {
+        emit syncStatusChanged(
+            containsErrors(generationDiagnostics_)
+                ? QStringLiteral(
+                      "Saved model restored; one or more read-only outputs "
+                      "remain failed")
+                : QStringLiteral(
+                      "Saved model restored; read-only outputs are current"));
+    } else {
+        emit syncStatusChanged(
+            hasProjectErrors()
+                ? QStringLiteral(
+                      "Model edited; resolve validation/synchronization errors")
+                : QStringLiteral(
+                      "Model edited; save to merge with RTL and update outputs"));
+    }
 }
 
 std::filesystem::path ProjectController::baselinePath() const

@@ -90,6 +90,8 @@ Workspace -> Page (Address Space) -> Register Block -> Register -> Field -> Enum
   synchronized, blocked, partial-output-failure, and conflict states. Valid active text and Access
   choice cell editors are committed before saving; rejected edits block the save.
 - Per-output status and update time for XLSX, C header, and Markdown, with a direct retry action.
+  Unsaved edits keep these rows visible as **Out of date**; Undo back to the saved model restores
+  **Synchronized** without rewriting unchanged files.
 - Global `Ctrl+F` search across pages, blocks, register/field names, addresses, tags, enum values,
   and descriptions; Enter/F3 cycles results and selects the matching Workbench object.
 - Spreadsheet-style cell selection plus tab-separated copy and paste for editable table cells.

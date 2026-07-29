@@ -128,6 +128,7 @@ private slots:
     void keepsZeroMatchTagFilterThroughUndoAndRedo();
     void insertsRegisterBetweenRows();
     void showsUnifiedSyncStateAndGeneratedResults();
+    void restoresGeneratedStateWhenUndoReturnsToSavedModel();
     void reportsBlockedUnsavedSyncAndRecovers();
     void searchesAndNavigatesProblems();
     void refreshesSearchResultsAfterModelChanges();
@@ -8001,6 +8002,117 @@ void GuiSmokeTests::showsUnifiedSyncStateAndGeneratedResults()
     }
 #endif
 
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::restoresGeneratedStateWhenUndoReturnsToSavedModel()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest =
+        directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createProject(manifest);
+
+    MainWindow window;
+    QVERIFY(window.openProjectPath(manifest));
+    window.resize(1200, 760);
+    window.show();
+    QTest::qWait(50);
+
+    auto* state =
+        window.findChild<QLabel*>(
+            QStringLiteral("syncStateBadge"));
+    auto* generated =
+        window.findChild<QTableView*>(
+            QStringLiteral("generatedView"));
+    auto* retry =
+        window.findChild<QPushButton*>(
+            QStringLiteral("retryOutputsButton"));
+    auto* registers =
+        window.findChild<QTableView*>(
+            QStringLiteral("registerView"));
+    auto* controller =
+        window.findChild<ProjectController*>();
+    QVERIFY(state != nullptr);
+    QVERIFY(generated != nullptr);
+    QVERIFY(retry != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(controller != nullptr);
+
+    QTRY_COMPARE_WITH_TIMEOUT(
+        generated->model()->rowCount(), 3, 2000);
+    QStringList savedUpdateTimes;
+    for (int row = 0;
+         row < generated->model()->rowCount(); ++row) {
+        QCOMPARE(
+            generated->model()->index(row, 2)
+                .data().toString(),
+            QStringLiteral("Synchronized"));
+        savedUpdateTimes.push_back(
+            generated->model()->index(row, 3)
+                .data().toString());
+    }
+    QCOMPARE(controller->artifacts().size(), std::size_t{3});
+
+    QVERIFY(registers->model()->setData(
+        registers->model()->index(0, 11),
+        QStringLiteral("Unsaved generated-state edit.")));
+    QTRY_VERIFY_WITH_TIMEOUT(controller->isDirty(), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        state->text().startsWith(QStringLiteral("Unsaved")),
+        2000);
+    QCOMPARE(controller->artifacts().size(), std::size_t{3});
+    QCOMPARE(generated->model()->rowCount(), 3);
+    for (int row = 0;
+         row < generated->model()->rowCount(); ++row) {
+        QCOMPARE(
+            generated->model()->index(row, 2)
+                .data().toString(),
+            QStringLiteral("Out of date"));
+        QVERIFY(
+            generated->model()->index(row, 2)
+                .data(Qt::ToolTipRole).toString()
+                .contains(QStringLiteral("Save & Sync")));
+    }
+    QVERIFY(retry->isHidden());
+
+    controller->undo();
+    QTRY_VERIFY_WITH_TIMEOUT(!controller->isDirty(), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        state->text(),
+        QStringLiteral("Synchronized · 3 output(s)"),
+        2000);
+    QVERIFY(state->toolTip().contains(
+        QStringLiteral("Saved model restored")));
+    QCOMPARE(controller->artifacts().size(), std::size_t{3});
+    QCOMPARE(generated->model()->rowCount(), 3);
+    for (int row = 0;
+         row < generated->model()->rowCount(); ++row) {
+        QCOMPARE(
+            generated->model()->index(row, 2)
+                .data().toString(),
+            QStringLiteral("Synchronized"));
+        QCOMPARE(
+            generated->model()->index(row, 3)
+                .data().toString(),
+            savedUpdateTimes[row]);
+    }
+
+    controller->redo();
+    QTRY_VERIFY_WITH_TIMEOUT(controller->isDirty(), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        state->text().startsWith(QStringLiteral("Unsaved")),
+        2000);
+    for (int row = 0;
+         row < generated->model()->rowCount(); ++row) {
+        QCOMPARE(
+            generated->model()->index(row, 2)
+                .data().toString(),
+            QStringLiteral("Out of date"));
+    }
+
+    controller->undo();
+    QTRY_VERIFY_WITH_TIMEOUT(!controller->isDirty(), 2000);
     makeGeneratedFilesWritable(directory.path());
 }
 
