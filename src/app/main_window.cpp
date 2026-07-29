@@ -3519,6 +3519,7 @@ void MainWindow::refreshProject()
         searchResultIndex_ = -1;
         globalSearchEdit_->clear();
         searchResultLabel_->clear();
+        hierarchyInitialized_ = false;
     }
     populateHierarchy();
     updateHierarchyAddAction();
@@ -3605,10 +3606,40 @@ void MainWindow::updateContextBar()
 void MainWindow::populateHierarchy()
 {
     QScopedValueRollback guard(refreshing_, true);
+    const bool restoreExpansion =
+        hierarchyInitialized_;
+    std::set<std::string> expandedObjects;
+    QString previousCurrentObject;
+    if (restoreExpansion) {
+        previousCurrentObject =
+            hierarchyView_->currentIndex()
+                .data(objectIdRole)
+                .toString();
+        const auto captureExpansion =
+            [&](const auto& self,
+                const QModelIndex& parent) -> void {
+                for (int row = 0;
+                     row < hierarchyModel_->rowCount(parent);
+                     ++row) {
+                    const QModelIndex index =
+                        hierarchyModel_->index(row, 0, parent);
+                    if (hierarchyView_->isExpanded(index)) {
+                        expandedObjects.insert(
+                            index.data(objectIdRole)
+                                .toString()
+                                .toUtf8()
+                                .toStdString());
+                    }
+                    self(self, index);
+                }
+            };
+        captureExpansion(captureExpansion, {});
+    }
     hierarchyModel_->clear();
     hierarchyModel_->setHorizontalHeaderLabels({QStringLiteral("Workspace / Pages / Blocks")});
     const regmap::Workspace* workspace = controller_.workspace();
     if (workspace == nullptr) {
+        hierarchyInitialized_ = false;
         return;
     }
 
@@ -3650,7 +3681,29 @@ void MainWindow::populateHierarchy()
             }
         }
     }
-    hierarchyView_->expandAll();
+    if (!restoreExpansion) {
+        hierarchyView_->expandAll();
+    } else {
+        const auto restoreObjectExpansion =
+            [&](const auto& self,
+                const QModelIndex& parent) -> void {
+                for (int row = 0;
+                     row < hierarchyModel_->rowCount(parent);
+                     ++row) {
+                    const QModelIndex index =
+                        hierarchyModel_->index(row, 0, parent);
+                    const std::string id =
+                        index.data(objectIdRole)
+                            .toString()
+                            .toUtf8()
+                            .toStdString();
+                    hierarchyView_->setExpanded(
+                        index, expandedObjects.contains(id));
+                    self(self, index);
+                }
+            };
+        restoreObjectExpansion(restoreObjectExpansion, {});
+    }
     if (selected.isValid()) {
         const std::string newAddressId =
             selected.data(addressIdRole).toString().toUtf8().toStdString();
@@ -3663,7 +3716,19 @@ void MainWindow::populateHierarchy()
         selectedAddressId_ = newAddressId;
         selectedBlockId_ = newBlockId;
         hierarchyView_->setCurrentIndex(selected);
+        const QString selectedObject =
+            selected.data(objectIdRole).toString();
+        if (restoreExpansion &&
+            selectedObject != previousCurrentObject) {
+            for (QModelIndex parent = selected.parent();
+                 parent.isValid();
+                 parent = parent.parent()) {
+                hierarchyView_->setExpanded(parent, true);
+            }
+            hierarchyView_->scrollTo(selected);
+        }
     }
+    hierarchyInitialized_ = true;
     hierarchyView_->resizeColumnToContents(0);
 }
 

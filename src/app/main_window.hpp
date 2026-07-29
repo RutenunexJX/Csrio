@@ -130,6 +130,7 @@ private:
     bool committingActiveEditor_{false};
     bool activeEditorCommitRejected_{false};
     bool enumOnlyEditorLayout_{false};
+    bool hierarchyInitialized_{false};
     bool registerColumnsInitialized_{false};
     bool fieldColumnsInitialized_{false};
     QByteArray expandedEditorSplitterState_;

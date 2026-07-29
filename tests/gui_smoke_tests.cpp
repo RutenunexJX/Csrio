@@ -86,6 +86,7 @@ private slots:
     void persistsWorkbenchLayoutPreferences();
     void keepsEnumEditorCompact();
     void navigatesHierarchyAndOpensFieldsExplicitly();
+    void preservesHierarchyExpansionAcrossRefresh();
     void hierarchyContextActionsUseRightClickedTarget();
     void confirmsHierarchyDeletionImpactAndRestoresIt();
     void placesNewHierarchyObjectsWithoutAddressErrors();
@@ -1845,6 +1846,102 @@ void GuiSmokeTests::navigatesHierarchyAndOpensFieldsExplicitly()
                  .data(Qt::UserRole + 1).toString(),
              otherRegisterId);
     QCOMPARE(fields->model()->rowCount(), 0);
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::preservesHierarchyExpansionAcrossRefresh()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString firstManifest =
+        directory.filePath(
+            QStringLiteral("first.regmap.yaml"));
+    const QString secondManifest =
+        directory.filePath(
+            QStringLiteral("second.regmap.yaml"));
+    createProject(firstManifest);
+    createProject(secondManifest);
+
+    MainWindow window;
+    QVERIFY(window.openProjectPath(firstManifest));
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+
+    auto* hierarchy =
+        window.findChild<QTreeView*>(
+            QStringLiteral("hierarchyView"));
+    auto* controller =
+        window.findChild<ProjectController*>();
+    QVERIFY(hierarchy != nullptr);
+    QVERIFY(controller != nullptr);
+
+    QModelIndex root =
+        hierarchyIndexByObjectId(
+            hierarchy->model(),
+            QStringLiteral("gui-workspace"));
+    QModelIndex page =
+        hierarchyIndexByObjectId(
+            hierarchy->model(),
+            QStringLiteral("space-main"));
+    QVERIFY(root.isValid());
+    QVERIFY(page.isValid());
+    QVERIFY(hierarchy->isExpanded(root));
+    QVERIFY(hierarchy->isExpanded(page));
+
+    hierarchy->setExpanded(page, false);
+    QVERIFY(!hierarchy->isExpanded(page));
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral(
+            "Exercise hierarchy refresh"),
+        [](regmap::Workspace& workspace) {
+            if (auto* reg =
+                    regmap::findRegister(
+                        workspace, "reg-status")) {
+                reg->description =
+                    "Hierarchy refresh";
+            }
+        }));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (page = hierarchyIndexByObjectId(
+             hierarchy->model(),
+             QStringLiteral("space-main")))
+            .isValid(),
+        2000);
+    QVERIFY(!hierarchy->isExpanded(page));
+
+    controller->undo();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !controller->isDirty(), 2000);
+    page = hierarchyIndexByObjectId(
+        hierarchy->model(),
+        QStringLiteral("space-main"));
+    QVERIFY(page.isValid());
+    QVERIFY(!hierarchy->isExpanded(page));
+
+    controller->reload();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (page = hierarchyIndexByObjectId(
+             hierarchy->model(),
+             QStringLiteral("space-main")))
+            .isValid(),
+        2000);
+    QVERIFY(!hierarchy->isExpanded(page));
+
+    QVERIFY(window.openProjectPath(secondManifest));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (root = hierarchyIndexByObjectId(
+             hierarchy->model(),
+             QStringLiteral("gui-workspace")))
+            .isValid(),
+        2000);
+    page = hierarchyIndexByObjectId(
+        hierarchy->model(),
+        QStringLiteral("space-main"));
+    QVERIFY(page.isValid());
+    QVERIFY(hierarchy->isExpanded(root));
+    QVERIFY(hierarchy->isExpanded(page));
 
     makeGeneratedFilesWritable(directory.path());
 }
