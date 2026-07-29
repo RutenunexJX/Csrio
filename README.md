@@ -79,12 +79,13 @@ Workspace -> Page (Address Space) -> Register Block -> Register -> Field -> Enum
   Escape or closing the prompt as Cancel. A cancelled operation explicitly reports that the edits
   were kept; a blocked save keeps the current project open with its pending edits intact.
 - One visible **Save & Sync** action and a persistent state badge for unsaved, synchronizing,
-  synchronized, blocked, partial-output-failure, and conflict states.
+  synchronized, blocked, partial-output-failure, and conflict states. Valid active text and Access
+  choice cell editors are committed before saving; rejected edits block the save.
 - Per-output status and update time for XLSX, C header, and Markdown, with a direct retry action.
 - Global `Ctrl+F` search across pages, blocks, register/field names, addresses, tags, enum values,
   and descriptions; Enter/F3 cycles results and selects the matching Workbench object.
 - Spreadsheet-style cell selection plus tab-separated copy and paste for editable table cells.
-  Popup text inputs retain normal text editing, while Tag/Access choice lists cannot redirect
+  Popup text inputs retain normal text editing, while Tag/Access choice editors cannot redirect
   copy, paste, Delete, or workspace Undo/Redo into the underlying table.
 - `Ctrl+D` duplicates the current Register or Field only while its table (or active cell editor)
   has focus. It commits a valid in-place edit before copying, rejects an invalid edit without

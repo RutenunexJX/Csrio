@@ -139,6 +139,7 @@ private slots:
     void requiresExplicitCellEditing();
     void keepsUndoRedoInsideActiveEditor();
     void savesActiveEditorWithShortcut();
+    void savesActiveChoiceEditorWithShortcut();
     void rejectsInvalidActiveEditorBeforeSave();
     void deletesFocusedRegisterAndRestoresIt();
     void rejectsUnsafeDeleteAndShift();
@@ -11231,6 +11232,113 @@ void GuiSmokeTests::savesActiveEditorWithShortcut()
     QCOMPARE(QString::fromStdString(
                  regmap::findRegister(*reopened.workspace, "reg-status")->name),
              savedName);
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::savesActiveChoiceEditorWithShortcut()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest =
+        directory.filePath(
+            QStringLiteral("choice-editor-save.regmap.yaml"));
+    createProject(manifest);
+
+    MainWindow window;
+    QVERIFY(window.openProjectPath(manifest));
+    window.resize(1100, 720);
+    window.show();
+    window.activateWindow();
+    QTest::qWait(50);
+
+    auto* registers =
+        window.findChild<QTableView*>(
+            QStringLiteral("registerView"));
+    auto* fields =
+        window.findChild<QTableView*>(
+            QStringLiteral("fieldView"));
+    auto* controller =
+        window.findChild<ProjectController*>();
+    auto* copy =
+        window.findChild<QAction*>(
+            QStringLiteral("copySelectionAction"));
+    auto* paste =
+        window.findChild<QAction*>(
+            QStringLiteral("pasteSelectionAction"));
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+    QVERIFY(controller != nullptr);
+    QVERIFY(copy != nullptr);
+    QVERIFY(paste != nullptr);
+    QVERIFY(!controller->isDirty());
+
+    Q_EMIT registers->clicked(
+        registers->model()->index(0, 5));
+    QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
+    const QModelIndex access =
+        fields->model()->index(0, 8);
+    QCOMPARE(access.data().toString(),
+             QStringLiteral("RO"));
+    fields->setCurrentIndex(access);
+    fields->scrollTo(access);
+    fields->setFocus(Qt::OtherFocusReason);
+    fields->edit(access);
+
+    const auto visibleAccessEditor =
+        [fields]() -> QComboBox* {
+        for (auto* editor :
+             fields->findChildren<QComboBox*>(
+                 QStringLiteral("fieldAccessEditor"))) {
+            if (editor->isVisible()) {
+                return editor;
+            }
+        }
+        return nullptr;
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(
+        visibleAccessEditor() != nullptr, 2000);
+    auto* editor = visibleAccessEditor();
+    editor->setFocus(Qt::OtherFocusReason);
+
+    QApplication::clipboard()->setText(
+        QStringLiteral("CHOICE_COPY_SENTINEL"));
+    copy->trigger();
+    QCOMPARE(QApplication::clipboard()->text(),
+             QStringLiteral("CHOICE_COPY_SENTINEL"));
+    QApplication::clipboard()->setText(
+        QStringLiteral("WO"));
+    paste->trigger();
+    QCoreApplication::processEvents();
+    QCOMPARE(editor->currentText(),
+             QStringLiteral("RO"));
+    QCOMPARE(fields->model()->index(0, 8)
+                 .data().toString(),
+             QStringLiteral("RO"));
+    QVERIFY(!controller->isDirty());
+
+    editor->setCurrentText(QStringLiteral("NONE"));
+    QCOMPARE(editor->currentText(),
+             QStringLiteral("NONE"));
+    QCOMPARE(fields->model()->index(0, 8)
+                 .data().toString(),
+             QStringLiteral("RO"));
+    QTest::keyClick(editor, Qt::Key_S,
+                    Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fields->model()->index(0, 8).data().toString(),
+        QStringLiteral("NONE"), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(!controller->isDirty(), 2000);
+
+    const auto reopened =
+        regmap::openProject(
+            std::filesystem::path(manifest.toStdWString()));
+    QVERIFY(reopened.workspace.has_value());
+    const auto* ready =
+        regmap::findField(*reopened.workspace, "field-ready");
+    QVERIFY(ready != nullptr);
+    QCOMPARE(ready->softwareAccess,
+             regmap::AccessMode::none);
 
     makeGeneratedFilesWritable(directory.path());
 }

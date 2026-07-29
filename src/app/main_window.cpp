@@ -3055,6 +3055,10 @@ bool MainWindow::commitActiveEditor()
     if (auto* edit = qobject_cast<QLineEdit*>(QApplication::focusWidget())) {
         const QScopedValueRollback commitGuard(committingActiveEditor_, true);
         edit->clearFocus();
+    } else if (auto* combo =
+                   qobject_cast<QComboBox*>(QApplication::focusWidget())) {
+        const QScopedValueRollback commitGuard(committingActiveEditor_, true);
+        combo->clearFocus();
     }
     return !activeEditorCommitRejected_;
 }
@@ -7967,6 +7971,9 @@ void MainWindow::copySelection()
         edit->copy();
         return;
     }
+    if (focusUsesChoiceEditor(focus)) {
+        return;
+    }
     if (focusBelongsToWidgetOutsidePopup(focus, hierarchyView_)) {
         copyHierarchySelection();
         return;
@@ -8033,6 +8040,9 @@ void MainWindow::pasteSelection()
     QWidget* focus = QApplication::focusWidget();
     if (auto* edit = qobject_cast<QLineEdit*>(focus)) {
         edit->paste();
+        return;
+    }
+    if (focusUsesChoiceEditor(focus)) {
         return;
     }
     if (focusBelongsToWidgetOutsidePopup(focus, hierarchyView_)) {
