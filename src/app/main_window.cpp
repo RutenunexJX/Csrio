@@ -50,6 +50,7 @@
 #include <QScopedValueRollback>
 #include <QScreen>
 #include <QSignalBlocker>
+#include <QShortcut>
 #include <QSettings>
 #include <QSizePolicy>
 #include <QStyle>
@@ -777,6 +778,24 @@ private:
     popup->setFrameShape(QFrame::StyledPanel);
     popup->setFrameShadow(QFrame::Raised);
     popup->resize(std::max(preferredWidth, view->visualRect(index).width()), preferredHeight);
+
+    auto* closeShortcut =
+        new QShortcut(QKeySequence::Cancel, popup);
+    closeShortcut->setObjectName(
+        QStringLiteral("closeAnchoredPopupShortcut"));
+    closeShortcut->setContext(
+        Qt::WidgetWithChildrenShortcut);
+    const QPersistentModelIndex anchor(index);
+    QObject::connect(
+        closeShortcut, &QShortcut::activated, popup,
+        [popup, view, anchor] {
+            popup->close();
+            if (anchor.isValid()) {
+                view->setCurrentIndex(anchor);
+                view->scrollTo(anchor);
+            }
+            view->setFocus(Qt::OtherFocusReason);
+        });
 
     const QRect cell = view->visualRect(index);
     QPoint position = view->viewport()->mapToGlobal(cell.bottomLeft() + QPoint(0, 1));

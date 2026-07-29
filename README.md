@@ -86,7 +86,9 @@ Workspace -> Page (Address Space) -> Register Block -> Register -> Field -> Enum
   and descriptions; Enter/F3 cycles results and selects the matching Workbench object.
 - Spreadsheet-style cell selection plus tab-separated copy and paste for editable table cells.
   Popup text inputs retain normal text editing, while Tag/Access choice editors cannot redirect
-  copy, paste, Delete, or workspace Undo/Redo into the underlying table.
+  copy, paste, Delete, or workspace Undo/Redo into the underlying table. Escape closes either
+  popup, returns focus to its original cell, and does not apply typed Tag text or an unconfirmed
+  Access choice.
 - `Ctrl+D` duplicates the current Register or Field only while its table (or active cell editor)
   has focus. It commits a valid in-place edit before copying, rejects an invalid edit without
   creating a copy, and never acts from Tag/Access popups, search, navigation, Enum, or result

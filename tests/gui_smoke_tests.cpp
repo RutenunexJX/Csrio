@@ -41,6 +41,7 @@
 #include <QPalette>
 #include <QPointer>
 #include <QSettings>
+#include <QShortcut>
 #include <QSplitter>
 #include <QStandardItemModel>
 #include <QSignalSpy>
@@ -111,6 +112,7 @@ private slots:
     void confirmsDeletionOfFullyCoveredFieldsDuringDrag();
     void cancelsInterruptedFieldDrag();
     void editsTagsAndAccessFromDoubleClick();
+    void closesAnchoredPopupEditorsWithEscape();
     void keepsPopupEditingActionsLocal();
     void editsFieldAccessFromConstrainedChoices();
     void keepsAccessAndEffectsConsistentDuringEditing();
@@ -5956,6 +5958,120 @@ void GuiSmokeTests::editsTagsAndAccessFromDoubleClick()
     QTest::keyClick(access, Qt::Key_Return);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 9).data().toString(),
                               QStringLiteral("RO"), 2000);
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::closesAnchoredPopupEditorsWithEscape()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest =
+        directory.filePath(
+            QStringLiteral("popup-escape.regmap.yaml"));
+    createTwoRegisterProject(manifest);
+
+    MainWindow window;
+    QVERIFY(window.openProjectPath(manifest));
+    window.resize(1100, 720);
+    window.show();
+    window.activateWindow();
+    QTest::qWait(50);
+
+    auto* controller =
+        window.findChild<ProjectController*>();
+    auto* registers =
+        window.findChild<QTableView*>(
+            QStringLiteral("registerView"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(registers != nullptr);
+    const std::size_t undoDepth =
+        controller->undoDepth();
+
+    const QModelIndex tagIndex =
+        registers->model()->index(0, 10);
+    const QString originalTags =
+        tagIndex.data().toString();
+    registers->setCurrentIndex(tagIndex);
+    Q_EMIT registers->doubleClicked(tagIndex);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        QApplication::activePopupWidget() != nullptr, 2000);
+    auto* tagPopup =
+        qobject_cast<QFrame*>(
+            QApplication::activePopupWidget());
+    QVERIFY(tagPopup != nullptr);
+    QCOMPARE(tagPopup->objectName(),
+             QStringLiteral("tagPopup"));
+    auto* tagSearch =
+        tagPopup->findChild<QLineEdit*>(
+            QStringLiteral("tagSearch"));
+    auto* tagCloseShortcut =
+        tagPopup->findChild<QShortcut*>(
+            QStringLiteral("closeAnchoredPopupShortcut"));
+    QVERIFY(tagSearch != nullptr);
+    QVERIFY(tagCloseShortcut != nullptr);
+    QCOMPARE(tagCloseShortcut->context(),
+             Qt::WidgetWithChildrenShortcut);
+    tagSearch->setText(
+        QStringLiteral("unconfirmed-tag"));
+    tagSearch->setFocus(Qt::OtherFocusReason);
+    QTest::keyClick(tagSearch, Qt::Key_Escape);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        QApplication::activePopupWidget() == nullptr, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(registers->hasFocus(), 2000);
+    QCOMPARE(registers->currentIndex(), tagIndex);
+    QCOMPARE(registers->model()->index(0, 10)
+                 .data().toString(),
+             originalTags);
+    QCOMPARE(controller->undoDepth(), undoDepth);
+
+    const QModelIndex accessIndex =
+        registers->model()->index(0, 9);
+    const QString originalAccess =
+        accessIndex.data().toString();
+    registers->setCurrentIndex(accessIndex);
+    Q_EMIT registers->doubleClicked(accessIndex);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        QApplication::activePopupWidget() != nullptr, 2000);
+    auto* accessPopup =
+        qobject_cast<QFrame*>(
+            QApplication::activePopupWidget());
+    QVERIFY(accessPopup != nullptr);
+    QCOMPARE(accessPopup->objectName(),
+             QStringLiteral("accessPopup"));
+    auto* accessOptions =
+        accessPopup->findChild<QListWidget*>(
+            QStringLiteral("accessOptions"));
+    auto* accessCloseShortcut =
+        accessPopup->findChild<QShortcut*>(
+            QStringLiteral("closeAnchoredPopupShortcut"));
+    QVERIFY(accessOptions != nullptr);
+    QVERIFY(accessCloseShortcut != nullptr);
+    const int writeOnlyRow =
+        [&] {
+            for (int row = 0;
+                 row < accessOptions->count(); ++row) {
+                if (accessOptions->item(row)->text() ==
+                    QStringLiteral("WO")) {
+                    return row;
+                }
+            }
+            return -1;
+        }();
+    QVERIFY(writeOnlyRow >= 0);
+    accessOptions->setCurrentRow(writeOnlyRow);
+    QCOMPARE(accessOptions->currentItem()->text(),
+             QStringLiteral("WO"));
+    accessOptions->setFocus(Qt::OtherFocusReason);
+    QTest::keyClick(accessOptions, Qt::Key_Escape);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        QApplication::activePopupWidget() == nullptr, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(registers->hasFocus(), 2000);
+    QCOMPARE(registers->currentIndex(), accessIndex);
+    QCOMPARE(registers->model()->index(0, 9)
+                 .data().toString(),
+             originalAccess);
+    QCOMPARE(controller->undoDepth(), undoDepth);
 
     makeGeneratedFilesWritable(directory.path());
 }
