@@ -156,6 +156,7 @@ private slots:
     void keepsUndoRedoInsideActiveEditor();
     void savesActiveEditorWithShortcut();
     void tabsAcrossEditableRegisterCells();
+    void tabsAcrossEditableFieldCells();
     void savesActiveChoiceEditorWithShortcut();
     void rejectsInvalidActiveEditorBeforeSave();
     void deletesFocusedRegisterAndRestoresIt();
@@ -13198,6 +13199,87 @@ void GuiSmokeTests::tabsAcrossEditableRegisterCells()
     QTRY_COMPARE_WITH_TIMEOUT(
         registers->model()->index(0, 0).data().toString(),
         QStringLiteral("STATUS"), 2000);
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::tabsAcrossEditableFieldCells()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest =
+        directory.filePath(
+            QStringLiteral("field-tab-navigation.regmap.yaml"));
+    createProject(manifest);
+
+    MainWindow window;
+    QVERIFY(window.openProjectPath(manifest));
+    window.resize(1100, 720);
+    window.show();
+    window.activateWindow();
+    QTest::qWait(50);
+
+    auto* registers =
+        window.findChild<QTableView*>(
+            QStringLiteral("registerView"));
+    auto* fields =
+        window.findChild<QTableView*>(
+            QStringLiteral("fieldView"));
+    auto* controller =
+        window.findChild<ProjectController*>();
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+    QVERIFY(controller != nullptr);
+
+    Q_EMIT registers->clicked(
+        registers->model()->index(0, 5));
+    QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
+
+    const auto visibleLineEditor =
+        [fields]() -> QLineEdit* {
+        for (auto* editor :
+             fields->findChildren<QLineEdit*>()) {
+            if (editor->isVisible()) {
+                return editor;
+            }
+        }
+        return nullptr;
+    };
+
+    const QModelIndex name =
+        fields->model()->index(0, 0);
+    fields->setCurrentIndex(name);
+    fields->scrollTo(name);
+    fields->setFocus(Qt::OtherFocusReason);
+    fields->edit(name);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        visibleLineEditor() != nullptr, 2000);
+    auto* editor = visibleLineEditor();
+    editor->selectAll();
+    QTest::keyClicks(editor, QStringLiteral("READY_NEXT"));
+    QTest::keyClick(editor, Qt::Key_Tab);
+
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fields->model()->index(0, 0).data().toString(),
+        QStringLiteral("READY_NEXT"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fields->currentIndex().column(), 2, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        visibleLineEditor() != nullptr, 2000);
+    editor = visibleLineEditor();
+    QCOMPARE(editor->text(), QStringLiteral("0"));
+
+    QTest::keyClick(editor, Qt::Key_Tab);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fields->currentIndex().column(), 4, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        visibleLineEditor() != nullptr, 2000);
+    QCOMPARE(visibleLineEditor()->text(), QStringLiteral("1"));
+
+    QTest::keyClick(visibleLineEditor(), Qt::Key_Escape);
+    controller->undo();
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fields->model()->index(0, 0).data().toString(),
+        QStringLiteral("READY"), 2000);
     makeGeneratedFilesWritable(directory.path());
 }
 

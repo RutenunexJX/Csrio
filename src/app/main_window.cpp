@@ -974,41 +974,21 @@ private:
     return popup;
 }
 
-class RegisterTableView final : public QTableView {
+class UsableCellTableView : public QTableView {
 public:
-    using BoundaryPredicate = std::function<bool(int)>;
-    using InsertHandler = std::function<void(int)>;
-    using CellActionPredicate = std::function<bool(const QModelIndex&)>;
-    using CellActionHandler = std::function<void(const QModelIndex&)>;
+    using AdditionalTabTargetPredicate =
+        std::function<bool(const QModelIndex&)>;
 
-    explicit RegisterTableView(QWidget* parent = nullptr)
+    explicit UsableCellTableView(QWidget* parent = nullptr)
         : QTableView(parent)
     {
-        setMouseTracking(true);
-        viewport()->setMouseTracking(true);
     }
 
-    void setBoundaryPredicate(BoundaryPredicate predicate)
+    void setAdditionalTabTargetPredicate(
+        AdditionalTabTargetPredicate predicate)
     {
-        boundaryPredicate_ = std::move(predicate);
-    }
-
-    void setInsertHandler(InsertHandler handler) { insertHandler_ = std::move(handler); }
-    void setCellActionPredicate(CellActionPredicate predicate)
-    {
-        cellActionPredicate_ = std::move(predicate);
-    }
-    void setCellActionHandler(CellActionHandler handler)
-    {
-        cellActionHandler_ = std::move(handler);
-    }
-    void setKeyboardActionPredicate(CellActionPredicate predicate)
-    {
-        keyboardActionPredicate_ = std::move(predicate);
-    }
-    void setKeyboardActionHandler(CellActionHandler handler)
-    {
-        keyboardActionHandler_ = std::move(handler);
+        additionalTabTargetPredicate_ =
+            std::move(predicate);
     }
 
 protected:
@@ -1046,19 +1026,64 @@ protected:
             const QModelIndex candidate =
                 model()->index(candidateCell / columns,
                                candidateCell % columns);
-            const bool keyboardAction =
-                keyboardActionPredicate_ &&
-                keyboardActionPredicate_(candidate);
+            const bool additionalTarget =
+                additionalTabTargetPredicate_ &&
+                additionalTabTargetPredicate_(candidate);
             if (!isColumnHidden(candidate.column()) &&
                 (candidate.flags() & Qt::ItemIsEnabled) &&
                 ((candidate.flags() & Qt::ItemIsEditable) ||
-                 keyboardAction)) {
+                 additionalTarget)) {
                 return candidate;
             }
         }
         return current;
     }
 
+private:
+    AdditionalTabTargetPredicate
+        additionalTabTargetPredicate_;
+};
+
+class RegisterTableView final : public UsableCellTableView {
+public:
+    using BoundaryPredicate = std::function<bool(int)>;
+    using InsertHandler = std::function<void(int)>;
+    using CellActionPredicate = std::function<bool(const QModelIndex&)>;
+    using CellActionHandler = std::function<void(const QModelIndex&)>;
+
+    explicit RegisterTableView(QWidget* parent = nullptr)
+        : UsableCellTableView(parent)
+    {
+        setMouseTracking(true);
+        viewport()->setMouseTracking(true);
+    }
+
+    void setBoundaryPredicate(BoundaryPredicate predicate)
+    {
+        boundaryPredicate_ = std::move(predicate);
+    }
+
+    void setInsertHandler(InsertHandler handler) { insertHandler_ = std::move(handler); }
+    void setCellActionPredicate(CellActionPredicate predicate)
+    {
+        cellActionPredicate_ = std::move(predicate);
+    }
+    void setCellActionHandler(CellActionHandler handler)
+    {
+        cellActionHandler_ = std::move(handler);
+    }
+    void setKeyboardActionPredicate(CellActionPredicate predicate)
+    {
+        keyboardActionPredicate_ = std::move(predicate);
+        setAdditionalTabTargetPredicate(
+            keyboardActionPredicate_);
+    }
+    void setKeyboardActionHandler(CellActionHandler handler)
+    {
+        keyboardActionHandler_ = std::move(handler);
+    }
+
+protected:
     void keyPressEvent(QKeyEvent* event) override
     {
         const QModelIndex index = currentIndex();
@@ -2507,7 +2532,7 @@ void MainWindow::buildUi()
     registerLayout->addWidget(contextBar);
     registerLayout->addWidget(registerView_, 1);
 
-    fieldView_ = new QTableView(this);
+    fieldView_ = new UsableCellTableView(this);
     fieldView_->setObjectName(QStringLiteral("fieldView"));
     fieldView_->setModel(fieldModel_);
     configureTable(fieldView_);

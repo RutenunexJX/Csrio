@@ -177,8 +177,8 @@ stays selected so Undo/Redo restores the same view; choose **All tags** to clear
 After selecting a Register's **Tags**, **Access**, or **Fields** cell, press Enter, Space, or F2
 to open the same editor or Field workspace available from the mouse. A single click still only
 selects the cell, so copy and range selection remain available.
-While editing a Register row, Tab and Shift+Tab move between usable cells and skip read-only
-Address, unavailable Range, empty Fields actions, and the trailing add row.
+While editing a Register or Field row, Tab and Shift+Tab move between usable cells and skip
+read-only or hidden columns, unavailable Range, empty Fields actions, and the trailing add row.
 The register context menu can convert a register to a red, bold reserved slot or delete
 it while shifting subsequent offsets upward. When a Tag Filter hides following Registers, the
 delete confirmation states how many hidden Registers will still shift and defaults to cancel.
