@@ -4,6 +4,7 @@
 
 #include "regmap/core/model.hpp"
 
+#include <QByteArray>
 #include <QMainWindow>
 #include <QString>
 
@@ -128,6 +129,8 @@ private:
     bool refreshPending_{false};
     bool committingActiveEditor_{false};
     bool activeEditorCommitRejected_{false};
+    bool enumOnlyEditorLayout_{false};
+    QByteArray expandedEditorSplitterState_;
     QString lastSyncMessage_;
     QString searchQuery_;
     std::vector<std::string> searchResults_;
@@ -138,6 +141,8 @@ private:
     void connectSignals();
     void restoreUiState();
     void saveUiState() const;
+    void updateEditorPanelMode(
+        bool hasOpenFieldEditor, bool hasEnumEditor);
     [[nodiscard]] bool commitActiveEditor();
     enum class UnsavedChoice {
         save,

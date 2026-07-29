@@ -158,6 +158,40 @@ private slots:
 
 namespace {
 
+class SettingsScope final {
+public:
+    explicit SettingsScope(
+        const QString& application)
+        : organization_(
+              QCoreApplication::organizationName()),
+          application_(
+              QCoreApplication::applicationName())
+    {
+        QCoreApplication::setOrganizationName(
+            QStringLiteral("RegMapWorkbenchTests"));
+        QCoreApplication::setApplicationName(
+            application);
+        QSettings settings;
+        settings.remove(QStringLiteral("ui"));
+        settings.sync();
+    }
+
+    ~SettingsScope()
+    {
+        QSettings settings;
+        settings.remove(QStringLiteral("ui"));
+        settings.sync();
+        QCoreApplication::setOrganizationName(
+            organization_);
+        QCoreApplication::setApplicationName(
+            application_);
+    }
+
+private:
+    QString organization_;
+    QString application_;
+};
+
 void createProject(const QString& path, std::uint64_t offset = 0)
 {
     QFile file(path);
@@ -1043,34 +1077,8 @@ void GuiSmokeTests::opensProjectAndPopulatesEditableViews()
 
 void GuiSmokeTests::persistsWorkbenchLayoutPreferences()
 {
-    struct SettingsScope {
-        QString organization =
-            QCoreApplication::organizationName();
-        QString application =
-            QCoreApplication::applicationName();
-
-        SettingsScope()
-        {
-            QCoreApplication::setOrganizationName(
-                QStringLiteral("RegMapWorkbenchTests"));
-            QCoreApplication::setApplicationName(
-                QStringLiteral("UiStatePersistenceTest"));
-            QSettings settings;
-            settings.remove(QStringLiteral("ui"));
-            settings.sync();
-        }
-
-        ~SettingsScope()
-        {
-            QSettings settings;
-            settings.remove(QStringLiteral("ui"));
-            settings.sync();
-            QCoreApplication::setOrganizationName(
-                organization);
-            QCoreApplication::setApplicationName(
-                application);
-        }
-    } settingsScope;
+    SettingsScope settingsScope(
+        QStringLiteral("UiStatePersistenceTest"));
 
     QByteArray geometry;
     QList<int> workspaceSizes;
@@ -1181,6 +1189,8 @@ void GuiSmokeTests::persistsWorkbenchLayoutPreferences()
 
 void GuiSmokeTests::keepsEnumEditorCompact()
 {
+    SettingsScope settingsScope(
+        QStringLiteral("EnumPanelLayoutTest"));
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
     const QString manifest =
@@ -1216,6 +1226,9 @@ void GuiSmokeTests::keepsEnumEditorCompact()
     auto* editor =
         window.findChild<QSplitter*>(
             QStringLiteral("editorSplitter"));
+    auto* closeFields =
+        window.findChild<QPushButton*>(
+            QStringLiteral("closeFieldsButton"));
     auto* controller =
         window.findChild<ProjectController*>();
     QVERIFY(registers != nullptr);
@@ -1225,6 +1238,7 @@ void GuiSmokeTests::keepsEnumEditorCompact()
     QVERIFY(enumContext != nullptr);
     QVERIFY(enums != nullptr);
     QVERIFY(editor != nullptr);
+    QVERIFY(closeFields != nullptr);
     QVERIFY(controller != nullptr);
 
     QVERIFY(controller->editWorkspace(
@@ -1245,13 +1259,31 @@ void GuiSmokeTests::keepsEnumEditorCompact()
                 *controller->workspace())
                 .empty());
 
+    const QModelIndex openFields =
+        registers->model()->index(0, 5);
+    registers->setCurrentIndex(openFields);
+    registers->selectionModel()->select(
+        openFields, QItemSelectionModel::ClearAndSelect);
+    registers->setFocus(Qt::OtherFocusReason);
+    QTest::keyClick(registers, Qt::Key_Space);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fields->isVisible(), 2000);
+    editor->setSizes({430, 300});
+    QCoreApplication::processEvents();
+    const QList<int> expandedSizes =
+        editor->sizes();
+    const QByteArray expandedState =
+        editor->saveState();
+    QVERIFY(expandedSizes[1] > 0);
+    closeFields->click();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !fieldPanel->isVisible(), 2000);
+
     const QModelIndex scalar =
         registers->model()->index(1, 0);
     registers->setCurrentIndex(scalar);
     registers->selectionModel()->select(
         scalar, QItemSelectionModel::ClearAndSelect);
-    QCoreApplication::processEvents();
-    editor->setSizes({430, 300});
     QCoreApplication::processEvents();
     QTRY_VERIFY_WITH_TIMEOUT(
         fieldPanel->isVisible(), 2000);
@@ -1267,11 +1299,9 @@ void GuiSmokeTests::keepsEnumEditorCompact()
          enumContext->height());
     QVERIFY(enumGap >= 0);
     QVERIFY(enumGap <= 8);
-    QVERIFY(enumPanel->height() <
-            fieldPanel->height());
+    QVERIFY(fieldPanel->height() <=
+            enumPanel->height() + 2);
 
-    const QModelIndex openFields =
-        registers->model()->index(0, 5);
     registers->setCurrentIndex(openFields);
     registers->selectionModel()->select(
         openFields, QItemSelectionModel::ClearAndSelect);
@@ -1281,8 +1311,52 @@ void GuiSmokeTests::keepsEnumEditorCompact()
         fields->isVisible(), 2000);
     QTRY_VERIFY_WITH_TIMEOUT(
         enumPanel->isVisible(), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fieldPanel->height() >
+            enumPanel->height() + 40,
+        2000);
+    const QList<int> restoredSizes =
+        editor->sizes();
+    QCOMPARE(restoredSizes.size(), 2);
+    const double expandedFraction =
+        static_cast<double>(expandedSizes[1]) /
+        static_cast<double>(
+            expandedSizes[0] + expandedSizes[1]);
+    const double restoredFraction =
+        static_cast<double>(restoredSizes[1]) /
+        static_cast<double>(
+            restoredSizes[0] + restoredSizes[1]);
+    QVERIFY(qAbs(restoredFraction -
+                 expandedFraction) < 0.08);
     QVERIFY(enumPanel->y() >
             fields->geometry().bottom());
+
+    closeFields->click();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !fieldPanel->isVisible(), 2000);
+    registers->setCurrentIndex(scalar);
+    registers->selectionModel()->select(
+        scalar, QItemSelectionModel::ClearAndSelect);
+    QCoreApplication::processEvents();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fieldPanel->isVisible(), 2000);
+    QVERIFY(fieldPanel->height() <=
+            enumPanel->height() + 2);
+
+    controller->save();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !controller->isDirty(), 5000);
+    QVERIFY(window.close());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !window.isVisible(), 2000);
+    QSettings settings;
+    settings.sync();
+    QCOMPARE(
+        settings.value(
+                    QStringLiteral(
+                        "ui/v1/editorSplitter"))
+            .toByteArray(),
+        expandedState);
 
     makeGeneratedFilesWritable(
         directory.path());

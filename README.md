@@ -70,9 +70,10 @@ Workspace -> Page (Address Space) -> Register Block -> Register -> Field -> Enum
   Reset follows its destination bits. A copy with no safe placement is rejected without changing
   the model or Undo history, and a successful duplicate is one undoable edit.
 - Boolean/enumeration, `intN`/`uintN` numeric ranges, and compound fields with member fields.
-- Enum values use one compact section: scalar enum registers keep its title and table together
-  at the top of the lower editor, while an open Field workspace keeps the same section directly
-  below the Field table.
+- Enum values use one compact section. A scalar enum register shrinks the lower editor to the
+  section's content height; opening a Field workspace restores the user's last expanded height
+  and keeps the same Enum section directly below the Field table. Hidden and Enum-only states
+  do not overwrite the saved expanded Field workspace proportion.
 - Continuous validation of identity, address ranges and overlap, field ranges and overlap,
   declared Block allocation ranges, access and side-effect combinations, reset values, and
   enum values.

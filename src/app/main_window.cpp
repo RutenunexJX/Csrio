@@ -3137,6 +3137,8 @@ void MainWindow::restoreUiState()
         editorSplitter_, editorSplitterSettingsKey);
     restoreSplitter(
         resultsSplitter_, resultsSplitterSettingsKey);
+    expandedEditorSplitterState_ =
+        editorSplitter_->saveState();
     showAdvancedFieldsAction_->setChecked(
         settings.value(
                     QString::fromLatin1(
@@ -3155,9 +3157,18 @@ void MainWindow::saveUiState() const
     settings.setValue(
         QString::fromLatin1(workspaceSplitterSettingsKey),
         workspaceSplitter_->saveState());
+    QByteArray editorState =
+        expandedEditorSplitterState_;
+    if (!enumOnlyEditorLayout_ &&
+        fieldPanel_->isVisible()) {
+        editorState = editorSplitter_->saveState();
+    }
+    if (editorState.isEmpty()) {
+        editorState = editorSplitter_->saveState();
+    }
     settings.setValue(
         QString::fromLatin1(editorSplitterSettingsKey),
-        editorSplitter_->saveState());
+        editorState);
     settings.setValue(
         QString::fromLatin1(resultsSplitterSettingsKey),
         resultsSplitter_->saveState());
@@ -3165,6 +3176,40 @@ void MainWindow::saveUiState() const
         QString::fromLatin1(advancedFieldsSettingsKey),
         showAdvancedFieldsAction_->isChecked());
     settings.sync();
+}
+
+void MainWindow::updateEditorPanelMode(
+    bool hasOpenFieldEditor, bool hasEnumEditor)
+{
+    const bool nextEnumOnly =
+        hasEnumEditor && !hasOpenFieldEditor;
+    if (!enumOnlyEditorLayout_ &&
+        fieldPanel_->isVisible()) {
+        expandedEditorSplitterState_ =
+            editorSplitter_->saveState();
+    }
+
+    if (nextEnumOnly) {
+        enumOnlyEditorLayout_ = true;
+        fieldPanel_->setMaximumHeight(
+            enumPanel_->sizeHint().height());
+        fieldPanel_->setVisible(true);
+        fieldPanel_->updateGeometry();
+        return;
+    }
+
+    enumOnlyEditorLayout_ = false;
+    fieldPanel_->setMaximumHeight(
+        QWIDGETSIZE_MAX);
+    fieldPanel_->setVisible(
+        hasOpenFieldEditor);
+    fieldPanel_->updateGeometry();
+    if (hasOpenFieldEditor &&
+        !expandedEditorSplitterState_.isEmpty()) {
+        static_cast<void>(
+            editorSplitter_->restoreState(
+                expandedEditorSplitterState_));
+    }
 }
 
 MainWindow::UnsavedChoice MainWindow::promptUnsavedChanges(bool closing)
@@ -3902,7 +3947,8 @@ void MainWindow::populateEnumValues(const regmap::Register* reg, const regmap::F
     const bool hasOpenFieldEditor =
         reg != nullptr && !reg->reserved && reg->type == regmap::FieldType::structure &&
         openFieldsRegisterId_ == reg->id;
-    fieldPanel_->setVisible(hasOpenFieldEditor || visible);
+    updateEditorPanelMode(
+        hasOpenFieldEditor, visible);
     if (!visible) {
         restoreTableSelection(
             enumView_, previousSelection, objectIdRole, propertyRole);
