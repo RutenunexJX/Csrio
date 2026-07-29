@@ -39,6 +39,7 @@
 #include <QMimeData>
 #include <QMessageBox>
 #include <QPalette>
+#include <QPointer>
 #include <QSettings>
 #include <QSplitter>
 #include <QStandardItemModel>
@@ -5988,14 +5989,38 @@ void GuiSmokeTests::keepsPopupEditingActionsLocal()
     auto* remove =
         window.findChild<QAction*>(
             QStringLiteral("deleteSelectionAction"));
+    auto* undo =
+        window.findChild<QAction*>(
+            QStringLiteral("undoAction"));
+    auto* redo =
+        window.findChild<QAction*>(
+            QStringLiteral("redoAction"));
     QVERIFY(controller != nullptr);
     QVERIFY(registers != nullptr);
     QVERIFY(copy != nullptr);
     QVERIFY(paste != nullptr);
     QVERIFY(remove != nullptr);
+    QVERIFY(undo != nullptr);
+    QVERIFY(redo != nullptr);
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Configure first popup history sentinel"),
+        [](regmap::Workspace& workspace) {
+            workspace.name = "Popup history first";
+        }));
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Configure second popup history sentinel"),
+        [](regmap::Workspace& workspace) {
+            workspace.name = "Popup history second";
+        }));
+    controller->undo();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        undo->isEnabled() && redo->isEnabled(), 2000);
 
     const std::size_t undoDepth =
         controller->undoDepth();
+    const std::string historyName =
+        controller->workspace()->name;
     const QModelIndex tagIndex =
         registers->model()->index(0, 10);
     const QString originalTags =
@@ -6018,6 +6043,21 @@ void GuiSmokeTests::keepsPopupEditingActionsLocal()
             QStringLiteral("tagOptions"));
     QVERIFY(tagSearch != nullptr);
     QVERIFY(tagOptions != nullptr);
+
+    tagSearch->setText(QStringLiteral("needle"));
+    tagSearch->setFocus(Qt::OtherFocusReason);
+    QTest::keyClicks(tagSearch, QStringLiteral("X"));
+    QTest::keyClick(tagSearch, Qt::Key_Z,
+                    Qt::ControlModifier);
+    QCOMPARE(tagSearch->text(),
+             QStringLiteral("needle"));
+    QTest::keyClick(tagSearch, Qt::Key_Y,
+                    Qt::ControlModifier);
+    QCOMPARE(tagSearch->text(),
+             QStringLiteral("needleX"));
+    QCOMPARE(controller->workspace()->name,
+             historyName);
+    QCOMPARE(controller->undoDepth(), undoDepth);
 
     tagSearch->setText(QStringLiteral("needle"));
     tagSearch->selectAll();
@@ -6081,6 +6121,18 @@ void GuiSmokeTests::keepsPopupEditingActionsLocal()
             nullptr);
     QCOMPARE(controller->undoDepth(), undoDepth);
     QCOMPARE(QApplication::activePopupWidget(), tagPopup);
+    undo->trigger();
+    QCoreApplication::processEvents();
+    QCOMPARE(controller->workspace()->name,
+             historyName);
+    QCOMPARE(controller->undoDepth(), undoDepth);
+    QCOMPARE(QApplication::activePopupWidget(), tagPopup);
+    redo->trigger();
+    QCoreApplication::processEvents();
+    QCOMPARE(controller->workspace()->name,
+             historyName);
+    QCOMPARE(controller->undoDepth(), undoDepth);
+    QCOMPARE(QApplication::activePopupWidget(), tagPopup);
     tagPopup->close();
     QTRY_VERIFY_WITH_TIMEOUT(
         QApplication::activePopupWidget() == nullptr, 2000);
@@ -6139,6 +6191,18 @@ void GuiSmokeTests::keepsPopupEditingActionsLocal()
             nullptr);
     QCOMPARE(controller->undoDepth(), undoDepth);
     QCOMPARE(QApplication::activePopupWidget(), accessPopup);
+    undo->trigger();
+    QCoreApplication::processEvents();
+    QCOMPARE(controller->workspace()->name,
+             historyName);
+    QCOMPARE(controller->undoDepth(), undoDepth);
+    QCOMPARE(QApplication::activePopupWidget(), accessPopup);
+    redo->trigger();
+    QCoreApplication::processEvents();
+    QCOMPARE(controller->workspace()->name,
+             historyName);
+    QCOMPARE(controller->undoDepth(), undoDepth);
+    QCOMPARE(QApplication::activePopupWidget(), accessPopup);
     accessPopup->close();
     QTRY_VERIFY_WITH_TIMEOUT(
         QApplication::activePopupWidget() == nullptr, 2000);
@@ -6165,10 +6229,32 @@ void GuiSmokeTests::editsFieldAccessFromConstrainedChoices()
     auto* remove =
         window.findChild<QAction*>(
             QStringLiteral("deleteSelectionAction"));
+    auto* undo =
+        window.findChild<QAction*>(
+            QStringLiteral("undoAction"));
+    auto* redo =
+        window.findChild<QAction*>(
+            QStringLiteral("redoAction"));
     QVERIFY(registers != nullptr);
     QVERIFY(fields != nullptr);
     QVERIFY(controller != nullptr);
     QVERIFY(remove != nullptr);
+    QVERIFY(undo != nullptr);
+    QVERIFY(redo != nullptr);
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Configure first Access editor history sentinel"),
+        [](regmap::Workspace& workspace) {
+            workspace.name = "Access history first";
+        }));
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Configure second Access editor history sentinel"),
+        [](regmap::Workspace& workspace) {
+            workspace.name = "Access history second";
+        }));
+    controller->undo();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        undo->isEnabled() && redo->isEnabled(), 2000);
 
     Q_EMIT registers->clicked(registers->model()->index(0, 5));
     QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
@@ -6205,6 +6291,8 @@ void GuiSmokeTests::editsFieldAccessFromConstrainedChoices()
     QVERIFY(!editor->isEditable());
 
     const std::size_t undoDepth = controller->undoDepth();
+    const std::string historyName =
+        controller->workspace()->name;
     editor->setFocus(Qt::OtherFocusReason);
     bool deleteDialogSeen = false;
     QTimer::singleShot(0, &window, [&] {
@@ -6223,6 +6311,23 @@ void GuiSmokeTests::editsFieldAccessFromConstrainedChoices()
             nullptr);
     QCOMPARE(controller->undoDepth(), undoDepth);
     QVERIFY(editor->hasFocus());
+
+    QPointer<QComboBox> editorGuard(editor);
+    undo->trigger();
+    QCoreApplication::processEvents();
+    QVERIFY(editorGuard != nullptr);
+    QCOMPARE(controller->workspace()->name,
+             historyName);
+    QCOMPARE(controller->undoDepth(), undoDepth);
+    QVERIFY(editorGuard->hasFocus());
+    redo->trigger();
+    QCoreApplication::processEvents();
+    QVERIFY(editorGuard != nullptr);
+    QCOMPARE(controller->workspace()->name,
+             historyName);
+    QCOMPARE(controller->undoDepth(), undoDepth);
+    QVERIFY(editorGuard->hasFocus());
+    editor = editorGuard;
 
     editor->setCurrentText(QStringLiteral("NONE"));
     Q_EMIT editor->activated(editor->currentIndex());

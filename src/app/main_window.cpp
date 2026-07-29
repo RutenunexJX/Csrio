@@ -105,6 +105,8 @@ constexpr auto hierarchyClipboardMimeType =
 constexpr auto hierarchyDragMimeType =
     "application/x-regmap-workbench-hierarchy-drag";
 constexpr auto recentProjectsSettingsKey = "projects/recent";
+constexpr auto choiceEditorPopupProperty =
+    "regmapWorkbenchChoiceEditorPopup";
 constexpr qsizetype maximumRecentProjectCount = 8;
 
 enum class HierarchyDropPlacement {
@@ -747,6 +749,19 @@ private:
     return false;
 }
 
+[[nodiscard]] bool focusUsesChoiceEditor(
+    const QWidget* focus)
+{
+    for (const QWidget* current = focus; current != nullptr;
+         current = current->parentWidget()) {
+        if (qobject_cast<const QComboBox*>(current) != nullptr ||
+            current->property(choiceEditorPopupProperty).toBool()) {
+            return true;
+        }
+    }
+    return false;
+}
+
 [[nodiscard]] QFrame* createAnchoredPopup(QTableView* view, const QModelIndex& index,
                                           const QString& objectName, int preferredWidth,
                                           int preferredHeight)
@@ -757,6 +772,7 @@ private:
 
     auto* popup = new QFrame(view, Qt::Popup);
     popup->setObjectName(objectName);
+    popup->setProperty(choiceEditorPopupProperty, true);
     popup->setAttribute(Qt::WA_DeleteOnClose);
     popup->setFrameShape(QFrame::StyledPanel);
     popup->setFrameShadow(QFrame::Raised);
@@ -2472,22 +2488,34 @@ void MainWindow::buildActions()
     });
 
     undoAction_ = new QAction(QStringLiteral("Undo"), this);
+    undoAction_->setObjectName(
+        QStringLiteral("undoAction"));
     undoAction_->setShortcut(QKeySequence::Undo);
     undoAction_->setEnabled(false);
     connect(undoAction_, &QAction::triggered, this, [this] {
-        if (auto* edit = qobject_cast<QLineEdit*>(QApplication::focusWidget())) {
+        QWidget* focus = QApplication::focusWidget();
+        if (auto* edit = qobject_cast<QLineEdit*>(focus)) {
             edit->undo();
+            return;
+        }
+        if (focusUsesChoiceEditor(focus)) {
             return;
         }
         controller_.undo();
     });
 
     redoAction_ = new QAction(QStringLiteral("Redo"), this);
+    redoAction_->setObjectName(
+        QStringLiteral("redoAction"));
     redoAction_->setShortcut(QKeySequence::Redo);
     redoAction_->setEnabled(false);
     connect(redoAction_, &QAction::triggered, this, [this] {
-        if (auto* edit = qobject_cast<QLineEdit*>(QApplication::focusWidget())) {
+        QWidget* focus = QApplication::focusWidget();
+        if (auto* edit = qobject_cast<QLineEdit*>(focus)) {
             edit->redo();
+            return;
+        }
+        if (focusUsesChoiceEditor(focus)) {
             return;
         }
         controller_.redo();
