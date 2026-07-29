@@ -108,6 +108,16 @@ constexpr auto hierarchyDragMimeType =
 constexpr auto recentProjectsSettingsKey = "projects/recent";
 constexpr auto choiceEditorPopupProperty =
     "regmapWorkbenchChoiceEditorPopup";
+constexpr auto mainWindowGeometrySettingsKey =
+    "ui/v1/mainWindowGeometry";
+constexpr auto workspaceSplitterSettingsKey =
+    "ui/v1/workspaceSplitter";
+constexpr auto editorSplitterSettingsKey =
+    "ui/v1/editorSplitter";
+constexpr auto resultsSplitterSettingsKey =
+    "ui/v1/resultsSplitter";
+constexpr auto advancedFieldsSettingsKey =
+    "ui/v1/showAdvancedFieldColumns";
 constexpr qsizetype maximumRecentProjectCount = 8;
 
 enum class HierarchyDropPlacement {
@@ -2094,6 +2104,8 @@ MainWindow::MainWindow(QWidget* parent)
     buildUi();
     buildActions();
     connectSignals();
+    resize(1500, 920);
+    restoreUiState();
     statusBar()->setSizeGripEnabled(false);
     statusBar()->showMessage(QStringLiteral("Open a .regmap.yaml project to begin"));
     setWindowTitle(QStringLiteral("Register Map Workbench"));
@@ -2297,22 +2309,26 @@ void MainWindow::buildUi()
     fieldLayout->addWidget(enumContextLabel_);
     fieldLayout->addWidget(enumView_);
 
-    auto* middleSplitter = new QSplitter(Qt::Vertical, this);
-    middleSplitter->addWidget(registerPanel);
-    middleSplitter->addWidget(fieldPanel);
-    middleSplitter->setStretchFactor(0, 3);
-    middleSplitter->setStretchFactor(1, 2);
-    middleSplitter->setChildrenCollapsible(false);
-    middleSplitter->setHandleWidth(4);
+    editorSplitter_ = new QSplitter(Qt::Vertical, this);
+    editorSplitter_->setObjectName(
+        QStringLiteral("editorSplitter"));
+    editorSplitter_->addWidget(registerPanel);
+    editorSplitter_->addWidget(fieldPanel);
+    editorSplitter_->setStretchFactor(0, 3);
+    editorSplitter_->setStretchFactor(1, 2);
+    editorSplitter_->setChildrenCollapsible(false);
+    editorSplitter_->setHandleWidth(4);
 
-    auto* topSplitter = new QSplitter(Qt::Horizontal, this);
-    topSplitter->addWidget(hierarchyPanel);
-    topSplitter->addWidget(middleSplitter);
-    topSplitter->setStretchFactor(0, 0);
-    topSplitter->setStretchFactor(1, 1);
-    topSplitter->setChildrenCollapsible(false);
-    topSplitter->setHandleWidth(4);
-    topSplitter->setSizes({230, 1260});
+    workspaceSplitter_ = new QSplitter(Qt::Horizontal, this);
+    workspaceSplitter_->setObjectName(
+        QStringLiteral("workspaceSplitter"));
+    workspaceSplitter_->addWidget(hierarchyPanel);
+    workspaceSplitter_->addWidget(editorSplitter_);
+    workspaceSplitter_->setStretchFactor(0, 0);
+    workspaceSplitter_->setStretchFactor(1, 1);
+    workspaceSplitter_->setChildrenCollapsible(false);
+    workspaceSplitter_->setHandleWidth(4);
+    workspaceSplitter_->setSizes({230, 1260});
 
     problemsView_ = new QTableView(this);
     problemsView_->setObjectName(QStringLiteral("problemsView"));
@@ -2373,16 +2389,18 @@ void MainWindow::buildUi()
     tabs_->addTab(diffPanel, QStringLiteral("Diff"));
     tabs_->setMinimumHeight(170);
 
-    auto* mainSplitter = new QSplitter(Qt::Vertical, this);
-    mainSplitter->addWidget(topSplitter);
-    mainSplitter->addWidget(tabs_);
-    mainSplitter->setStretchFactor(0, 1);
-    mainSplitter->setStretchFactor(1, 0);
-    mainSplitter->setChildrenCollapsible(false);
-    mainSplitter->setHandleWidth(4);
-    mainSplitter->setContentsMargins(6, 6, 6, 6);
-    mainSplitter->setSizes({690, 230});
-    setCentralWidget(mainSplitter);
+    resultsSplitter_ = new QSplitter(Qt::Vertical, this);
+    resultsSplitter_->setObjectName(
+        QStringLiteral("resultsSplitter"));
+    resultsSplitter_->addWidget(workspaceSplitter_);
+    resultsSplitter_->addWidget(tabs_);
+    resultsSplitter_->setStretchFactor(0, 1);
+    resultsSplitter_->setStretchFactor(1, 0);
+    resultsSplitter_->setChildrenCollapsible(false);
+    resultsSplitter_->setHandleWidth(4);
+    resultsSplitter_->setContentsMargins(6, 6, 6, 6);
+    resultsSplitter_->setSizes({690, 230});
+    setCentralWidget(resultsSplitter_);
 }
 
 void MainWindow::buildActions()
@@ -2627,6 +2645,8 @@ void MainWindow::buildActions()
     connect(findPreviousAction, &QAction::triggered, this, [this] { runSearch(true); });
 
     showAdvancedFieldsAction_ = new QAction(QStringLiteral("Show Advanced Field Columns"), this);
+    showAdvancedFieldsAction_->setObjectName(
+        QStringLiteral("showAdvancedFieldsAction"));
     showAdvancedFieldsAction_->setCheckable(true);
     showAdvancedFieldsAction_->setChecked(false);
     connect(showAdvancedFieldsAction_, &QAction::toggled, this,
@@ -3080,6 +3100,63 @@ bool MainWindow::commitActiveEditor()
         combo->clearFocus();
     }
     return !activeEditorCommitRejected_;
+}
+
+void MainWindow::restoreUiState()
+{
+    QSettings settings;
+    const QByteArray geometry =
+        settings.value(
+                    QString::fromLatin1(
+                        mainWindowGeometrySettingsKey))
+            .toByteArray();
+    if (!geometry.isEmpty()) {
+        static_cast<void>(restoreGeometry(geometry));
+    }
+    const auto restoreSplitter =
+        [&settings](QSplitter* splitter, const char* key) {
+            const QByteArray state =
+                settings.value(QString::fromLatin1(key))
+                    .toByteArray();
+            if (!state.isEmpty()) {
+                static_cast<void>(
+                    splitter->restoreState(state));
+            }
+        };
+    restoreSplitter(
+        workspaceSplitter_, workspaceSplitterSettingsKey);
+    restoreSplitter(
+        editorSplitter_, editorSplitterSettingsKey);
+    restoreSplitter(
+        resultsSplitter_, resultsSplitterSettingsKey);
+    showAdvancedFieldsAction_->setChecked(
+        settings.value(
+                    QString::fromLatin1(
+                        advancedFieldsSettingsKey),
+                    false)
+            .toBool());
+    applyFieldColumnVisibility();
+}
+
+void MainWindow::saveUiState() const
+{
+    QSettings settings;
+    settings.setValue(
+        QString::fromLatin1(mainWindowGeometrySettingsKey),
+        saveGeometry());
+    settings.setValue(
+        QString::fromLatin1(workspaceSplitterSettingsKey),
+        workspaceSplitter_->saveState());
+    settings.setValue(
+        QString::fromLatin1(editorSplitterSettingsKey),
+        editorSplitter_->saveState());
+    settings.setValue(
+        QString::fromLatin1(resultsSplitterSettingsKey),
+        resultsSplitter_->saveState());
+    settings.setValue(
+        QString::fromLatin1(advancedFieldsSettingsKey),
+        showAdvancedFieldsAction_->isChecked());
+    settings.sync();
 }
 
 MainWindow::UnsavedChoice MainWindow::promptUnsavedChanges(bool closing)
@@ -8660,6 +8737,7 @@ void MainWindow::closeEvent(QCloseEvent* event)
         return;
     }
     if (!controller_.isDirty()) {
+        saveUiState();
         event->accept();
         return;
     }
@@ -8682,6 +8760,7 @@ void MainWindow::closeEvent(QCloseEvent* event)
         }
     }
 
+    saveUiState();
     event->accept();
 }
 

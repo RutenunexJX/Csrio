@@ -14,7 +14,6 @@ int main(int argumentCount, char* arguments[])
     WorkbenchTheme::apply(application);
 
     MainWindow window;
-    window.resize(1500, 920);
     window.show();
 
     const QStringList values = QCoreApplication::arguments();

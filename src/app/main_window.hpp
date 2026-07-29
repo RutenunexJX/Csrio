@@ -22,6 +22,7 @@ class QMenu;
 class QPoint;
 class QModelIndex;
 class QPushButton;
+class QSplitter;
 class QStandardItem;
 class QStandardItemModel;
 class QTabWidget;
@@ -75,6 +76,9 @@ private:
     QTableView* problemsView_{nullptr};
     QTableView* generatedView_{nullptr};
     QTableView* diffView_{nullptr};
+    QSplitter* workspaceSplitter_{nullptr};
+    QSplitter* editorSplitter_{nullptr};
+    QSplitter* resultsSplitter_{nullptr};
     QLineEdit* globalSearchEdit_{nullptr};
     QLabel* searchResultLabel_{nullptr};
     QLabel* syncStateLabel_{nullptr};
@@ -131,6 +135,8 @@ private:
     void buildUi();
     void buildActions();
     void connectSignals();
+    void restoreUiState();
+    void saveUiState() const;
     [[nodiscard]] bool commitActiveEditor();
     enum class UnsavedChoice {
         save,

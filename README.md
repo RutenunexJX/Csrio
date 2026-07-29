@@ -32,6 +32,9 @@ Workspace -> Page (Address Space) -> Register Block -> Register -> Field -> Enum
 - Structure-register rows expose a dedicated **Open (N)** Fields button.
 - Trailing `+` rows for register/field creation; page and block base addresses appear once in
   the context bar above the register table and remain directly editable.
+- Window geometry, the Workspace/editor/results splitter proportions, and the advanced Field
+  column preference are restored after an accepted application close. Project-specific
+  selections, filters, and automatically sized table columns are not persisted.
 - New Blocks choose the first free Base for the preferred 4 KiB allocation, or the largest
   smaller power-of-two allocation that fits the Page. New 32-bit Registers use the next
   four-byte-aligned Offset. If no valid address range remains, Workbench leaves the model and

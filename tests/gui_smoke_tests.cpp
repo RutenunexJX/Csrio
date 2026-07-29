@@ -81,6 +81,7 @@ private slots:
     void recoversAfterInvalidInitialRtlIsFixed();
     void detectsStructuralDifferenceWithoutBaseline();
     void opensProjectAndPopulatesEditableViews();
+    void persistsWorkbenchLayoutPreferences();
     void navigatesHierarchyAndOpensFieldsExplicitly();
     void hierarchyContextActionsUseRightClickedTarget();
     void confirmsHierarchyDeletionImpactAndRestoresIt();
@@ -1037,6 +1038,144 @@ void GuiSmokeTests::opensProjectAndPopulatesEditableViews()
     }
 
     makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::persistsWorkbenchLayoutPreferences()
+{
+    struct SettingsScope {
+        QString organization =
+            QCoreApplication::organizationName();
+        QString application =
+            QCoreApplication::applicationName();
+
+        SettingsScope()
+        {
+            QCoreApplication::setOrganizationName(
+                QStringLiteral("RegMapWorkbenchTests"));
+            QCoreApplication::setApplicationName(
+                QStringLiteral("UiStatePersistenceTest"));
+            QSettings settings;
+            settings.remove(QStringLiteral("ui"));
+            settings.sync();
+        }
+
+        ~SettingsScope()
+        {
+            QSettings settings;
+            settings.remove(QStringLiteral("ui"));
+            settings.sync();
+            QCoreApplication::setOrganizationName(
+                organization);
+            QCoreApplication::setApplicationName(
+                application);
+        }
+    } settingsScope;
+
+    QByteArray geometry;
+    QList<int> workspaceSizes;
+    QList<int> editorSizes;
+    QList<int> resultsSizes;
+    {
+        MainWindow first;
+        first.resize(700, 650);
+        first.move(20, 20);
+        first.show();
+        first.activateWindow();
+        QTest::qWait(50);
+
+        auto* workspace =
+            first.findChild<QSplitter*>(
+                QStringLiteral("workspaceSplitter"));
+        auto* editor =
+            first.findChild<QSplitter*>(
+                QStringLiteral("editorSplitter"));
+        auto* results =
+            first.findChild<QSplitter*>(
+                QStringLiteral("resultsSplitter"));
+        auto* advanced =
+            first.findChild<QAction*>(
+                QStringLiteral("showAdvancedFieldsAction"));
+        QVERIFY(workspace != nullptr);
+        QVERIFY(editor != nullptr);
+        QVERIFY(results != nullptr);
+        QVERIFY(advanced != nullptr);
+
+        workspace->setSizes({315, 865});
+        editor->setSizes({430, 326});
+        results->setSizes({545, 215});
+        advanced->setChecked(true);
+        QCoreApplication::processEvents();
+
+        geometry = first.saveGeometry();
+        workspaceSizes = workspace->sizes();
+        editorSizes = editor->sizes();
+        resultsSizes = results->sizes();
+        QVERIFY(!geometry.isEmpty());
+        QVERIFY(advanced->isChecked());
+        QVERIFY(first.close());
+        QTRY_VERIFY_WITH_TIMEOUT(
+            !first.isVisible(), 2000);
+    }
+
+    QSettings settings;
+    settings.sync();
+    QVERIFY(settings.contains(
+        QStringLiteral("ui/v1/mainWindowGeometry")));
+    QVERIFY(settings.contains(
+        QStringLiteral("ui/v1/workspaceSplitter")));
+    QVERIFY(settings.contains(
+        QStringLiteral("ui/v1/editorSplitter")));
+    QVERIFY(settings.contains(
+        QStringLiteral("ui/v1/resultsSplitter")));
+    QVERIFY(settings.value(
+        QStringLiteral("ui/v1/showAdvancedFieldColumns"))
+                .toBool());
+    QCOMPARE(
+        settings.value(
+                    QStringLiteral("ui/v1/mainWindowGeometry"))
+            .toByteArray(),
+        geometry);
+
+    settings.remove(
+        QStringLiteral("ui/v1/mainWindowGeometry"));
+    settings.sync();
+    QByteArray defaultGeometry;
+    {
+        MainWindow defaultWindow;
+        defaultGeometry = defaultWindow.saveGeometry();
+    }
+    QVERIFY(!defaultGeometry.isEmpty());
+    settings.setValue(
+        QStringLiteral("ui/v1/mainWindowGeometry"),
+        geometry);
+    settings.sync();
+
+    MainWindow restored;
+    QVERIFY(restored.saveGeometry() != defaultGeometry);
+    restored.show();
+    restored.activateWindow();
+    QTest::qWait(50);
+    auto* workspace =
+        restored.findChild<QSplitter*>(
+            QStringLiteral("workspaceSplitter"));
+    auto* editor =
+        restored.findChild<QSplitter*>(
+            QStringLiteral("editorSplitter"));
+    auto* results =
+        restored.findChild<QSplitter*>(
+            QStringLiteral("resultsSplitter"));
+    auto* advanced =
+        restored.findChild<QAction*>(
+            QStringLiteral("showAdvancedFieldsAction"));
+    QVERIFY(workspace != nullptr);
+    QVERIFY(editor != nullptr);
+    QVERIFY(results != nullptr);
+    QVERIFY(advanced != nullptr);
+    QCOMPARE(workspace->sizes(), workspaceSizes);
+    QCOMPARE(editor->sizes(), editorSizes);
+    QCOMPARE(results->sizes(), resultsSizes);
+    QVERIFY(advanced->isChecked());
+    QVERIFY(restored.close());
 }
 
 void GuiSmokeTests::navigatesHierarchyAndOpensFieldsExplicitly()
