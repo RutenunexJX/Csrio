@@ -216,7 +216,9 @@ type uses the same protection, reports how many Enum values will be removed, and
 values when cancelled.
 Register types use the same value-type vocabulary. A register's **Range** cell uses
 `minimum .. maximum`; **Initial** is independent of **Reset**. For `enum` and `bool` registers,
-enum values for the selected register are edited in the same table below the field table.
+enum values for the selected register are edited in the same table below the field table. Range
+cells are enabled only for `intN`/`uintN` values (or invalid legacy data that still needs to be
+cleared), and their in-place editors show the expected input form.
 Changing a scalar Register to `enum` creates one `NEW_VALUE` for each distinct Initial and Reset
 value; a Field conversion creates one for its effective Reset. If none exists, value zero is
 created. Type conversion and all required Enum values are one undoable edit, so the object is

@@ -140,6 +140,7 @@ private slots:
     void duplicatesCompleteRegisterSafely();
     void duplicatesCompleteFieldSafely();
     void duplicatesFocusedObjectsWithShortcut();
+    void guidesNumericRangeEditing();
     void confirmsReservedConversionBeforeClearingContent();
     void rejectsAddressEditsThatIntroduceConflicts();
     void rejectsRecoveryEditsThatReplaceAddressProblems();
@@ -9042,6 +9043,158 @@ void GuiSmokeTests::rejectsOutOfRangeNumericEdits()
     QVERIFY(window.statusBar()->currentMessage().contains(
         QStringLiteral("Initial, Reset, and Enum")));
 
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::guidesNumericRangeEditing()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest =
+        directory.filePath(
+            QStringLiteral("range-guidance.regmap.yaml"));
+    createTwoRegisterProject(manifest);
+
+    MainWindow window;
+    QVERIFY(window.openProjectPath(manifest));
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+
+    auto* registers =
+        window.findChild<QTableView*>(
+            QStringLiteral("registerView"));
+    auto* fields =
+        window.findChild<QTableView*>(
+            QStringLiteral("fieldView"));
+    auto* controller =
+        window.findChild<ProjectController*>();
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+    QVERIFY(controller != nullptr);
+
+    const auto rowForId =
+        [](const QTableView* view,
+           const QString& id) {
+            for (int row = 0;
+                 row < view->model()->rowCount(); ++row) {
+                if (view->model()->index(row, 0)
+                        .data(Qt::UserRole + 1).toString() ==
+                    id) {
+                    return row;
+                }
+            }
+            return -1;
+        };
+    const int statusRow =
+        rowForId(registers, QStringLiteral("reg-status"));
+    const int controlRow =
+        rowForId(registers, QStringLiteral("reg-control"));
+    QVERIFY(statusRow >= 0);
+    QVERIFY(controlRow >= 0);
+
+    const QModelIndex structureRange =
+        registers->model()->index(statusRow, 6);
+    const QModelIndex numericRange =
+        registers->model()->index(controlRow, 6);
+    QVERIFY(!(structureRange.flags() & Qt::ItemIsEditable));
+    QVERIFY(structureRange.data(Qt::ToolTipRole)
+                .toString().contains(
+                    QStringLiteral("intN or uintN")));
+    QVERIFY(numericRange.flags() & Qt::ItemIsEditable);
+    QVERIFY(numericRange.data(Qt::ToolTipRole)
+                .toString().contains(
+                    QStringLiteral("minimum .. maximum")));
+    QVERIFY(
+        registers->model()
+            ->headerData(
+                6, Qt::Horizontal, Qt::ToolTipRole)
+            .toString()
+            .contains(
+                QStringLiteral("minimum .. maximum")));
+
+    registers->setCurrentIndex(numericRange);
+    registers->scrollTo(numericRange);
+    registers->setFocus(Qt::OtherFocusReason);
+    registers->edit(numericRange);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        window.findChild<QLineEdit*>(
+            QStringLiteral("registerRangeEditor")) !=
+            nullptr,
+        2000);
+    auto* rangeEditor =
+        window.findChild<QLineEdit*>(
+            QStringLiteral("registerRangeEditor"));
+    QVERIFY(rangeEditor != nullptr);
+    QCOMPARE(
+        rangeEditor->placeholderText(),
+        QStringLiteral("minimum .. maximum"));
+    QTest::keyClick(rangeEditor, Qt::Key_Escape);
+
+    Q_EMIT registers->clicked(
+        registers->model()->index(statusRow, 5));
+    QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
+    int readyRow =
+        rowForId(fields, QStringLiteral("field-ready"));
+    QVERIFY(readyRow >= 0);
+    const QModelIndex boolMinimum =
+        fields->model()->index(readyRow, 6);
+    const QModelIndex boolMaximum =
+        fields->model()->index(readyRow, 7);
+    QVERIFY(!(boolMinimum.flags() & Qt::ItemIsEditable));
+    QVERIFY(!(boolMaximum.flags() & Qt::ItemIsEditable));
+    QVERIFY(boolMinimum.data(Qt::ToolTipRole)
+                .toString().contains(
+                    QStringLiteral("intN or uintN")));
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Make Field numeric"),
+        [](regmap::Workspace& workspace) {
+            auto* field =
+                regmap::findField(
+                    workspace, "field-ready");
+            QVERIFY(field != nullptr);
+            field->type =
+                regmap::FieldType::unsignedInteger;
+            field->enumValues.clear();
+        }));
+    QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
+    readyRow =
+        rowForId(fields, QStringLiteral("field-ready"));
+    QVERIFY(readyRow >= 0);
+    const QModelIndex numericMinimum =
+        fields->model()->index(readyRow, 6);
+    const QModelIndex numericMaximum =
+        fields->model()->index(readyRow, 7);
+    QVERIFY(numericMinimum.flags() & Qt::ItemIsEditable);
+    QVERIFY(numericMaximum.flags() & Qt::ItemIsEditable);
+    QVERIFY(
+        fields->model()
+            ->headerData(
+                6, Qt::Horizontal, Qt::ToolTipRole)
+            .toString()
+            .contains(QStringLiteral("intN or uintN")));
+
+    fields->setCurrentIndex(numericMinimum);
+    fields->scrollTo(numericMinimum);
+    fields->setFocus(Qt::OtherFocusReason);
+    fields->edit(numericMinimum);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        window.findChild<QLineEdit*>(
+            QStringLiteral("fieldMinimumEditor")) !=
+            nullptr,
+        2000);
+    auto* minimumEditor =
+        window.findChild<QLineEdit*>(
+            QStringLiteral("fieldMinimumEditor"));
+    QVERIFY(minimumEditor != nullptr);
+    QCOMPARE(
+        minimumEditor->placeholderText(),
+        QStringLiteral("minimum"));
+    QTest::keyClick(minimumEditor, Qt::Key_Escape);
+
+    QVERIFY(regmap::validateWorkspace(
+                *controller->workspace()).empty());
     makeGeneratedFilesWritable(directory.path());
 }
 

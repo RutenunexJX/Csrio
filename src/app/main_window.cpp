@@ -132,6 +132,13 @@ enum class HierarchyDropPlacement {
     viewport,
 };
 
+[[nodiscard]] bool isNumericValueType(
+    regmap::FieldType type) noexcept
+{
+    return type == regmap::FieldType::signedInteger ||
+        type == regmap::FieldType::unsignedInteger;
+}
+
 enum RegisterColumn {
     registerNameColumn = 0,
     registerOffsetColumn,
@@ -670,6 +677,42 @@ public:
 private:
     int actionRole_;
     int activeRole_;
+};
+
+class GuidedLineEditDelegate final
+    : public QStyledItemDelegate {
+public:
+    GuidedLineEditDelegate(
+        QString objectName, QString placeholder,
+        QString toolTip, QObject* parent = nullptr)
+        : QStyledItemDelegate(parent)
+        , objectName_(std::move(objectName))
+        , placeholder_(std::move(placeholder))
+        , toolTip_(std::move(toolTip))
+    {
+    }
+
+    [[nodiscard]] QWidget* createEditor(
+        QWidget* parent,
+        const QStyleOptionViewItem& option,
+        const QModelIndex& index) const override
+    {
+        QWidget* editor =
+            QStyledItemDelegate::createEditor(
+                parent, option, index);
+        if (auto* lineEdit =
+                qobject_cast<QLineEdit*>(editor)) {
+            lineEdit->setObjectName(objectName_);
+            lineEdit->setPlaceholderText(placeholder_);
+            lineEdit->setToolTip(toolTip_);
+        }
+        return editor;
+    }
+
+private:
+    QString objectName_;
+    QString placeholder_;
+    QString toolTip_;
 };
 
 class HierarchyTreeView final : public QTreeView {
@@ -2208,6 +2251,14 @@ void MainWindow::buildUi()
     registerView_->setEditTriggers(
         QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
     registerView_->setContextMenuPolicy(Qt::CustomContextMenu);
+    registerView_->setItemDelegateForColumn(
+        registerRangeColumn,
+        new GuidedLineEditDelegate(
+            QStringLiteral("registerRangeEditor"),
+            QStringLiteral("minimum .. maximum"),
+            QStringLiteral(
+                "Examples: 0 .. 255, -128 .. 127, or 0 .."),
+            registerView_));
     registerTable->setBoundaryPredicate([this](int row) { return canInsertRegisterAt(row); });
     registerTable->setInsertHandler([this](int row) { insertRegisterAt(row); });
     registerTable->setCellActionPredicate(
@@ -2298,6 +2349,22 @@ void MainWindow::buildUi()
     fieldView_->setEditTriggers(
         QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
     fieldView_->setContextMenuPolicy(Qt::CustomContextMenu);
+    fieldView_->setItemDelegateForColumn(
+        fieldMinimumColumn,
+        new GuidedLineEditDelegate(
+            QStringLiteral("fieldMinimumEditor"),
+            QStringLiteral("minimum"),
+            QStringLiteral(
+                "Minimum value for an intN or uintN Field"),
+            fieldView_));
+    fieldView_->setItemDelegateForColumn(
+        fieldMaximumColumn,
+        new GuidedLineEditDelegate(
+            QStringLiteral("fieldMaximumEditor"),
+            QStringLiteral("maximum"),
+            QStringLiteral(
+                "Maximum value for an intN or uintN Field"),
+            fieldView_));
 
     bitfieldView_ = new BitfieldView(this);
     bitfieldView_->setObjectName(QStringLiteral("bitfieldView"));
@@ -3819,6 +3886,11 @@ void MainWindow::populateRegisters()
          QStringLiteral("Width"), QStringLiteral("Type"), QStringLiteral("Fields"),
          QStringLiteral("Range"), QStringLiteral("Initial"), QStringLiteral("Reset"),
          QStringLiteral("Access"), QStringLiteral("Tags"), QStringLiteral("Description")});
+    registerModel_->horizontalHeaderItem(
+        registerRangeColumn)
+        ->setToolTip(
+            QStringLiteral(
+                "intN/uintN only · enter minimum .. maximum"));
 
     const regmap::Workspace* workspace = controller_.workspace();
     if (workspace == nullptr) {
@@ -3877,6 +3949,33 @@ void MainWindow::populateRegisters()
                         ? (fieldsOpen ? QStringLiteral("These fields are open below")
                                       : QStringLiteral("Open and edit this register's fields"))
                         : QString{});
+                const bool numericRange =
+                    isNumericValueType(reg.type);
+                const bool hasRange =
+                    reg.minimumValue.has_value() ||
+                    reg.maximumValue.has_value();
+                QStandardItem* range =
+                    numericRange || hasRange
+                        ? editableItem(
+                              rangeText(
+                                  reg.minimumValue,
+                                  reg.maximumValue),
+                              reg.id, "range",
+                              objectIdRole, propertyRole)
+                        : item(QString{});
+                range->setToolTip(
+                    numericRange
+                        ? QStringLiteral(
+                              "Double-click and enter minimum .. maximum. "
+                              "Either bound may be empty; clear the cell "
+                              "to remove the Range.")
+                        : (hasRange
+                               ? QStringLiteral(
+                                     "This non-numeric Register still has "
+                                     "Range data. Clear it or change Type.")
+                               : QStringLiteral(
+                                     "Range is available only for intN or "
+                                     "uintN Registers.")));
                 row << name
                     << editableItem(hex(reg.offset), reg.id, "offset", objectIdRole, propertyRole)
                     << item(overflow ? QStringLiteral("overflow") : hex(address))
@@ -3885,8 +3984,7 @@ void MainWindow::populateRegisters()
                     << editableItem(registerTypeText(reg), reg.id, "type", objectIdRole,
                                     propertyRole)
                     << fieldsAction
-                    << editableItem(rangeText(reg.minimumValue, reg.maximumValue), reg.id, "range",
-                                    objectIdRole, propertyRole)
+                    << range
                     << editableItem(valueText(reg.initialValue), reg.id, "initial", objectIdRole,
                                     propertyRole)
                     << editableItem(valueText(reg.resetValue), reg.id, "reset", objectIdRole,
@@ -3993,6 +4091,14 @@ void MainWindow::populateFields(const regmap::Register* reg)
          QStringLiteral("Minimum"), QStringLiteral("Maximum"), QStringLiteral("SW"),
          QStringLiteral("HW"), QStringLiteral("Reset"), QStringLiteral("Read Effect"),
          QStringLiteral("Write Effect"), QStringLiteral("Description")});
+    fieldModel_->horizontalHeaderItem(
+        fieldMinimumColumn)
+        ->setToolTip(
+            QStringLiteral("Minimum value for an intN or uintN Field"));
+    fieldModel_->horizontalHeaderItem(
+        fieldMaximumColumn)
+        ->setToolTip(
+            QStringLiteral("Maximum value for an intN or uintN Field"));
     bitfieldView_->setRegister(reg);
     const bool hasFieldEditor =
         reg != nullptr && !reg->reserved && reg->type == regmap::FieldType::structure;
@@ -4030,6 +4136,42 @@ void MainWindow::populateFields(const regmap::Register* reg)
             auto* name =
                 editableItem(fromUtf8(field.name), field.id, "name", objectIdRole, propertyRole);
             name->setData(fromUtf8(field.id), objectIdRole);
+            const bool numericRange =
+                isNumericValueType(field.type);
+            const bool hasRange =
+                field.minimumValue.has_value() ||
+                field.maximumValue.has_value();
+            auto* minimum =
+                numericRange || hasRange
+                    ? editableItem(
+                          field.minimumValue
+                              ? fromUtf8(*field.minimumValue)
+                              : QString{},
+                          field.id, "minimum",
+                          objectIdRole, propertyRole)
+                    : item(QString{});
+            auto* maximum =
+                numericRange || hasRange
+                    ? editableItem(
+                          field.maximumValue
+                              ? fromUtf8(*field.maximumValue)
+                              : QString{},
+                          field.id, "maximum",
+                          objectIdRole, propertyRole)
+                    : item(QString{});
+            const QString rangeToolTip =
+                numericRange
+                    ? QStringLiteral(
+                          "Numeric Range bound for this intN/uintN Field.")
+                    : (hasRange
+                           ? QStringLiteral(
+                                 "This non-numeric Field still has Range "
+                                 "data. Clear it or change Type.")
+                           : QStringLiteral(
+                                 "Range is available only for intN or "
+                                 "uintN Fields."));
+            minimum->setToolTip(rangeToolTip);
+            maximum->setToolTip(rangeToolTip);
             row << name << item(fromUtf8(parentPath))
                 << editableItem(QString::number(field.msb), field.id, "msb", objectIdRole,
                                 propertyRole)
@@ -4037,10 +4179,8 @@ void MainWindow::populateFields(const regmap::Register* reg)
                 << editableItem(QString::number(field.width()), field.id, "field_width",
                                 objectIdRole, propertyRole)
                 << editableItem(fieldTypeText(field), field.id, "type", objectIdRole, propertyRole)
-                << editableItem(field.minimumValue ? fromUtf8(*field.minimumValue) : QString{},
-                                field.id, "minimum", objectIdRole, propertyRole)
-                << editableItem(field.maximumValue ? fromUtf8(*field.maximumValue) : QString{},
-                                field.id, "maximum", objectIdRole, propertyRole)
+                << minimum
+                << maximum
                 << editableItem(accessText(field.softwareAccess), field.id, "sw_access",
                                 objectIdRole, propertyRole)
                 << editableItem(accessText(field.hardwareAccess), field.id, "hw_access",
