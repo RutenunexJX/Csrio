@@ -124,6 +124,7 @@ private slots:
     void editsFieldAccessFromConstrainedChoices();
     void keepsAccessAndEffectsConsistentDuringEditing();
     void closesTagPopupWhenFilteredRegisterDisappears();
+    void keepsNewRegisterVisibleUnderActiveTagFilter();
     void insertsRegisterBetweenRows();
     void showsUnifiedSyncStateAndGeneratedResults();
     void reportsBlockedUnsavedSyncAndRecovers();
@@ -7554,6 +7555,118 @@ void GuiSmokeTests::closesTagPopupWhenFilteredRegisterDisappears()
             status->tags.end());
     QVERIFY(std::ranges::find(control->tags, std::string{"existing"}) !=
             control->tags.end());
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::keepsNewRegisterVisibleUnderActiveTagFilter()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest =
+        directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createTwoRegisterProject(manifest);
+
+    MainWindow window;
+    QVERIFY(window.openProjectPath(manifest));
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+
+    auto* controller =
+        window.findChild<ProjectController*>();
+    auto* registers =
+        window.findChild<QTableView*>(
+            QStringLiteral("registerView"));
+    auto* tagFilter =
+        window.findChild<QComboBox*>(
+            QStringLiteral("tagFilter"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(tagFilter != nullptr);
+    const auto visibleEditor =
+        [](QWidget* parent) -> QLineEdit* {
+        const auto editors =
+            parent->findChildren<QLineEdit*>();
+        const auto found = std::ranges::find_if(
+            editors, [](const QLineEdit* editor) {
+                return editor->isVisible();
+            });
+        return found == editors.end() ? nullptr : *found;
+    };
+
+    int existingFilter = -1;
+    for (int index = 0; index < tagFilter->count(); ++index) {
+        if (tagFilter->itemText(index) ==
+            QStringLiteral("existing")) {
+            existingFilter = index;
+            break;
+        }
+    }
+    QVERIFY(existingFilter > 0);
+    tagFilter->setCurrentIndex(existingFilter);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()->rowCount(), 2, 2000);
+    QCOMPARE(
+        registers->model()->index(0, 0).data().toString(),
+        QStringLiteral("STATUS"));
+    QCOMPARE(
+        registers->model()->index(1, 0).data().toString(),
+        QStringLiteral("+"));
+
+    const QModelIndex addRegister =
+        registers->model()->index(1, 0);
+    registers->scrollTo(addRegister);
+    QCoreApplication::processEvents();
+    const QRect addRectangle =
+        registers->visualRect(addRegister);
+    QVERIFY(addRectangle.isValid());
+    QTest::mouseClick(
+        registers->viewport(), Qt::LeftButton,
+        Qt::NoModifier, addRectangle.center());
+
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()->rowCount(), 3, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        visibleEditor(registers) != nullptr, 2000);
+    const QString newRegisterId =
+        registers->currentIndex()
+            .data(Qt::UserRole + 1)
+            .toString();
+    QVERIFY(!newRegisterId.isEmpty());
+    const auto* added = regmap::findRegister(
+        *controller->workspace(),
+        newRegisterId.toUtf8().toStdString());
+    QVERIFY(added != nullptr);
+    QCOMPARE(
+        added->tags,
+        std::vector<std::string>{"existing"});
+    QCOMPARE(
+        registers->model()->index(1, 0)
+            .data(Qt::UserRole + 1)
+            .toString(),
+        newRegisterId);
+    QCOMPARE(
+        registers->model()->index(2, 0).data().toString(),
+        QStringLiteral("+"));
+    QVERIFY(window.statusBar()->currentMessage().contains(
+        QStringLiteral("Tag existing")));
+    QCOMPARE(
+        tagFilter->currentText(),
+        QStringLiteral("existing"));
+
+    QTest::keyClick(
+        visibleEditor(registers), Qt::Key_Escape);
+    QCoreApplication::processEvents();
+    controller->undo();
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()->rowCount(), 2, 2000);
+    QVERIFY(regmap::findRegister(
+                *controller->workspace(),
+                newRegisterId.toUtf8().toStdString()) == nullptr);
+    QCOMPARE(
+        tagFilter->currentText(),
+        QStringLiteral("existing"));
 
     makeGeneratedFilesWritable(directory.path());
 }

@@ -6050,6 +6050,10 @@ void MainWindow::addRegister(std::string parentId)
     reg.initialValue = regmap::UnsignedValue(0);
     reg.resetValue = regmap::UnsignedValue(0);
     reg.access = regmap::AccessMode::readWrite;
+    const std::string inheritedTag = selectedTagFilter_;
+    if (!inheritedTag.empty()) {
+        reg.tags.push_back(inheritedTag);
+    }
 
     std::uint64_t appendOffset = 0;
     for (const auto& existing : parent->registers) {
@@ -6113,8 +6117,17 @@ void MainWindow::addRegister(std::string parentId)
         refreshProject();
         selectRegister(newId);
         statusBar()->showMessage(
-            QStringLiteral("Added Register at Offset %1; Ctrl+Z to restore")
-                .arg(hex(addedOffset)), 5000);
+            inheritedTag.empty()
+                ? QStringLiteral(
+                      "Added Register at Offset %1; Ctrl+Z to restore")
+                      .arg(hex(addedOffset))
+                : QStringLiteral(
+                      "Added Register at Offset %1 with Tag %2; "
+                      "Ctrl+Z to restore")
+                      .arg(
+                          hex(addedOffset),
+                          fromUtf8(inheritedTag)),
+            5000);
         beginRegisterRename(newId);
     }
 }

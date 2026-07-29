@@ -167,7 +167,9 @@ be invalid, all Offsets and the Undo history remain unchanged and the status mes
 which capacity to adjust.
 Double-click a register **Tags** cell to open the tag selector: typing filters the drop-down,
 clicking an existing tag selects it, and the adjacent `+` creates a tag only when its name is
-unique. The register context menu can convert a register to a red, bold reserved slot or delete
+unique. A Register created while **Tag Filter** is active inherits that tag and remains visible
+in the filtered table.
+The register context menu can convert a register to a red, bold reserved slot or delete
 it while shifting subsequent offsets upward. Page and block properties are shown once in the
 highlighted context bar above the register table.
 
