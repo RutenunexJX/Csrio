@@ -44,6 +44,7 @@
 #include <QPaintEvent>
 #include <QPersistentModelIndex>
 #include <QPainter>
+#include <QPointer>
 #include <QPixmap>
 #include <QPushButton>
 #include <QRegularExpression>
@@ -137,6 +138,19 @@ enum class HierarchyDropPlacement {
 {
     return type == regmap::FieldType::signedInteger ||
         type == regmap::FieldType::unsignedInteger;
+}
+
+[[nodiscard]] const QStringList& valueTypeChoices()
+{
+    static const QStringList choices{
+        QStringLiteral("bits"),   QStringLiteral("bool"),
+        QStringLiteral("enum"),   QStringLiteral("uint8"),
+        QStringLiteral("uint16"), QStringLiteral("uint32"),
+        QStringLiteral("uint64"), QStringLiteral("int8"),
+        QStringLiteral("int16"),  QStringLiteral("int32"),
+        QStringLiteral("int64"),   QStringLiteral("field"),
+        QStringLiteral("reserved")};
+    return choices;
 }
 
 enum RegisterColumn {
@@ -626,6 +640,73 @@ public:
         const auto* combo = qobject_cast<QComboBox*>(editor);
         if (combo != nullptr) {
             model->setData(index, combo->currentText());
+        }
+    }
+
+    void updateEditorGeometry(QWidget* editor, const QStyleOptionViewItem& option,
+                              const QModelIndex& index) const override
+    {
+        Q_UNUSED(index)
+        editor->setGeometry(option.rect);
+    }
+};
+
+class TypeItemDelegate final : public QStyledItemDelegate {
+public:
+    explicit TypeItemDelegate(QObject* parent = nullptr)
+        : QStyledItemDelegate(parent)
+    {
+    }
+
+    [[nodiscard]] QWidget* createEditor(
+        QWidget* parent, const QStyleOptionViewItem& option,
+        const QModelIndex& index) const override
+    {
+        Q_UNUSED(option)
+        Q_UNUSED(index)
+        auto* editor = new QComboBox(parent);
+        editor->setObjectName(QStringLiteral("typeEditor"));
+        editor->setEditable(true);
+        editor->setInsertPolicy(QComboBox::NoInsert);
+        editor->addItems(valueTypeChoices());
+        editor->setToolTip(
+            QStringLiteral(
+                "Select a common Type or enter a custom intN/uintN width."));
+        auto* delegate = const_cast<TypeItemDelegate*>(this);
+        connect(editor, &QComboBox::textActivated, editor,
+                [delegate, editor] {
+                    const QPointer<QComboBox> guardedEditor(editor);
+                    QTimer::singleShot(
+                        0, delegate,
+                        [delegate, guardedEditor] {
+                            if (guardedEditor != nullptr &&
+                                guardedEditor->isVisible()) {
+                                Q_EMIT delegate->closeEditor(guardedEditor);
+                            }
+                        });
+                    Q_EMIT delegate->commitData(editor);
+                });
+        return editor;
+    }
+
+    void setEditorData(QWidget* editor, const QModelIndex& index) const override
+    {
+        auto* combo = qobject_cast<QComboBox*>(editor);
+        if (combo == nullptr) {
+            return;
+        }
+        combo->setCurrentText(index.data().toString());
+        if (combo->lineEdit() != nullptr) {
+            combo->lineEdit()->selectAll();
+        }
+    }
+
+    void setModelData(QWidget* editor, QAbstractItemModel* model,
+                      const QModelIndex& index) const override
+    {
+        const auto* combo = qobject_cast<QComboBox*>(editor);
+        if (combo != nullptr) {
+            model->setData(index, combo->currentText().trimmed());
         }
     }
 
@@ -2247,6 +2328,8 @@ void MainWindow::buildUi()
     registerView_->setItemDelegateForColumn(
         registerFieldsColumn,
         new FieldsButtonDelegate(openFieldsRole, fieldsOpenRole, registerView_));
+    registerView_->setItemDelegateForColumn(
+        registerTypeColumn, new TypeItemDelegate(registerView_));
     registerView_->setMinimumHeight(120);
     registerView_->setEditTriggers(
         QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
@@ -2346,6 +2429,8 @@ void MainWindow::buildUi()
         fieldSoftwareAccessColumn, new AccessItemDelegate(fieldView_));
     fieldView_->setItemDelegateForColumn(
         fieldHardwareAccessColumn, new AccessItemDelegate(fieldView_));
+    fieldView_->setItemDelegateForColumn(
+        fieldTypeColumn, new TypeItemDelegate(fieldView_));
     fieldView_->setEditTriggers(
         QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
     fieldView_->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -3202,13 +3287,21 @@ void MainWindow::connectSignals()
 bool MainWindow::commitActiveEditor()
 {
     activeEditorCommitRejected_ = false;
-    if (auto* edit = qobject_cast<QLineEdit*>(QApplication::focusWidget())) {
-        const QScopedValueRollback commitGuard(committingActiveEditor_, true);
-        edit->clearFocus();
-    } else if (auto* combo =
-                   qobject_cast<QComboBox*>(QApplication::focusWidget())) {
+    QWidget* focused = QApplication::focusWidget();
+    QComboBox* combo = nullptr;
+    for (QWidget* current = focused; current != nullptr;
+         current = current->parentWidget()) {
+        combo = qobject_cast<QComboBox*>(current);
+        if (combo != nullptr) {
+            break;
+        }
+    }
+    if (combo != nullptr) {
         const QScopedValueRollback commitGuard(committingActiveEditor_, true);
         combo->clearFocus();
+    } else if (auto* edit = qobject_cast<QLineEdit*>(focused)) {
+        const QScopedValueRollback commitGuard(committingActiveEditor_, true);
+        edit->clearFocus();
     }
     return !activeEditorCommitRejected_;
 }
@@ -3891,6 +3984,11 @@ void MainWindow::populateRegisters()
         ->setToolTip(
             QStringLiteral(
                 "intN/uintN only · enter minimum .. maximum"));
+    registerModel_->horizontalHeaderItem(
+        registerTypeColumn)
+        ->setToolTip(
+            QStringLiteral(
+                "Double-click to select a common Type or enter custom intN/uintN."));
 
     const regmap::Workspace* workspace = controller_.workspace();
     if (workspace == nullptr) {
@@ -3976,13 +4074,18 @@ void MainWindow::populateRegisters()
                                : QStringLiteral(
                                      "Range is available only for intN or "
                                      "uintN Registers.")));
+                auto* type =
+                    editableItem(registerTypeText(reg), reg.id, "type",
+                                 objectIdRole, propertyRole);
+                type->setToolTip(
+                    QStringLiteral(
+                        "Double-click to select a common Type or enter custom intN/uintN."));
                 row << name
                     << editableItem(hex(reg.offset), reg.id, "offset", objectIdRole, propertyRole)
                     << item(overflow ? QStringLiteral("overflow") : hex(address))
                     << editableItem(QString::number(reg.width), reg.id, "width", objectIdRole,
                                     propertyRole)
-                    << editableItem(registerTypeText(reg), reg.id, "type", objectIdRole,
-                                    propertyRole)
+                    << type
                     << fieldsAction
                     << range
                     << editableItem(valueText(reg.initialValue), reg.id, "initial", objectIdRole,
@@ -4099,6 +4202,11 @@ void MainWindow::populateFields(const regmap::Register* reg)
         fieldMaximumColumn)
         ->setToolTip(
             QStringLiteral("Maximum value for an intN or uintN Field"));
+    fieldModel_->horizontalHeaderItem(
+        fieldTypeColumn)
+        ->setToolTip(
+            QStringLiteral(
+                "Double-click to select a common Type or enter custom intN/uintN."));
     bitfieldView_->setRegister(reg);
     const bool hasFieldEditor =
         reg != nullptr && !reg->reserved && reg->type == regmap::FieldType::structure;
@@ -4172,13 +4280,19 @@ void MainWindow::populateFields(const regmap::Register* reg)
                                  "uintN Fields."));
             minimum->setToolTip(rangeToolTip);
             maximum->setToolTip(rangeToolTip);
+            auto* type =
+                editableItem(fieldTypeText(field), field.id, "type",
+                             objectIdRole, propertyRole);
+            type->setToolTip(
+                QStringLiteral(
+                    "Double-click to select a common Type or enter custom intN/uintN."));
             row << name << item(fromUtf8(parentPath))
                 << editableItem(QString::number(field.msb), field.id, "msb", objectIdRole,
                                 propertyRole)
                 << item(QString::number(field.lsb))
                 << editableItem(QString::number(field.width()), field.id, "field_width",
                                 objectIdRole, propertyRole)
-                << editableItem(fieldTypeText(field), field.id, "type", objectIdRole, propertyRole)
+                << type
                 << minimum
                 << maximum
                 << editableItem(accessText(field.softwareAccess), field.id, "sw_access",
@@ -7615,13 +7729,7 @@ void MainWindow::showFieldContextMenu(const QPoint& position)
     duplicate->setShortcutContext(Qt::WidgetShortcut);
     menu.addSeparator();
     QMenu* typeMenu = menu.addMenu(QStringLiteral("设置类型"));
-    const std::vector<QString> types{
-        QStringLiteral("bits"),    QStringLiteral("bool"),   QStringLiteral("enum"),
-        QStringLiteral("uint8"),   QStringLiteral("uint16"), QStringLiteral("uint32"),
-        QStringLiteral("uint64"),  QStringLiteral("int8"),   QStringLiteral("int16"),
-        QStringLiteral("int32"),   QStringLiteral("int64"),  QStringLiteral("field"),
-        QStringLiteral("reserved")};
-    for (const auto& type : types) {
+    for (const auto& type : valueTypeChoices()) {
         QAction* action = typeMenu->addAction(type);
         action->setData(type);
     }

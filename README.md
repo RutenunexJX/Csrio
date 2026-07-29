@@ -192,7 +192,8 @@ its MSB/LSB update continuously. On overlap, Workbench asks whether to trim the 
 the overlapping fields. The complete trimmed result is validated before it is committed; a move
 that would invalidate an existing Reset, Enum value, numeric Range, access rule, or Member Field
 is rejected without changing the model or Undo history. Field types may be selected from the
-field context menu. If trimming the overlapping side would completely remove a Field, the dialog
+field context menu or from the Type cell's in-place list. The same editor accepts custom
+`intN`/`uintN` widths. If trimming the overlapping side would completely remove a Field, the dialog
 lists every Field that will be deleted, labels the destructive choice explicitly, and keeps
 Cancel as the default. The confirmed move remains one undoable edit.
 `int8`, `uint32`, and the other `intN`/`uintN` forms set signedness and width together. Numeric
@@ -214,7 +215,8 @@ opens repeated destructive confirmations; it rejects these Type cells and direct
 confirm each conversion individually. Changing an Enum Register or Field to a non-enumeration
 type uses the same protection, reports how many Enum values will be removed, and preserves all
 values when cancelled.
-Register types use the same value-type vocabulary. A register's **Range** cell uses
+Register types use the same in-place list and custom `intN`/`uintN` input. A register's
+**Range** cell uses
 `minimum .. maximum`; **Initial** is independent of **Reset**. For `enum` and `bool` registers,
 enum values for the selected register are edited in the same table below the field table. Range
 cells are enabled only for `intN`/`uintN` values (or invalid legacy data that still needs to be

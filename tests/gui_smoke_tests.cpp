@@ -119,6 +119,7 @@ private slots:
     void confirmsDeletionOfFullyCoveredFieldsDuringDrag();
     void cancelsInterruptedFieldDrag();
     void editsTagsAndAccessFromDoubleClick();
+    void editsTypesWithPresetAndCustomChoices();
     void closesAnchoredPopupEditorsWithEscape();
     void keepsPopupEditingActionsLocal();
     void editsFieldAccessFromConstrainedChoices();
@@ -6684,6 +6685,183 @@ void GuiSmokeTests::cancelsInterruptedFieldDrag()
     };
     QCOMPARE(fieldRange(QStringLiteral("field-ready")).first, std::uint32_t{0});
     QCOMPARE(fieldRange(QStringLiteral("field-ready")).second, std::uint32_t{3});
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::editsTypesWithPresetAndCustomChoices()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest =
+        directory.filePath(QStringLiteral("type-editor.regmap.yaml"));
+    createTwoRegisterProject(manifest);
+
+    MainWindow window;
+    QVERIFY(window.openProjectPath(manifest));
+    window.resize(1100, 720);
+    window.show();
+    window.activateWindow();
+    QTest::qWait(50);
+
+    auto* registers =
+        window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* fields =
+        window.findChild<QTableView*>(QStringLiteral("fieldView"));
+    auto* controller = window.findChild<ProjectController*>();
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+    QVERIFY(controller != nullptr);
+    QVERIFY(!controller->isDirty());
+
+    const auto rowNamed = [](QTableView* table,
+                             const QString& name) {
+        for (int row = 0; row < table->model()->rowCount(); ++row) {
+            if (table->model()->index(row, 0).data().toString() == name) {
+                return row;
+            }
+        }
+        return -1;
+    };
+    const auto visibleTypeEditor = [](QTableView* table) -> QComboBox* {
+        for (auto* editor :
+             table->findChildren<QComboBox*>(
+                 QStringLiteral("typeEditor"))) {
+            if (editor->isVisible()) {
+                return editor;
+            }
+        }
+        return nullptr;
+    };
+
+    int controlRow = rowNamed(registers, QStringLiteral("CONTROL"));
+    QVERIFY(controlRow >= 0);
+    QModelIndex registerType =
+        registers->model()->index(controlRow, 4);
+    QCOMPARE(registerType.data().toString(), QStringLiteral("uint32"));
+    registers->scrollTo(registerType);
+    QTest::mouseClick(
+        registers->viewport(), Qt::LeftButton, Qt::NoModifier,
+        registers->visualRect(registerType).center());
+    QCOMPARE(registers->currentIndex(), registerType);
+    QVERIFY(visibleTypeEditor(registers) == nullptr);
+    registers->setFocus(Qt::OtherFocusReason);
+    QTest::keyClick(registers, Qt::Key_C, Qt::ControlModifier);
+    QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("uint32"));
+
+    QTest::mouseDClick(
+        registers->viewport(), Qt::LeftButton, Qt::NoModifier,
+        registers->visualRect(registerType).center());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        visibleTypeEditor(registers) != nullptr, 2000);
+    auto* registerEditor = visibleTypeEditor(registers);
+    QVERIFY(registerEditor->isEditable());
+    QCOMPARE(registerEditor->currentText(), QStringLiteral("uint32"));
+    QVERIFY(registerEditor->findText(QStringLiteral("bool")) >= 0);
+    QVERIFY(registerEditor->findText(QStringLiteral("field")) >= 0);
+    QVERIFY(registerEditor->findText(QStringLiteral("reserved")) >= 0);
+    registerEditor->setCurrentText(QStringLiteral("uint16"));
+    Q_EMIT registerEditor->textActivated(
+        registerEditor->currentText());
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()->index(
+            rowNamed(registers, QStringLiteral("CONTROL")), 4)
+            .data().toString(),
+        QStringLiteral("uint16"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()->index(
+            rowNamed(registers, QStringLiteral("CONTROL")), 3)
+            .data().toString(),
+        QStringLiteral("16"), 2000);
+    controlRow = rowNamed(registers, QStringLiteral("CONTROL"));
+    QVERIFY(controller->isDirty());
+
+    controller->undo();
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()->index(
+            rowNamed(registers, QStringLiteral("CONTROL")), 4)
+            .data().toString(),
+        QStringLiteral("uint32"), 2000);
+    QVERIFY(!controller->isDirty());
+
+    controlRow = rowNamed(registers, QStringLiteral("CONTROL"));
+    registerType = registers->model()->index(controlRow, 4);
+    registers->setCurrentIndex(registerType);
+    registers->edit(registerType);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        visibleTypeEditor(registers) != nullptr, 2000);
+    registerEditor = visibleTypeEditor(registers);
+    QVERIFY(registerEditor->lineEdit() != nullptr);
+    registerEditor->lineEdit()->setFocus(Qt::OtherFocusReason);
+    registerEditor->lineEdit()->selectAll();
+    QTest::keyClicks(registerEditor->lineEdit(),
+                     QStringLiteral("uint24"));
+    QCOMPARE(registerEditor->currentText(), QStringLiteral("uint24"));
+    QTest::keyClick(registerEditor->lineEdit(), Qt::Key_S,
+                    Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()->index(
+            rowNamed(registers, QStringLiteral("CONTROL")), 4)
+            .data().toString(),
+        QStringLiteral("uint24"), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()->index(
+            rowNamed(registers, QStringLiteral("CONTROL")), 3)
+            .data().toString(),
+        QStringLiteral("24"), 2000);
+    controlRow = rowNamed(registers, QStringLiteral("CONTROL"));
+    QTRY_VERIFY_WITH_TIMEOUT(!controller->isDirty(), 2000);
+
+    const auto reopened =
+        regmap::openProject(
+            std::filesystem::path(manifest.toStdWString()));
+    QVERIFY(reopened.workspace.has_value());
+    const auto* control =
+        regmap::findRegister(*reopened.workspace, "reg-control");
+    QVERIFY(control != nullptr);
+    QCOMPARE(control->type, regmap::FieldType::unsignedInteger);
+    QCOMPARE(control->width, std::uint32_t{24});
+
+    registerType = registers->model()->index(controlRow, 4);
+    registers->scrollTo(registerType);
+    QTest::mouseClick(
+        registers->viewport(), Qt::LeftButton, Qt::NoModifier,
+        registers->visualRect(registerType).center());
+    QVERIFY(visibleTypeEditor(registers) == nullptr);
+    registers->setFocus(Qt::OtherFocusReason);
+    QTest::keyClick(registers, Qt::Key_C, Qt::ControlModifier);
+    QCOMPARE(QApplication::clipboard()->text(), QStringLiteral("uint24"));
+
+    const int statusRow = rowNamed(registers, QStringLiteral("STATUS"));
+    QVERIFY(statusRow >= 0);
+    Q_EMIT registers->clicked(
+        registers->model()->index(statusRow, 5));
+    QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
+    const int readyRow = rowNamed(fields, QStringLiteral("READY"));
+    QVERIFY(readyRow >= 0);
+    const QModelIndex fieldType =
+        fields->model()->index(readyRow, 5);
+    QCOMPARE(fieldType.data().toString(), QStringLiteral("bool"));
+    fields->scrollTo(fieldType);
+    QTest::mouseClick(
+        fields->viewport(), Qt::LeftButton, Qt::NoModifier,
+        fields->visualRect(fieldType).center());
+    QCOMPARE(fields->currentIndex(), fieldType);
+    QVERIFY(visibleTypeEditor(fields) == nullptr);
+    QTest::mouseDClick(
+        fields->viewport(), Qt::LeftButton, Qt::NoModifier,
+        fields->visualRect(fieldType).center());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        visibleTypeEditor(fields) != nullptr, 2000);
+    auto* fieldEditor = visibleTypeEditor(fields);
+    QCOMPARE(fieldEditor->currentText(), QStringLiteral("bool"));
+    QVERIFY(fieldEditor->findText(QStringLiteral("uint32")) >= 0);
+    QVERIFY(fieldEditor->findText(QStringLiteral("field")) >= 0);
+    QTest::keyClick(fieldEditor, Qt::Key_Escape);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        visibleTypeEditor(fields) == nullptr, 2000);
+    QCOMPARE(fields->model()->index(readyRow, 5).data().toString(),
+             QStringLiteral("bool"));
 
     makeGeneratedFilesWritable(directory.path());
 }
