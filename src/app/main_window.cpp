@@ -1531,6 +1531,47 @@ isUniqueSiblingName(const std::vector<Value>& values, std::string_view objectId,
            });
 }
 
+[[nodiscard]] std::optional<std::uint32_t>
+availableFieldLsb(const std::vector<regmap::Field>& fields,
+                  std::uint64_t desiredWidth,
+                  std::uint64_t containerWidth)
+{
+    if (desiredWidth == 0 || desiredWidth > containerWidth) {
+        return std::nullopt;
+    }
+
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> occupied;
+    occupied.reserve(fields.size());
+    for (const auto& field : fields) {
+        if (field.msb < field.lsb || field.lsb >= containerWidth) {
+            continue;
+        }
+        occupied.emplace_back(
+            field.lsb,
+            std::min<std::uint64_t>(field.msb, containerWidth - 1));
+    }
+    std::ranges::sort(occupied);
+
+    std::uint64_t cursor = 0;
+    for (const auto& [first, last] : occupied) {
+        if (first > cursor && desiredWidth <= first - cursor) {
+            return static_cast<std::uint32_t>(cursor);
+        }
+        if (last >= cursor) {
+            cursor = last + 1;
+            if (cursor >= containerWidth) {
+                break;
+            }
+        }
+    }
+    if (cursor < containerWidth &&
+        desiredWidth <= containerWidth - cursor &&
+        cursor <= std::numeric_limits<std::uint32_t>::max()) {
+        return static_cast<std::uint32_t>(cursor);
+    }
+    return std::nullopt;
+}
+
 [[nodiscard]] const std::vector<regmap::Field>*
 fieldSiblings(const std::vector<regmap::Field>& fields, std::string_view fieldId)
 {
@@ -6693,6 +6734,157 @@ void MainWindow::showRegisterContextMenu(const QPoint& position)
     }
 }
 
+void MainWindow::duplicateSelectedField()
+{
+    const auto* workspace = controller_.workspace();
+    if (workspace == nullptr || selectedFieldId_.empty()) {
+        return;
+    }
+
+    const auto* reg =
+        findRegisterContainingField(*workspace, selectedFieldId_);
+    const auto* source =
+        reg == nullptr
+            ? nullptr
+            : findFieldRecursive(reg->fields, selectedFieldId_);
+    const auto* siblings =
+        reg == nullptr
+            ? nullptr
+            : fieldSiblings(reg->fields, selectedFieldId_);
+    const auto* parent =
+        reg == nullptr
+            ? nullptr
+            : parentFieldOf(reg->fields, selectedFieldId_);
+    if (reg == nullptr || source == nullptr || siblings == nullptr) {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "The selected Field no longer exists; reopen the menu and try again"),
+            5000);
+        return;
+    }
+
+    const std::uint64_t containerWidth =
+        parent == nullptr ? reg->width : parent->width();
+    const auto targetLsb =
+        availableFieldLsb(*siblings, source->width(), containerWidth);
+    const QString containerLabel =
+        parent == nullptr
+            ? QStringLiteral("Register %1").arg(fromUtf8(reg->name))
+            : QStringLiteral("compound Field %1")
+                  .arg(fromUtf8(parent->name));
+    if (!targetLsb) {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Cannot duplicate Field %1: no contiguous %2-bit free range "
+                "remains in %3. Move or narrow Fields, or increase the "
+                "containing width; no change was made.")
+                .arg(fromUtf8(source->name))
+                .arg(source->width())
+                .arg(containerLabel),
+            9000);
+        return;
+    }
+
+    std::uint64_t containerAbsoluteLsb = 0;
+    if (parent != nullptr) {
+        const auto absolute =
+            fieldAbsoluteLsb(reg->fields, parent->id);
+        if (!absolute) {
+            statusBar()->showMessage(
+                QStringLiteral(
+                    "Cannot duplicate Field %1: its compound Field position "
+                    "is invalid; repair the Field layout first.")
+                    .arg(fromUtf8(source->name)),
+                8000);
+            return;
+        }
+        containerAbsoluteLsb = *absolute;
+    }
+
+    regmap::Field copy = *source;
+    copy.name = uniqueCopiedName(
+        copy.name, [&](const std::string& candidate) {
+            return std::ranges::any_of(
+                *siblings, [&](const regmap::Field& field) {
+                    return field.name == candidate;
+                });
+        });
+    copy.lsb = *targetLsb;
+    copy.msb = static_cast<std::uint32_t>(
+        static_cast<std::uint64_t>(*targetLsb) +
+        source->width() - 1);
+    std::set<regmap::ObjectId, std::less<>> generatedIds;
+    prepareCopiedField(*workspace, copy, generatedIds);
+    refreshFieldResets(copy, reg->resetValue, containerAbsoluteLsb);
+    const bool resetAdapted = copy.resetValue != source->resetValue;
+
+    const std::string registerId = reg->id;
+    const std::string parentId =
+        parent == nullptr ? std::string{} : parent->id;
+    regmap::Workspace candidate = *workspace;
+    if (parentId.empty()) {
+        if (auto* candidateRegister =
+                regmap::findRegister(candidate, registerId)) {
+            candidateRegister->fields.push_back(copy);
+        }
+    } else if (auto* candidateParent =
+                   regmap::findField(candidate, parentId)) {
+        candidateParent->members.push_back(copy);
+    }
+    if (!workspaceEditDoesNotWorsen(*workspace, candidate)) {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Cannot duplicate Field %1 at bits %2:%3: its access, Reset, "
+                "Enum values, Range, or Members would be invalid there; no "
+                "change was made.")
+                .arg(fromUtf8(source->name))
+                .arg(copy.msb)
+                .arg(copy.lsb),
+            9000);
+        return;
+    }
+
+    const std::string newId = copy.id;
+    const QString sourceName = fromUtf8(source->name);
+    const QString copyName = fromUtf8(copy.name);
+    const std::uint32_t copyMsb = copy.msb;
+    const std::uint32_t copyLsb = copy.lsb;
+    if (controller_.editWorkspace(
+            QStringLiteral("Duplicate field %1").arg(sourceName),
+            [registerId, parentId, copy = std::move(copy)](
+                regmap::Workspace& target) mutable {
+                if (parentId.empty()) {
+                    if (auto* targetRegister =
+                            regmap::findRegister(target, registerId)) {
+                        targetRegister->fields.push_back(
+                            std::move(copy));
+                    }
+                } else if (auto* targetParent =
+                               regmap::findField(target, parentId)) {
+                    targetParent->members.push_back(
+                        std::move(copy));
+                }
+            })) {
+        selectedRegisterId_ = registerId;
+        openFieldsRegisterId_ = registerId;
+        selectedFieldId_ = newId;
+        refreshProject();
+        selectRegister(registerId);
+        selectField(newId);
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Duplicated Field %1 as %2 at bits %3:%4%5; Ctrl+Z to restore")
+                .arg(sourceName, copyName)
+                .arg(copyMsb)
+                .arg(copyLsb)
+                .arg(resetAdapted
+                         ? QStringLiteral(
+                               "; Reset adapted to destination bits")
+                         : QString{}),
+            8000);
+    }
+}
+
 void MainWindow::showFieldContextMenu(const QPoint& position)
 {
     const QModelIndex index = fieldView_->indexAt(position);
@@ -6712,6 +6904,11 @@ void MainWindow::showFieldContextMenu(const QPoint& position)
     }
 
     QMenu menu(this);
+    QAction* duplicate =
+        menu.addAction(QStringLiteral("Duplicate Field"));
+    duplicate->setObjectName(
+        QStringLiteral("duplicateFieldAction"));
+    menu.addSeparator();
     QMenu* typeMenu = menu.addMenu(QStringLiteral("设置类型"));
     const std::vector<QString> types{
         QStringLiteral("bits"),    QStringLiteral("bool"),   QStringLiteral("enum"),
@@ -6733,7 +6930,9 @@ void MainWindow::showFieldContextMenu(const QPoint& position)
     if (chosen == nullptr) {
         return;
     }
-    if (chosen->data().isValid()) {
+    if (chosen == duplicate) {
+        duplicateSelectedField();
+    } else if (chosen->data().isValid()) {
         applyPropertyEdit(selectedFieldId_, "type", chosen->data().toString());
     } else if (chosen == addEnum) {
         addEnumValue();

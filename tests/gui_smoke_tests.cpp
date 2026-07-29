@@ -123,6 +123,7 @@ private slots:
     void rejectsInvalidNumericRangesDuringEditing();
     void protectsNumericRangesDuringShapeChanges();
     void duplicatesCompleteRegisterSafely();
+    void duplicatesCompleteFieldSafely();
     void confirmsReservedConversionBeforeClearingContent();
     void rejectsAddressEditsThatIntroduceConflicts();
     void rejectsRecoveryEditsThatReplaceAddressProblems();
@@ -411,19 +412,19 @@ void editManagedRtlValue(const QString& path, const QString& objectId, const QSt
     file.close();
 }
 
-bool invokeRegisterContextAction(MainWindow& window,
-                                 QTableView* registers, int row,
-                                 const QString& actionObjectName,
-                                 QString& failure)
+bool invokeTableContextAction(MainWindow& window,
+                              QTableView* table, int row,
+                              const QString& actionObjectName,
+                              QString& failure)
 {
-    if (registers == nullptr || row < 0 ||
-        row >= registers->model()->rowCount()) {
-        failure = QStringLiteral("Register row is unavailable");
+    if (table == nullptr || row < 0 ||
+        row >= table->model()->rowCount()) {
+        failure = QStringLiteral("Table row is unavailable");
         return false;
     }
-    const QModelIndex index = registers->model()->index(row, 0);
-    registers->setCurrentIndex(index);
-    registers->scrollTo(index);
+    const QModelIndex index = table->model()->index(row, 0);
+    table->setCurrentIndex(index);
+    table->scrollTo(index);
     QCoreApplication::processEvents();
     bool triggered = false;
     QTimer::singleShot(0, &window, [&] {
@@ -437,7 +438,7 @@ bool invokeRegisterContextAction(MainWindow& window,
         if (action == nullptr || menu == nullptr ||
             !action->isEnabled()) {
             failure = QStringLiteral(
-                "Requested Register action is unavailable");
+                "Requested table action is unavailable");
             if (menu != nullptr) {
                 menu->close();
             }
@@ -448,11 +449,11 @@ bool invokeRegisterContextAction(MainWindow& window,
             menu, Qt::LeftButton, Qt::NoModifier,
             menu->actionGeometry(action).center());
     });
-    const QPoint position = registers->visualRect(index).center();
+    const QPoint position = table->visualRect(index).center();
     QContextMenuEvent event(
         QContextMenuEvent::Mouse, position,
-        registers->viewport()->mapToGlobal(position));
-    QCoreApplication::sendEvent(registers->viewport(), &event);
+        table->viewport()->mapToGlobal(position));
+    QCoreApplication::sendEvent(table->viewport(), &event);
     QCoreApplication::processEvents();
     return triggered;
 }
@@ -7956,7 +7957,7 @@ void GuiSmokeTests::duplicatesCompleteRegisterSafely()
             controller->undoDepth();
 
         QString failure;
-        QVERIFY(invokeRegisterContextAction(
+        QVERIFY(invokeTableContextAction(
             window, registers, 0,
             QStringLiteral("duplicateRegisterAction"),
             failure));
@@ -8072,7 +8073,7 @@ void GuiSmokeTests::duplicatesCompleteRegisterSafely()
             controller->undoDepth();
 
         QString failure;
-        QVERIFY(invokeRegisterContextAction(
+        QVERIFY(invokeTableContextAction(
             window, registers, 0,
             QStringLiteral("duplicateRegisterAction"),
             failure));
@@ -8087,6 +8088,377 @@ void GuiSmokeTests::duplicatesCompleteRegisterSafely()
             QStringLiteral("Cannot duplicate Register STATUS")));
         QVERIFY(window.statusBar()->currentMessage().contains(
             QStringLiteral("does not fit Block Control")));
+        QVERIFY(regmap::validateWorkspace(
+                    *controller->workspace())
+                    .empty());
+
+        makeGeneratedFilesWritable(directory.path());
+    }
+}
+
+void GuiSmokeTests::duplicatesCompleteFieldSafely()
+{
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString manifest =
+            directory.filePath(
+                QStringLiteral("duplicate-field.regmap.yaml"));
+        createProject(manifest);
+
+        MainWindow window;
+        QVERIFY(window.openProjectPath(manifest));
+        window.resize(1100, 720);
+        window.show();
+        QTest::qWait(50);
+
+        auto* controller =
+            window.findChild<ProjectController*>();
+        auto* registers =
+            window.findChild<QTableView*>(
+                QStringLiteral("registerView"));
+        auto* fields =
+            window.findChild<QTableView*>(
+                QStringLiteral("fieldView"));
+        QVERIFY(controller != nullptr);
+        QVERIFY(registers != nullptr);
+        QVERIFY(fields != nullptr);
+
+        QVERIFY(controller->editWorkspace(
+            QStringLiteral("Configure Field duplicate fixture"),
+            [](regmap::Workspace& workspace) {
+                auto* reg =
+                    regmap::findRegister(workspace, "reg-status");
+                QVERIFY(reg != nullptr);
+                reg->resetValue = regmap::UnsignedValue(0xA0);
+
+                regmap::EnumValue zero;
+                zero.id = "enum-mode-zero";
+                zero.name = "ZERO";
+                zero.value = regmap::UnsignedValue(0);
+                zero.description = "Zero mode.";
+                regmap::EnumValue one;
+                one.id = "enum-mode-one";
+                one.name = "ONE";
+                one.value = regmap::UnsignedValue(1);
+                one.description = "Mode one.";
+
+                regmap::Field state;
+                state.id = "field-mode-state";
+                state.name = "STATE";
+                state.msb = 1;
+                state.lsb = 1;
+                state.type =
+                    regmap::FieldType::enumeration;
+                state.softwareAccess =
+                    regmap::AccessMode::readOnly;
+                state.hardwareAccess =
+                    regmap::AccessMode::writeOnly;
+                state.resetValue = regmap::UnsignedValue(1);
+                state.readSideEffect =
+                    regmap::ReadSideEffect::none;
+                state.writeSideEffect =
+                    regmap::WriteSideEffect::none;
+                state.description =
+                    "Nested enum description.";
+                state.enumValues = {zero, one};
+                state.source.sheet = "Legacy Fields";
+                state.propertySources["name"].cell = "C7";
+
+                regmap::Field limit;
+                limit.id = "field-mode-limit";
+                limit.name = "LIMIT";
+                limit.msb = 0;
+                limit.lsb = 0;
+                limit.type =
+                    regmap::FieldType::unsignedInteger;
+                limit.softwareAccess =
+                    regmap::AccessMode::readOnly;
+                limit.hardwareAccess =
+                    regmap::AccessMode::writeOnly;
+                limit.resetValue = regmap::UnsignedValue(0);
+                limit.readSideEffect =
+                    regmap::ReadSideEffect::none;
+                limit.writeSideEffect =
+                    regmap::WriteSideEffect::none;
+                limit.minimumValue = "0";
+                limit.maximumValue = "1";
+                limit.description =
+                    "Nested numeric description.";
+
+                regmap::Field mode;
+                mode.id = "field-mode";
+                mode.name = "MODE";
+                mode.msb = 7;
+                mode.lsb = 4;
+                mode.type = regmap::FieldType::structure;
+                mode.softwareAccess =
+                    regmap::AccessMode::readOnly;
+                mode.hardwareAccess =
+                    regmap::AccessMode::writeOnly;
+                mode.resetValue = regmap::UnsignedValue(0xA);
+                mode.readSideEffect =
+                    regmap::ReadSideEffect::none;
+                mode.writeSideEffect =
+                    regmap::WriteSideEffect::none;
+                mode.description =
+                    "Compound Field description.";
+                mode.members = {state, limit};
+                mode.source.sheet = "Legacy Fields";
+                mode.propertySources["name"].cell = "C6";
+                reg->fields.push_back(std::move(mode));
+            }));
+        QVERIFY(regmap::validateWorkspace(
+                    *controller->workspace())
+                    .empty());
+
+        Q_EMIT registers->clicked(
+            registers->model()->index(0, 5));
+        QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
+        const auto fieldRowForId =
+            [fields](const QString& id) {
+                for (int row = 0;
+                     row < fields->model()->rowCount(); ++row) {
+                    if (fields->model()
+                            ->index(row, 0)
+                            .data(Qt::UserRole + 1)
+                            .toString() == id) {
+                        return row;
+                    }
+                }
+                return -1;
+            };
+        QTRY_VERIFY_WITH_TIMEOUT(
+            fieldRowForId(QStringLiteral("field-mode")) >= 0,
+            2000);
+        const std::size_t initialUndoDepth =
+            controller->undoDepth();
+
+        QString failure;
+        QVERIFY(invokeTableContextAction(
+            window, fields,
+            fieldRowForId(QStringLiteral("field-mode")),
+            QStringLiteral("duplicateFieldAction"),
+            failure));
+        QVERIFY2(failure.isEmpty(), qPrintable(failure));
+
+        const auto* reg = regmap::findRegister(
+            *controller->workspace(), "reg-status");
+        QVERIFY(reg != nullptr);
+        QCOMPARE(reg->fields.size(), std::size_t{3});
+        const auto& source = reg->fields[1];
+        const auto& copy = reg->fields[2];
+        const std::string copyId = copy.id;
+        QCOMPARE(copy.name, std::string("MODE Copy"));
+        QCOMPARE(copy.msb, std::uint32_t{11});
+        QCOMPARE(copy.lsb, std::uint32_t{8});
+        QCOMPARE(copy.type, source.type);
+        QCOMPARE(copy.softwareAccess, source.softwareAccess);
+        QCOMPARE(copy.hardwareAccess, source.hardwareAccess);
+        QCOMPARE(copy.readSideEffect, source.readSideEffect);
+        QCOMPARE(copy.writeSideEffect, source.writeSideEffect);
+        QCOMPARE(copy.description, source.description);
+        QCOMPARE(copy.members.size(), std::size_t{2});
+        QCOMPARE(copy.id == source.id, false);
+        QCOMPARE(copy.members[0].id ==
+                     source.members[0].id,
+                 false);
+        QCOMPARE(copy.members[1].id ==
+                     source.members[1].id,
+                 false);
+        QCOMPARE(copy.members[0].enumValues.size(),
+                 std::size_t{2});
+        QCOMPARE(copy.members[0].enumValues[1].name,
+                 std::string("ONE"));
+        QCOMPARE(
+            copy.members[0].enumValues[1].id ==
+                source.members[0].enumValues[1].id,
+            false);
+        QCOMPARE(copy.members[1].minimumValue,
+                 std::optional<std::string>("0"));
+        QCOMPARE(copy.members[1].maximumValue,
+                 std::optional<std::string>("1"));
+        QCOMPARE(copy.resetValue,
+                 std::optional<regmap::UnsignedValue>(
+                     regmap::UnsignedValue(0)));
+        QCOMPARE(copy.members[0].resetValue,
+                 std::optional<regmap::UnsignedValue>(
+                     regmap::UnsignedValue(0)));
+        QCOMPARE(source.resetValue,
+                 std::optional<regmap::UnsignedValue>(
+                     regmap::UnsignedValue(0xA)));
+        QCOMPARE(reg->resetValue,
+                 std::optional<regmap::UnsignedValue>(
+                     regmap::UnsignedValue(0xA0)));
+        QVERIFY(copy.source.empty());
+        QVERIFY(copy.propertySources.empty());
+        QVERIFY(copy.members[0].source.empty());
+        QVERIFY(copy.members[0].propertySources.empty());
+        QVERIFY(copy.members[0].enumValues[0].source.empty());
+        QVERIFY(regmap::validateWorkspace(
+                    *controller->workspace())
+                    .empty());
+        QCOMPARE(controller->undoDepth(),
+                 initialUndoDepth + 1);
+        QCOMPARE(fields->model()->rowCount(), 8);
+        QCOMPARE(
+            fields->currentIndex()
+                .data(Qt::UserRole + 1)
+                .toString()
+                .toStdString(),
+            copyId);
+        QVERIFY(window.statusBar()->currentMessage().contains(
+            QStringLiteral("Duplicated Field MODE")));
+        QVERIFY(window.statusBar()->currentMessage().contains(
+            QStringLiteral("bits 11:8")));
+        QVERIFY(window.statusBar()->currentMessage().contains(
+            QStringLiteral(
+                "Reset adapted to destination bits")));
+        QVERIFY(window.statusBar()->currentMessage().contains(
+            QStringLiteral("Ctrl+Z")));
+
+        controller->undo();
+        QTRY_COMPARE_WITH_TIMEOUT(
+            regmap::findRegister(
+                *controller->workspace(), "reg-status")
+                ->fields.size(),
+            std::size_t{2}, 2000);
+        QCOMPARE(controller->undoDepth(), initialUndoDepth);
+        QVERIFY(regmap::findField(
+                    *controller->workspace(), copyId) == nullptr);
+        const auto* restored = regmap::findField(
+            *controller->workspace(), "field-mode");
+        QVERIFY(restored != nullptr);
+        QCOMPARE(restored->members.size(), std::size_t{2});
+        QCOMPARE(restored->resetValue,
+                 std::optional<regmap::UnsignedValue>(
+                     regmap::UnsignedValue(0xA)));
+
+        QTRY_VERIFY_WITH_TIMEOUT(
+            fieldRowForId(
+                QStringLiteral("field-mode-state")) >= 0,
+            2000);
+        QString nestedFailure;
+        QVERIFY(invokeTableContextAction(
+            window, fields,
+            fieldRowForId(
+                QStringLiteral("field-mode-state")),
+            QStringLiteral("duplicateFieldAction"),
+            nestedFailure));
+        QVERIFY2(nestedFailure.isEmpty(),
+                 qPrintable(nestedFailure));
+
+        const auto* modeAfterNestedCopy = regmap::findField(
+            *controller->workspace(), "field-mode");
+        QVERIFY(modeAfterNestedCopy != nullptr);
+        QCOMPARE(modeAfterNestedCopy->members.size(),
+                 std::size_t{3});
+        const auto& nestedSource =
+            modeAfterNestedCopy->members[0];
+        const auto& nestedCopy =
+            modeAfterNestedCopy->members[2];
+        const std::string nestedCopyId = nestedCopy.id;
+        QCOMPARE(nestedCopy.name,
+                 std::string("STATE Copy"));
+        QCOMPARE(nestedCopy.msb, std::uint32_t{2});
+        QCOMPARE(nestedCopy.lsb, std::uint32_t{2});
+        QCOMPARE(nestedCopy.enumValues.size(),
+                 std::size_t{2});
+        QCOMPARE(nestedCopy.enumValues[1].name,
+                 std::string("ONE"));
+        QCOMPARE(nestedCopy.id == nestedSource.id, false);
+        QCOMPARE(nestedCopy.enumValues[1].id ==
+                     nestedSource.enumValues[1].id,
+                 false);
+        QCOMPARE(nestedCopy.resetValue,
+                 std::optional<regmap::UnsignedValue>(
+                     regmap::UnsignedValue(0)));
+        QCOMPARE(controller->undoDepth(),
+                 initialUndoDepth + 1);
+        QCOMPARE(fields->model()->rowCount(), 6);
+        QCOMPARE(
+            fields->currentIndex()
+                .data(Qt::UserRole + 1)
+                .toString()
+                .toStdString(),
+            nestedCopyId);
+        QVERIFY(window.statusBar()->currentMessage().contains(
+            QStringLiteral("bits 2:2")));
+        QVERIFY(window.statusBar()->currentMessage().contains(
+            QStringLiteral(
+                "Reset adapted to destination bits")));
+
+        controller->undo();
+        QTRY_COMPARE_WITH_TIMEOUT(
+            regmap::findField(
+                *controller->workspace(), "field-mode")
+                ->members.size(),
+            std::size_t{2}, 2000);
+        QCOMPARE(controller->undoDepth(), initialUndoDepth);
+
+        makeGeneratedFilesWritable(directory.path());
+    }
+
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString manifest =
+            directory.filePath(
+                QStringLiteral("full-field.regmap.yaml"));
+        createProject(manifest);
+
+        MainWindow window;
+        QVERIFY(window.openProjectPath(manifest));
+        window.resize(1100, 720);
+        window.show();
+        QTest::qWait(50);
+
+        auto* controller =
+            window.findChild<ProjectController*>();
+        auto* registers =
+            window.findChild<QTableView*>(
+                QStringLiteral("registerView"));
+        auto* fields =
+            window.findChild<QTableView*>(
+                QStringLiteral("fieldView"));
+        QVERIFY(controller != nullptr);
+        QVERIFY(registers != nullptr);
+        QVERIFY(fields != nullptr);
+        QVERIFY(controller->editWorkspace(
+            QStringLiteral("Fill Field target"),
+            [](regmap::Workspace& workspace) {
+                auto* reg = regmap::findRegister(
+                    workspace, "reg-status");
+                QVERIFY(reg != nullptr);
+                reg->width = 1;
+            }));
+        QVERIFY(regmap::validateWorkspace(
+                    *controller->workspace())
+                    .empty());
+
+        Q_EMIT registers->clicked(
+            registers->model()->index(0, 5));
+        QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
+        const std::size_t initialUndoDepth =
+            controller->undoDepth();
+
+        QString failure;
+        QVERIFY(invokeTableContextAction(
+            window, fields, 0,
+            QStringLiteral("duplicateFieldAction"),
+            failure));
+        QVERIFY2(failure.isEmpty(), qPrintable(failure));
+        const auto* reg = regmap::findRegister(
+            *controller->workspace(), "reg-status");
+        QVERIFY(reg != nullptr);
+        QCOMPARE(reg->fields.size(), std::size_t{1});
+        QCOMPARE(controller->undoDepth(), initialUndoDepth);
+        QCOMPARE(fields->model()->rowCount(), 2);
+        QVERIFY(window.statusBar()->currentMessage().contains(
+            QStringLiteral("Cannot duplicate Field READY")));
+        QVERIFY(window.statusBar()->currentMessage().contains(
+            QStringLiteral(
+                "no contiguous 1-bit free range remains in Register STATUS")));
         QVERIFY(regmap::validateWorkspace(
                     *controller->workspace())
                     .empty());

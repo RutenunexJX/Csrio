@@ -60,6 +60,12 @@ Workspace -> Page (Address Space) -> Register Block -> Register -> Field -> Enum
 - Editable field width with derived read-only LSB, live MSB/LSB labels, top-layer bit-view
   dragging, and explicit overlap resolution by trimming either the moving field or the fields
   it covers.
+- Field context menus duplicate a complete Field contract, including nested Members, Enum values,
+  Range bounds, access, effects, Reset, and descriptions. The copy receives new stable IDs, a
+  unique sibling name, and the first same-width contiguous free bit range in its current
+  Register/compound Field. Existing Fields never move; when a Register Reset exists, the copy's
+  Reset follows its destination bits. A copy with no safe placement is rejected without changing
+  the model or Undo history, and a successful duplicate is one undoable edit.
 - Boolean/enumeration, `intN`/`uintN` numeric ranges, and compound fields with member fields.
 - Continuous validation of identity, address ranges and overlap, field ranges and overlap,
   declared Block allocation ranges, access and side-effect combinations, reset values, and
