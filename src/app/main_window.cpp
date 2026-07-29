@@ -198,6 +198,19 @@ enum EnumColumn {
         QStandardPaths::DocumentsLocation);
 }
 
+[[nodiscard]] QString compactProjectIdentity(
+    const std::filesystem::path& manifestPath)
+{
+    const QFileInfo information(fromPath(manifestPath));
+    const QString directoryName = information.dir().dirName();
+    if (directoryName.isEmpty()) {
+        return information.fileName();
+    }
+    return QDir::toNativeSeparators(
+        directoryName + QLatin1Char('/') +
+        information.fileName());
+}
+
 [[nodiscard]] QString normalizedProjectPath(const QString& path)
 {
     return QDir::cleanPath(QFileInfo(path).absoluteFilePath());
@@ -3543,10 +3556,18 @@ void MainWindow::refreshProject()
     updateEditActions();
 
     if (const auto* workspace = controller_.workspace()) {
+        const QString manifestPath =
+            fromPath(controller_.manifestPath());
+        setWindowFilePath(manifestPath);
+        setWindowModified(controller_.isDirty());
         setWindowTitle(fromUtf8(workspace->name) +
-                       (controller_.isDirty() ? QStringLiteral(" *") : QString{}) +
+                       QStringLiteral("[*] — ") +
+                       compactProjectIdentity(
+                           controller_.manifestPath()) +
                        QStringLiteral(" — Register Map Workbench"));
     } else {
+        setWindowFilePath(QString{});
+        setWindowModified(false);
         setWindowTitle(QStringLiteral("Register Map Workbench"));
     }
     updateSyncPresentation();

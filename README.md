@@ -123,7 +123,9 @@ Workspace -> Page (Address Space) -> Register Block -> Register -> Field -> Enum
 Create a Workbench-first project with **File > New Project**, or open an existing
 `.regmap.yaml` project from **File > Open Project**. A new project starts with an empty,
 valid workspace. Right-click the Workspace to create a Page, right-click the Page to create a
-Register Block, and right-click the Register Block to create a Register.
+Register Block, and right-click the Register Block to create a Register. The window title shows
+the Workspace name together with the manifest's containing directory and file name, so separate
+projects remain distinguishable in the task switcher.
 New/Open validates and commits the active table editor before displaying a file chooser. If the
 cell value is invalid, the chooser is not opened, the current project remains active, and the
 status bar states the expected value. The file chooser starts in the current project's directory,

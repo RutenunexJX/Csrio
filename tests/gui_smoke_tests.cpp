@@ -93,6 +93,7 @@ private slots:
     void copiesAndPastesHierarchyObjects();
     void movesHierarchyObjectsByDrag();
     void switchesProjectsWithoutReusingFieldWorkspaceState();
+    void identifiesCurrentProjectInWindowTitle();
     void retainsCurrentProjectWhenReplacementCannotLoad();
     void retainsCurrentProjectWhenCreationFails();
     void reportsExplicitOpenFailure();
@@ -2785,6 +2786,83 @@ void GuiSmokeTests::switchesProjectsWithoutReusingFieldWorkspaceState()
 
     makeGeneratedFilesWritable(root.filePath(QStringLiteral("first")));
     makeGeneratedFilesWritable(root.filePath(QStringLiteral("second")));
+}
+
+void GuiSmokeTests::identifiesCurrentProjectInWindowTitle()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    QDir root(directory.path());
+    QVERIFY(root.mkpath(QStringLiteral("first")));
+    QVERIFY(root.mkpath(QStringLiteral("second")));
+    const QString firstManifest =
+        root.filePath(
+            QStringLiteral("first/project.regmap.yaml"));
+    const QString secondManifest =
+        root.filePath(
+            QStringLiteral("second/project.regmap.yaml"));
+    createProject(firstManifest);
+    createProject(secondManifest);
+
+    MainWindow emptyWindow;
+    QCOMPARE(
+        emptyWindow.windowTitle(),
+        QStringLiteral("Register Map Workbench"));
+    QVERIFY(emptyWindow.windowFilePath().isEmpty());
+    QVERIFY(!emptyWindow.isWindowModified());
+
+    MainWindow window;
+    window.resize(1100, 720);
+    window.show();
+    QVERIFY(window.openProjectPath(firstManifest));
+    QTest::qWait(50);
+
+    auto* controller =
+        window.findChild<ProjectController*>();
+    QVERIFY(controller != nullptr);
+    const QString normalizedFirst =
+        QDir::cleanPath(
+            QFileInfo(firstManifest).absoluteFilePath());
+    QCOMPARE(
+        QDir::cleanPath(window.windowFilePath()),
+        normalizedFirst);
+    QVERIFY(window.windowTitle().contains(
+        QDir::toNativeSeparators(
+            QStringLiteral("first/project.regmap.yaml"))));
+    QVERIFY(!window.windowTitle().contains(
+        QDir::toNativeSeparators(
+            QStringLiteral("second/project.regmap.yaml"))));
+    QVERIFY(!window.isWindowModified());
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Dirty title marker"),
+        [](regmap::Workspace& workspace) {
+            workspace.name = "GUI Workspace Edited";
+        }));
+    QTRY_VERIFY_WITH_TIMEOUT(window.isWindowModified(), 2000);
+    QVERIFY(window.windowTitle().contains(
+        QStringLiteral("GUI Workspace Edited")));
+
+    controller->undo();
+    QTRY_VERIFY_WITH_TIMEOUT(!window.isWindowModified(), 2000);
+
+    QVERIFY(window.openProjectPath(secondManifest));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        QDir::cleanPath(window.windowFilePath()),
+        QDir::cleanPath(
+            QFileInfo(secondManifest).absoluteFilePath()),
+        2000);
+    QVERIFY(window.windowTitle().contains(
+        QDir::toNativeSeparators(
+            QStringLiteral("second/project.regmap.yaml"))));
+    QVERIFY(!window.windowTitle().contains(
+        QDir::toNativeSeparators(
+            QStringLiteral("first/project.regmap.yaml"))));
+
+    makeGeneratedFilesWritable(
+        root.filePath(QStringLiteral("first")));
+    makeGeneratedFilesWritable(
+        root.filePath(QStringLiteral("second")));
 }
 
 void GuiSmokeTests::retainsCurrentProjectWhenReplacementCannotLoad()
