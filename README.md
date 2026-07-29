@@ -40,6 +40,11 @@ Workspace -> Page (Address Space) -> Register Block -> Register -> Field -> Enum
   keeps its Base when free and otherwise uses the first non-overlapping Base that fits the
   destination Page. A cross-Page Block move preserves its Base and is rejected before changing
   the model when that Base, Page width, or Block name conflicts at the destination.
+- Register context menus duplicate a complete Register contract, including Fields/Members, Enum
+  values, Range bounds, tags, values, and descriptions. The copy receives new stable IDs, a unique
+  name, and the next four-byte-aligned Offset at the end of the Block. Existing Offsets never
+  move; a copy that does not fit the Block/Page is rejected without changing the model or Undo
+  history, and a successful duplicate is one undoable edit.
 - Reserved address slots and delete-with-offset-shift operations from the register context menu.
   Converting a populated Register to Reserved first reports the Fields, Enum values, Range
   bounds, non-zero Initial/Reset values, and Description that will be removed or replaced; the

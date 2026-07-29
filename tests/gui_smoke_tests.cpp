@@ -122,6 +122,7 @@ private slots:
     void rejectsOutOfRangeNumericEdits();
     void rejectsInvalidNumericRangesDuringEditing();
     void protectsNumericRangesDuringShapeChanges();
+    void duplicatesCompleteRegisterSafely();
     void confirmsReservedConversionBeforeClearingContent();
     void rejectsAddressEditsThatIntroduceConflicts();
     void rejectsRecoveryEditsThatReplaceAddressProblems();
@@ -408,6 +409,52 @@ void editManagedRtlValue(const QString& path, const QString& objectId, const QSt
     QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate));
     QCOMPARE(file.write(text), text.size());
     file.close();
+}
+
+bool invokeRegisterContextAction(MainWindow& window,
+                                 QTableView* registers, int row,
+                                 const QString& actionObjectName,
+                                 QString& failure)
+{
+    if (registers == nullptr || row < 0 ||
+        row >= registers->model()->rowCount()) {
+        failure = QStringLiteral("Register row is unavailable");
+        return false;
+    }
+    const QModelIndex index = registers->model()->index(row, 0);
+    registers->setCurrentIndex(index);
+    registers->scrollTo(index);
+    QCoreApplication::processEvents();
+    bool triggered = false;
+    QTimer::singleShot(0, &window, [&] {
+        auto* action =
+            window.findChild<QAction*>(actionObjectName);
+        auto* menu =
+            action == nullptr
+                ? qobject_cast<QMenu*>(
+                      QApplication::activePopupWidget())
+                : qobject_cast<QMenu*>(action->parent());
+        if (action == nullptr || menu == nullptr ||
+            !action->isEnabled()) {
+            failure = QStringLiteral(
+                "Requested Register action is unavailable");
+            if (menu != nullptr) {
+                menu->close();
+            }
+            return;
+        }
+        triggered = true;
+        QTest::mouseClick(
+            menu, Qt::LeftButton, Qt::NoModifier,
+            menu->actionGeometry(action).center());
+    });
+    const QPoint position = registers->visualRect(index).center();
+    QContextMenuEvent event(
+        QContextMenuEvent::Mouse, position,
+        registers->viewport()->mapToGlobal(position));
+    QCoreApplication::sendEvent(registers->viewport(), &event);
+    QCoreApplication::processEvents();
+    return triggered;
 }
 
 } // namespace
@@ -7828,6 +7875,224 @@ void GuiSmokeTests::protectsNumericRangesDuringShapeChanges()
     QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
 
     makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::duplicatesCompleteRegisterSafely()
+{
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString manifest =
+            directory.filePath(
+                QStringLiteral("duplicate.regmap.yaml"));
+        createProject(manifest);
+
+        MainWindow window;
+        QVERIFY(window.openProjectPath(manifest));
+        window.resize(1100, 720);
+        window.show();
+        QTest::qWait(50);
+
+        auto* controller =
+            window.findChild<ProjectController*>();
+        auto* registers =
+            window.findChild<QTableView*>(
+                QStringLiteral("registerView"));
+        QVERIFY(controller != nullptr);
+        QVERIFY(registers != nullptr);
+        QVERIFY(controller->editWorkspace(
+            QStringLiteral("Configure duplicate fixture"),
+            [](regmap::Workspace& workspace) {
+                auto* reg =
+                    regmap::findRegister(workspace, "reg-status");
+                auto* ready =
+                    regmap::findField(workspace, "field-ready");
+                QVERIFY(reg != nullptr);
+                QVERIFY(ready != nullptr);
+                reg->description =
+                    "Complete register description.";
+                reg->tags = {"status", "copied"};
+                ready->description = "Ready field description.";
+                ready->type = regmap::FieldType::enumeration;
+
+                regmap::EnumValue disabled;
+                disabled.id = "enum-disabled";
+                disabled.name = "DISABLED";
+                disabled.value = regmap::UnsignedValue(0);
+                disabled.description = "Disabled state.";
+                regmap::EnumValue enabled;
+                enabled.id = "enum-enabled";
+                enabled.name = "ENABLED";
+                enabled.value = regmap::UnsignedValue(1);
+                enabled.description = "Enabled state.";
+                ready->enumValues = {disabled, enabled};
+
+                regmap::Field count;
+                count.id = "field-count";
+                count.name = "COUNT";
+                count.msb = 7;
+                count.lsb = 1;
+                count.type =
+                    regmap::FieldType::unsignedInteger;
+                count.softwareAccess =
+                    regmap::AccessMode::readOnly;
+                count.hardwareAccess =
+                    regmap::AccessMode::writeOnly;
+                count.resetValue = regmap::UnsignedValue(0);
+                count.readSideEffect =
+                    regmap::ReadSideEffect::none;
+                count.writeSideEffect =
+                    regmap::WriteSideEffect::none;
+                count.minimumValue = "0";
+                count.maximumValue = "100";
+                count.description =
+                    "Numeric range description.";
+                reg->fields.push_back(std::move(count));
+            }));
+        QVERIFY(regmap::validateWorkspace(
+                    *controller->workspace())
+                    .empty());
+        const std::size_t initialUndoDepth =
+            controller->undoDepth();
+
+        QString failure;
+        QVERIFY(invokeRegisterContextAction(
+            window, registers, 0,
+            QStringLiteral("duplicateRegisterAction"),
+            failure));
+        QVERIFY2(failure.isEmpty(), qPrintable(failure));
+
+        const auto* block = regmap::findRegisterBlock(
+            *controller->workspace(), "block-control");
+        QVERIFY(block != nullptr);
+        QCOMPARE(block->registers.size(), std::size_t{2});
+        const auto& source = block->registers[0];
+        const auto& copy = block->registers[1];
+        const std::string copyId = copy.id;
+        QCOMPARE(copy.name, std::string("STATUS Copy"));
+        QCOMPARE(copy.offset, std::uint64_t{4});
+        QCOMPARE(copy.type, source.type);
+        QCOMPARE(copy.width, source.width);
+        QCOMPARE(copy.tags, source.tags);
+        QCOMPARE(copy.description, source.description);
+        QCOMPARE(copy.fields.size(), source.fields.size());
+        QCOMPARE(copy.fields.size(), std::size_t{2});
+        QCOMPARE(copy.id == source.id, false);
+        QCOMPARE(copy.fields[0].id == source.fields[0].id,
+                 false);
+        QCOMPARE(copy.fields[1].id == source.fields[1].id,
+                 false);
+        QCOMPARE(copy.fields[0].enumValues.size(),
+                 std::size_t{2});
+        QCOMPARE(copy.fields[0].enumValues[0].name,
+                 std::string("DISABLED"));
+        QCOMPARE(
+            copy.fields[0].enumValues[0].id ==
+                source.fields[0].enumValues[0].id,
+            false);
+        QCOMPARE(copy.fields[1].minimumValue,
+                 std::optional<std::string>("0"));
+        QCOMPARE(copy.fields[1].maximumValue,
+                 std::optional<std::string>("100"));
+        QVERIFY(copy.source.empty());
+        QVERIFY(copy.propertySources.empty());
+        QVERIFY(copy.fields[0].source.empty());
+        QVERIFY(copy.fields[0].propertySources.empty());
+        QVERIFY(regmap::validateWorkspace(
+                    *controller->workspace())
+                    .empty());
+        QCOMPARE(controller->undoDepth(),
+                 initialUndoDepth + 1);
+        QCOMPARE(registers->model()->rowCount(), 3);
+        QCOMPARE(
+            registers->currentIndex()
+                .data(Qt::UserRole + 1)
+                .toString()
+                .toStdString(),
+            copyId);
+        QVERIFY(window.statusBar()->currentMessage().contains(
+            QStringLiteral("Duplicated Register STATUS")));
+        QVERIFY(window.statusBar()->currentMessage().contains(
+            QStringLiteral("Offset 0x4")));
+        QVERIFY(window.statusBar()->currentMessage().contains(
+            QStringLiteral("Ctrl+Z")));
+
+        controller->undo();
+        QTRY_COMPARE_WITH_TIMEOUT(
+            regmap::findRegisterBlock(
+                *controller->workspace(), "block-control")
+                ->registers.size(),
+            std::size_t{1}, 2000);
+        QCOMPARE(controller->undoDepth(), initialUndoDepth);
+        QVERIFY(regmap::findRegister(
+                    *controller->workspace(), copyId) == nullptr);
+        const auto* restored = regmap::findRegister(
+            *controller->workspace(), "reg-status");
+        QVERIFY(restored != nullptr);
+        QCOMPARE(restored->fields.size(), std::size_t{2});
+        QCOMPARE(restored->fields[0].enumValues.size(),
+                 std::size_t{2});
+
+        makeGeneratedFilesWritable(directory.path());
+    }
+
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QString manifest =
+            directory.filePath(
+                QStringLiteral("full-block.regmap.yaml"));
+        createProject(manifest);
+
+        MainWindow window;
+        QVERIFY(window.openProjectPath(manifest));
+        window.resize(1100, 720);
+        window.show();
+        QTest::qWait(50);
+
+        auto* controller =
+            window.findChild<ProjectController*>();
+        auto* registers =
+            window.findChild<QTableView*>(
+                QStringLiteral("registerView"));
+        QVERIFY(controller != nullptr);
+        QVERIFY(registers != nullptr);
+        QVERIFY(controller->editWorkspace(
+            QStringLiteral("Fill duplicate target Block"),
+            [](regmap::Workspace& workspace) {
+                auto* block = regmap::findRegisterBlock(
+                    workspace, "block-control");
+                QVERIFY(block != nullptr);
+                block->size = 4;
+            }));
+        QVERIFY(regmap::validateWorkspace(
+                    *controller->workspace())
+                    .empty());
+        const std::size_t initialUndoDepth =
+            controller->undoDepth();
+
+        QString failure;
+        QVERIFY(invokeRegisterContextAction(
+            window, registers, 0,
+            QStringLiteral("duplicateRegisterAction"),
+            failure));
+        QVERIFY2(failure.isEmpty(), qPrintable(failure));
+        const auto* block = regmap::findRegisterBlock(
+            *controller->workspace(), "block-control");
+        QVERIFY(block != nullptr);
+        QCOMPARE(block->registers.size(), std::size_t{1});
+        QCOMPARE(controller->undoDepth(), initialUndoDepth);
+        QCOMPARE(registers->model()->rowCount(), 2);
+        QVERIFY(window.statusBar()->currentMessage().contains(
+            QStringLiteral("Cannot duplicate Register STATUS")));
+        QVERIFY(window.statusBar()->currentMessage().contains(
+            QStringLiteral("does not fit Block Control")));
+        QVERIFY(regmap::validateWorkspace(
+                    *controller->workspace())
+                    .empty());
+
+        makeGeneratedFilesWritable(directory.path());
+    }
 }
 
 void GuiSmokeTests::confirmsReservedConversionBeforeClearingContent()

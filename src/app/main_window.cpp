@@ -6526,6 +6526,129 @@ void MainWindow::closeFields()
         3000);
 }
 
+void MainWindow::duplicateSelectedRegister()
+{
+    const auto* workspace = controller_.workspace();
+    if (workspace == nullptr || selectedRegisterId_.empty()) {
+        return;
+    }
+
+    const regmap::RegisterBlock* parent = nullptr;
+    const regmap::Register* source = nullptr;
+    std::string addressId;
+    for (const auto& space : workspace->addressSpaces) {
+        for (const auto& block : space.blocks) {
+            const auto match = std::ranges::find(
+                block.registers, selectedRegisterId_,
+                &regmap::Register::id);
+            if (match != block.registers.end()) {
+                parent = &block;
+                source = &*match;
+                addressId = space.id;
+                break;
+            }
+        }
+        if (source != nullptr) {
+            break;
+        }
+    }
+    if (parent == nullptr || source == nullptr) {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "The selected Register no longer exists; reopen the menu and try again"),
+            5000);
+        return;
+    }
+
+    constexpr std::uint64_t registerAlignment = 4;
+    std::uint64_t appendOffset = 0;
+    for (const auto& existing : parent->registers) {
+        const auto extent = checkedRegisterExtent(existing);
+        std::uint64_t end = 0;
+        if (!extent || addOverflow(existing.offset, *extent, end)) {
+            statusBar()->showMessage(
+                QStringLiteral(
+                    "Cannot duplicate Register %1: Register %2 has an invalid "
+                    "or overflowing extent. Repair its Offset, Width, or Array first.")
+                    .arg(fromUtf8(source->name),
+                         fromUtf8(existing.name)),
+                9000);
+            return;
+        }
+        appendOffset = std::max(appendOffset, end);
+    }
+    if (appendOffset >
+        std::numeric_limits<std::uint64_t>::max() -
+            (registerAlignment - 1)) {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Cannot duplicate Register %1: no aligned Offset remains.")
+                .arg(fromUtf8(source->name)),
+            8000);
+        return;
+    }
+
+    regmap::Register copy = *source;
+    copy.name = uniqueCopiedName(
+        copy.name, [&](const std::string& candidate) {
+            return std::ranges::any_of(
+                parent->registers,
+                [&](const regmap::Register& reg) {
+                    return reg.name == candidate;
+                });
+        });
+    copy.offset =
+        (appendOffset + (registerAlignment - 1)) &
+        ~(registerAlignment - 1);
+    std::set<regmap::ObjectId, std::less<>> generatedIds;
+    prepareCopiedRegister(*workspace, copy, generatedIds);
+
+    regmap::Workspace candidate = *workspace;
+    if (auto* candidateBlock =
+            regmap::findRegisterBlock(candidate, parent->id)) {
+        candidateBlock->registers.push_back(copy);
+    }
+    if (!addressEditDoesNotWorsen(*workspace, candidate, parent->id)) {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Cannot duplicate Register %1 at Offset %2: the copy does not "
+                "fit Block %3 or the Page address range. Increase Block Size "
+                "or Address Width, or adjust existing Offsets.")
+                .arg(fromUtf8(source->name), hex(copy.offset),
+                     fromUtf8(parent->name)),
+            9000);
+        return;
+    }
+
+    const std::string blockId = parent->id;
+    const std::string newId = copy.id;
+    const QString sourceName = fromUtf8(source->name);
+    const QString copyName = fromUtf8(copy.name);
+    const std::uint64_t copyOffset = copy.offset;
+    if (controller_.editWorkspace(
+            QStringLiteral("Duplicate register %1").arg(sourceName),
+            [blockId, copy = std::move(copy)](
+                regmap::Workspace& target) mutable {
+                if (auto* block =
+                        regmap::findRegisterBlock(target, blockId)) {
+                    block->registers.push_back(std::move(copy));
+                }
+            })) {
+        selectedAddressId_ = addressId;
+        selectedBlockId_ = blockId;
+        selectedRegisterId_ = newId;
+        selectedFieldId_.clear();
+        openFieldsRegisterId_.clear();
+        refreshProject();
+        selectRegister(newId);
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Duplicated Register %1 as %2 at Offset %3; Ctrl+Z to restore")
+                .arg(sourceName, copyName, hex(copyOffset)),
+            7000);
+    }
+}
+
 void MainWindow::showRegisterContextMenu(const QPoint& position)
 {
     const QModelIndex index = registerView_->indexAt(position);
@@ -6543,6 +6666,9 @@ void MainWindow::showRegisterContextMenu(const QPoint& position)
     }
 
     QMenu menu(this);
+    QAction* duplicate =
+        menu.addAction(QStringLiteral("Duplicate Register"));
+    duplicate->setObjectName(QStringLiteral("duplicateRegisterAction"));
     QAction* editTags = menu.addAction(QStringLiteral("编辑标签…"));
     menu.addSeparator();
     QAction* reserve = menu.addAction(QStringLiteral("设为 Reserved（保留偏移）"));
@@ -6558,6 +6684,8 @@ void MainWindow::showRegisterContextMenu(const QPoint& position)
     QAction* chosen = menu.exec(registerView_->viewport()->mapToGlobal(position));
     if (chosen == editTags) {
         editRegisterTags(registerModel_->index(index.row(), registerTagsColumn));
+    } else if (chosen == duplicate) {
+        duplicateSelectedRegister();
     } else if (chosen == reserve) {
         convertSelectedRegisterToReserved();
     } else if (chosen == removeAndShift) {

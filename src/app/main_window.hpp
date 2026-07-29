@@ -199,6 +199,7 @@ private:
     void showHierarchyContextMenu(const QPoint& position);
     void showRegisterContextMenu(const QPoint& position);
     void showFieldContextMenu(const QPoint& position);
+    void duplicateSelectedRegister();
     void convertSelectedRegisterToReserved();
     void deleteSelectedRegisterAndShift();
     void moveField(const std::string& fieldId, std::uint32_t lsb, std::uint32_t msb);
