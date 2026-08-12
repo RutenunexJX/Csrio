@@ -15,7 +15,7 @@ workspace:
       name: Main
       base: 0x0
       address_width: 32
-      description: Main bus address space.
+      description: Main register page.
       blocks:
         - id: block-control
           name: Control
@@ -26,6 +26,7 @@ workspace:
             - id: reg-control
               name: CONTROL
               offset: 0x0
+              fixed: true
               width: 32
               type: field
               array:
@@ -90,11 +91,13 @@ workspace. Names are user-facing identifiers. Addresses and strides are unsigned
 Reset and enum values are arbitrary-width unsigned values. Numeric scalars may use decimal or
 hexadecimal notation.
 
-- Address space (shown as a Page): `id`, `name`, `base`, `address_width`, `description`, `blocks`.
+- Page (serialized under `address_spaces`): `id`, `name`, `base`, `address_width`, `description`, `blocks`.
 - Register block: `id`, `name`, `base`, optional `size`, `description`, `registers`.
-- Register: `id`, `name`, `offset`, `width`, `type`, optional `minimum`, optional `maximum`,
+- Register: `id`, `name`, `offset`, optional `fixed`, `width`, `type`, optional `minimum`, optional `maximum`,
   optional `initial`, optional `reset`, `access`, optional `reserved`, optional `tags`,
   `description`, `enum_values`, `fields`, and compatibility-only `array.count` / `array.stride`.
+  `fixed: true` keeps the Register Offset anchored during drag reorder and delete-with-shift;
+  it is omitted for movable Registers.
   Register `enum_values` use the same stable-ID objects as field enum values. A reserved
   register has `type: reserved`, `access: none`, no fields, and a zero or absent reset while
   retaining its address slot. Array count and stride remain serialized for backward

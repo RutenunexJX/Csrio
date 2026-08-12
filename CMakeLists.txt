@@ -12,6 +12,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(REGMAP_BUILD_APP "Build the Qt desktop application" ON)
+option(REGMAP_BUILD_CLI "Build the regmapc command-line interface" ON)
 option(REGMAP_BUILD_TESTS "Build unit tests" ON)
 
 if(WIN32 AND REGMAP_BUILD_APP)
@@ -26,6 +27,10 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui GuiPrivate)
 include(RegMapDependencies)
 
 add_subdirectory(src/core)
+
+if(REGMAP_BUILD_CLI)
+    add_subdirectory(src/cli)
+endif()
 
 if(REGMAP_BUILD_APP)
     add_subdirectory(src/app)

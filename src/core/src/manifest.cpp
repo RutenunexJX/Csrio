@@ -1,5 +1,9 @@
 #include "regmap/core/manifest.hpp"
 
+#include "path_identity.hpp"
+
+#include <QFile>
+#include <QString>
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
@@ -431,10 +435,11 @@ void validateManifestContract(
     const ProjectManifest& manifest,
     std::vector<Diagnostic>& diagnostics)
 {
-    std::set<std::filesystem::path> paths;
+    std::set<detail::PathIdentity> paths;
     std::set<GenerationTargetKind> kinds;
     for (const auto& target : manifest.targets) {
-        if (!target.path.resolved.empty() && !paths.insert(target.path.resolved).second) {
+        if (!target.path.resolved.empty() &&
+            !paths.insert(detail::pathIdentity(target.path.resolved)).second) {
             addDiagnostic(
                 diagnostics,
                 duplicateIdCode,
@@ -452,8 +457,8 @@ void validateManifestContract(
                 {},
                 "generation.targets");
         }
-        if (target.path.resolved == manifest.manifestPath
-            || target.path.resolved == manifest.rtl.path.resolved) {
+        if (detail::samePathIdentity(target.path.resolved, manifest.manifestPath)
+            || detail::samePathIdentity(target.path.resolved, manifest.rtl.path.resolved)) {
             addDiagnostic(
                 diagnostics,
                 invalidValueCode,
@@ -497,8 +502,48 @@ ManifestLoadResult loadProjectManifest(const std::filesystem::path& path)
     manifest.manifestPath = std::filesystem::absolute(path).lexically_normal();
 
     YAML::Node root;
+    QFile file(
+        QString::fromStdWString(
+            manifest.manifestPath
+                .wstring()));
+    if (!file.open(
+            QIODevice::ReadOnly)) {
+        Diagnostic diagnostic;
+        diagnostic.code = invalidYamlCode;
+        diagnostic.message =
+            "Cannot read manifest: " +
+            file.errorString()
+                .toUtf8()
+                .toStdString();
+        diagnostic.source.workbook =
+            manifest.manifestPath;
+        result.diagnostics.push_back(
+            std::move(diagnostic));
+        return result;
+    }
+    const QByteArray bytes =
+        file.readAll();
+    if (file.error() !=
+        QFileDevice::NoError) {
+        Diagnostic diagnostic;
+        diagnostic.code = invalidYamlCode;
+        diagnostic.message =
+            "Cannot read manifest: " +
+            file.errorString()
+                .toUtf8()
+                .toStdString();
+        diagnostic.source.workbook =
+            manifest.manifestPath;
+        result.diagnostics.push_back(
+            std::move(diagnostic));
+        return result;
+    }
     try {
-        root = YAML::LoadFile(manifest.manifestPath.string());
+        root = YAML::Load(
+            std::string(
+                bytes.constData(),
+                static_cast<std::size_t>(
+                    bytes.size())));
     } catch (const YAML::Exception& error) {
         Diagnostic diagnostic;
         diagnostic.code = invalidYamlCode;

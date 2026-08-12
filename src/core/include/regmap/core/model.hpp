@@ -98,6 +98,7 @@ struct Register {
     ObjectId id;
     std::string name;
     std::uint64_t offset{0};
+    bool addressFixed{false};
     std::uint32_t width{32};
     RegisterArray array;
     FieldType type{FieldType::unsignedInteger};

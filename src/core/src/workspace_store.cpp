@@ -220,6 +220,18 @@ std::size_t WorkspaceStore::undoDepth() const noexcept { return undo_.size(); }
 
 std::uint64_t WorkspaceStore::revision() const noexcept { return revision_; }
 
+void WorkspaceStore::appendHistory(
+    std::vector<HistoryEntry>& history,
+    HistoryEntry entry)
+{
+    history.push_back(std::move(entry));
+    if (history.size() > historyLimit) {
+        history.erase(
+            history.begin(),
+            history.begin() + static_cast<std::ptrdiff_t>(history.size() - historyLimit));
+    }
+}
+
 bool WorkspaceStore::transact(std::string description, const Mutation& mutation)
 {
     if (!workspace_ || !mutation) {
@@ -231,7 +243,7 @@ bool WorkspaceStore::transact(std::string description, const Mutation& mutation)
         return false;
     }
 
-    undo_.push_back(HistoryEntry{*workspace_, std::move(description)});
+    appendHistory(undo_, HistoryEntry{*workspace_, std::move(description)});
     workspace_ = std::move(candidate);
     redo_.clear();
     ++revision_;
@@ -243,7 +255,7 @@ bool WorkspaceStore::squashUndoSince(
     std::size_t startingDepth,
     std::string description)
 {
-    if (startingDepth >= undo_.size()) {
+    if (undo_.size() >= historyLimit || startingDepth >= undo_.size()) {
         return false;
     }
 
@@ -259,7 +271,7 @@ bool WorkspaceStore::undo()
     }
     HistoryEntry entry = std::move(undo_.back());
     undo_.pop_back();
-    redo_.push_back(HistoryEntry{*workspace_, entry.description});
+    appendHistory(redo_, HistoryEntry{*workspace_, entry.description});
     workspace_ = std::move(entry.workspace);
     ++revision_;
     revalidate();
@@ -273,7 +285,7 @@ bool WorkspaceStore::redo()
     }
     HistoryEntry entry = std::move(redo_.back());
     redo_.pop_back();
-    undo_.push_back(HistoryEntry{*workspace_, entry.description});
+    appendHistory(undo_, HistoryEntry{*workspace_, entry.description});
     workspace_ = std::move(entry.workspace);
     ++revision_;
     revalidate();

@@ -11,6 +11,7 @@
 #include <QColor>
 #include <QFont>
 #include <QFontMetrics>
+#include <QHashFunctions>
 #include <QImage>
 #include <QPainter>
 #include <QPen>
@@ -21,6 +22,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -32,6 +34,11 @@ namespace {
 constexpr std::string_view exportFailureCode = "RM4100";
 constexpr int worksheetColumnCount = 11;
 constexpr int worksheetDescriptionColumn = worksheetColumnCount;
+constexpr std::uint32_t zipLocalHeaderSignature = 0x04034B50U;
+constexpr std::uint32_t zipCentralHeaderSignature = 0x02014B50U;
+constexpr std::uint32_t zipEndSignature = 0x06054B50U;
+constexpr std::uint16_t canonicalZipTime = 0U;
+constexpr std::uint16_t canonicalZipDate = 0x0021U;
 
 struct WorkbookFormats {
     QXlsx::Format title;
@@ -58,6 +65,231 @@ struct WorkbookFormats {
 [[nodiscard]] QString text(std::string_view value)
 {
     return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size()));
+}
+
+[[nodiscard]] bool hasBytes(
+    const QByteArray& data,
+    qsizetype offset,
+    qsizetype count)
+{
+    return offset >= 0 &&
+        count >= 0 &&
+        offset <= data.size() - count;
+}
+
+[[nodiscard]] std::uint16_t readLittleEndian16(
+    const QByteArray& data,
+    qsizetype offset)
+{
+    const auto* bytes =
+        reinterpret_cast<const unsigned char*>(
+            data.constData() + offset);
+    return static_cast<std::uint16_t>(
+        static_cast<std::uint16_t>(bytes[0]) |
+        (static_cast<std::uint16_t>(bytes[1])
+         << 8U));
+}
+
+[[nodiscard]] std::uint32_t readLittleEndian32(
+    const QByteArray& data,
+    qsizetype offset)
+{
+    const auto* bytes =
+        reinterpret_cast<const unsigned char*>(
+            data.constData() + offset);
+    return static_cast<std::uint32_t>(
+        static_cast<std::uint32_t>(bytes[0]) |
+        (static_cast<std::uint32_t>(bytes[1])
+         << 8U) |
+        (static_cast<std::uint32_t>(bytes[2])
+         << 16U) |
+        (static_cast<std::uint32_t>(bytes[3])
+         << 24U));
+}
+
+void writeLittleEndian16(
+    QByteArray& data,
+    qsizetype offset,
+    std::uint16_t value)
+{
+    auto* bytes =
+        reinterpret_cast<unsigned char*>(
+            data.data() + offset);
+    bytes[0] =
+        static_cast<unsigned char>(
+            value & 0xFFU);
+    bytes[1] =
+        static_cast<unsigned char>(
+            (value >> 8U) & 0xFFU);
+}
+
+[[nodiscard]] bool canonicalizeZipTimestamps(
+    QByteArray& data)
+{
+    constexpr qsizetype endHeaderSize = 22;
+    constexpr qsizetype maximumCommentSize = 65535;
+    constexpr qsizetype centralHeaderSize = 46;
+    constexpr qsizetype localHeaderSize = 30;
+    if (data.size() < endHeaderSize) {
+        return false;
+    }
+
+    const qsizetype minimumEndOffset =
+        std::max<qsizetype>(
+            0,
+            data.size() -
+                endHeaderSize -
+                maximumCommentSize);
+    qsizetype endOffset = -1;
+    for (qsizetype offset =
+             data.size() -
+                 endHeaderSize;
+         ;
+         --offset) {
+        if (readLittleEndian32(
+                data,
+                offset) ==
+            zipEndSignature) {
+            const qsizetype commentSize =
+                static_cast<qsizetype>(
+                    readLittleEndian16(
+                        data,
+                        offset + 20));
+            if (offset +
+                    endHeaderSize +
+                    commentSize ==
+                data.size()) {
+                endOffset = offset;
+                break;
+            }
+        }
+        if (offset == minimumEndOffset) {
+            break;
+        }
+    }
+    if (endOffset < 0 ||
+        readLittleEndian16(
+            data,
+            endOffset + 4) != 0U ||
+        readLittleEndian16(
+            data,
+            endOffset + 6) != 0U) {
+        return false;
+    }
+
+    const std::uint16_t entryCount =
+        readLittleEndian16(
+            data,
+            endOffset + 10);
+    if (entryCount ==
+            std::numeric_limits<
+                std::uint16_t>::max() ||
+        readLittleEndian16(
+            data,
+            endOffset + 8) !=
+            entryCount) {
+        return false;
+    }
+    const qsizetype centralSize =
+        static_cast<qsizetype>(
+            readLittleEndian32(
+                data,
+                endOffset + 12));
+    qsizetype centralOffset =
+        static_cast<qsizetype>(
+            readLittleEndian32(
+                data,
+                endOffset + 16));
+    if (!hasBytes(
+            data,
+            centralOffset,
+            centralSize) ||
+        centralOffset +
+                centralSize >
+            endOffset) {
+        return false;
+    }
+
+    const qsizetype centralEnd =
+        centralOffset +
+        centralSize;
+    for (std::uint32_t index = 0;
+         index <
+         static_cast<std::uint32_t>(
+             entryCount);
+         ++index) {
+        if (!hasBytes(
+                data,
+                centralOffset,
+                centralHeaderSize) ||
+            readLittleEndian32(
+                data,
+                centralOffset) !=
+                zipCentralHeaderSignature) {
+            return false;
+        }
+        const qsizetype fileNameSize =
+            static_cast<qsizetype>(
+                readLittleEndian16(
+                    data,
+                    centralOffset + 28));
+        const qsizetype extraSize =
+            static_cast<qsizetype>(
+                readLittleEndian16(
+                    data,
+                    centralOffset + 30));
+        const qsizetype commentSize =
+            static_cast<qsizetype>(
+                readLittleEndian16(
+                    data,
+                    centralOffset + 32));
+        const qsizetype recordSize =
+            centralHeaderSize +
+            fileNameSize +
+            extraSize +
+            commentSize;
+        if (!hasBytes(
+                data,
+                centralOffset,
+                recordSize)) {
+            return false;
+        }
+
+        const qsizetype localOffset =
+            static_cast<qsizetype>(
+                readLittleEndian32(
+                    data,
+                    centralOffset + 42));
+        if (!hasBytes(
+                data,
+                localOffset,
+                localHeaderSize) ||
+            readLittleEndian32(
+                data,
+                localOffset) !=
+                zipLocalHeaderSignature) {
+            return false;
+        }
+        writeLittleEndian16(
+            data,
+            centralOffset + 12,
+            canonicalZipTime);
+        writeLittleEndian16(
+            data,
+            centralOffset + 14,
+            canonicalZipDate);
+        writeLittleEndian16(
+            data,
+            localOffset + 10,
+            canonicalZipTime);
+        writeLittleEndian16(
+            data,
+            localOffset + 12,
+            canonicalZipDate);
+        centralOffset +=
+            recordSize;
+    }
+    return centralOffset == centralEnd;
 }
 
 [[nodiscard]] WorkbookFormats formats()
@@ -709,6 +941,7 @@ void addDiagnostic(std::vector<Diagnostic>& diagnostics, std::string message)
 XlsxExportResult exportReadOnlyWorkbook(const Workspace& workspace)
 {
     XlsxExportResult result;
+    QHashSeed::setDeterministicGlobalSeed();
     QXlsx::Document document;
     const auto style = formats();
     const QString firstSheet = document.sheetNames().value(0);
@@ -754,11 +987,27 @@ XlsxExportResult exportReadOnlyWorkbook(const Workspace& workspace)
     document.setDocumentProperty(
         QStringLiteral("comments"),
         QStringLiteral("Generated by Register Map Workbench. Read-only derivative output."));
+    const QString canonicalTimestamp =
+        QStringLiteral(
+            "2000-01-01T00:00:00Z");
+    document.setDocumentProperty(
+        QStringLiteral("created"),
+        canonicalTimestamp);
+    document.setDocumentProperty(
+        QStringLiteral("modified"),
+        canonicalTimestamp);
 
     QByteArray data;
     QBuffer buffer(&data);
     if (!buffer.open(QIODevice::WriteOnly) || !document.saveAs(&buffer)) {
         addDiagnostic(result.diagnostics, "Cannot serialize the generated workbook.");
+        return result;
+    }
+    buffer.close();
+    if (!canonicalizeZipTimestamps(data)) {
+        addDiagnostic(
+            result.diagnostics,
+            "Cannot normalize the generated workbook container.");
         return result;
     }
     result.bytes.assign(data.begin(), data.end());

@@ -233,6 +233,7 @@ void insert(FlatWorkspace& workspace, FlatObject object)
                                              {"order", std::to_string(registerIndex)},
                                              {"name", reg.name},
                                              {"offset", uint64Text(reg.offset)},
+                                             {"fixed", reg.addressFixed ? "true" : "false"},
                                              {"width", std::to_string(reg.width)},
                                              {"array_count", std::to_string(reg.array.count)},
                                              {"stride", uint64Text(reg.array.stride)},
@@ -409,6 +410,7 @@ template <typename Value>
         value.id = id;
         value.name = property(object, "name");
         value.offset = parseUInt64(object, "offset");
+        value.addressFixed = parseBoolean(property(object, "fixed"));
         value.width = parseUInt32(object, "width");
         value.array.count = parseUInt32(object, "array_count");
         value.array.stride = parseUInt64(object, "stride");
@@ -684,6 +686,10 @@ void appendConflict(std::vector<MergeConflict>& conflicts, const ObjectId& id, O
             if (object.properties.contains("reserved") && property(object, "reserved") != "true" &&
                 property(object, "reserved") != "false") {
                 return invalidValue(object, "reserved");
+            }
+            if (object.properties.contains("fixed") && property(object, "fixed") != "true" &&
+                property(object, "fixed") != "false") {
+                return invalidValue(object, "fixed");
             }
             break;
         case ObjectKind::field:

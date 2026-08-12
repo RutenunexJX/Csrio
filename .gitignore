@@ -67,3 +67,6 @@ CMakeUserPresets.json
 
 # Generated outputs from the checked-in example
 /examples/minimal/generated/
+
+# Crash-recovery drafts
+**/.regmap-workbench/

@@ -2,6 +2,7 @@
 
 #include "regmap/core/model.hpp"
 
+#include <QPoint>
 #include <QRect>
 #include <QString>
 #include <QVector>
@@ -12,6 +13,7 @@
 #include <utility>
 
 class QEvent;
+class QKeyEvent;
 
 class BitfieldView final : public QWidget {
     Q_OBJECT
@@ -28,6 +30,8 @@ signals:
         const QString& fieldId,
         std::uint32_t lsb,
         std::uint32_t msb);
+    void fieldDragCancelled(
+        const QString& fieldId);
     void fieldMoveRequested(
         const QString& fieldId,
         std::uint32_t lsb,
@@ -39,6 +43,7 @@ protected:
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
+    void keyPressEvent(QKeyEvent* event) override;
 
 private:
     std::optional<regmap::Register> register_;
@@ -48,6 +53,8 @@ private:
     std::optional<std::uint32_t> previewLsb_;
     std::uint32_t draggedWidth_ {0};
     std::uint32_t anchorFromLsb_ {0};
+    QPoint dragStartPosition_;
+    bool dragPending_ {false};
     bool dragging_ {false};
 
     [[nodiscard]] const regmap::Field* fieldById(const QString& id) const;

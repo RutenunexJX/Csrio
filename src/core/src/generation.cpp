@@ -2,6 +2,8 @@
 
 #include "regmap/core/xlsx_export.hpp"
 
+#include "path_identity.hpp"
+
 #include <QByteArray>
 #include <QDir>
 #include <QFile>
@@ -11,6 +13,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdint>
 #include <limits>
 #include <iterator>
@@ -20,6 +23,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -30,6 +34,26 @@ namespace {
 constexpr std::string_view writeFailureCode = "RM4000";
 constexpr std::string_view symbolCollisionCode = "RM4001";
 constexpr std::string_view addressOverflowCode = "RM4002";
+constexpr int generatedOutputWriteAttempts = 4;
+
+[[nodiscard]] bool retryableReplacementError(QFileDevice::FileError error) noexcept
+{
+#ifdef Q_OS_WIN
+    return error == QFileDevice::RenameError ||
+           error == QFileDevice::RemoveError ||
+           error == QFileDevice::PermissionsError;
+#else
+    Q_UNUSED(error);
+    return false;
+#endif
+}
+
+void waitBeforeReplacementRetry(int failedAttempt)
+{
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(
+            25 * (1 << failedAttempt)));
+}
 
 [[nodiscard]] std::string outputWriteFailureMessage(const GeneratedArtifact& artifact,
                                                     std::string_view operation,
@@ -676,15 +700,25 @@ bool GenerationResult::hasErrors() const noexcept
 GenerationResult generateArtifacts(const Workspace& workspace, const ProjectManifest& manifest)
 {
     GenerationResult result;
-    std::set<std::string, std::less<>> paths;
+    std::set<detail::PathIdentity> paths;
     for (const auto& target : manifest.targets) {
-        const std::string normalizedPath = target.path.resolved.generic_string();
-        if (!paths.insert(normalizedPath).second) {
+        const std::string displayPath = target.path.resolved.generic_string();
+        if (!paths.insert(detail::pathIdentity(target.path.resolved)).second) {
             SourceLocation source;
             source.workbook = manifest.manifestPath;
             addDiagnostic(result.diagnostics, symbolCollisionCode,
-                          "Multiple generation targets resolve to '" + normalizedPath + "'.", {},
+                          "Multiple generation targets resolve to '" + displayPath + "'.", {},
                           std::move(source));
+            continue;
+        }
+        if (detail::samePathIdentity(target.path.resolved, manifest.manifestPath) ||
+            detail::samePathIdentity(target.path.resolved, manifest.rtl.path.resolved)) {
+            SourceLocation source;
+            source.workbook = manifest.manifestPath;
+            addDiagnostic(result.diagnostics, symbolCollisionCode,
+                          "Generated output would overwrite a project source file: '" +
+                              displayPath + "'.",
+                          {}, std::move(source));
             continue;
         }
 
@@ -711,6 +745,58 @@ GenerationResult generateArtifacts(const Workspace& workspace, const ProjectMani
     return result;
 }
 
+GeneratedArtifactInspection inspectGeneratedArtifact(
+    const GeneratedArtifact& artifact)
+{
+    GeneratedArtifactInspection result;
+    const QString path = fromPath(artifact.path);
+    const QFileInfo information(path);
+    if (!information.exists()) {
+        return result;
+    }
+    result.readOnly =
+        (information.permissions() &
+         (QFileDevice::WriteOwner |
+          QFileDevice::WriteUser |
+          QFileDevice::WriteGroup |
+          QFileDevice::WriteOther)) == 0;
+    if (!information.isFile()) {
+        result.state = GeneratedArtifactState::unreadable;
+        return result;
+    }
+
+    QFile file(path);
+    const QIODevice::OpenMode mode =
+        artifact.isBinary()
+            ? QIODevice::ReadOnly
+            : QIODevice::ReadOnly | QIODevice::Text;
+    if (!file.open(mode)) {
+        result.state = GeneratedArtifactState::unreadable;
+        return result;
+    }
+    const QByteArray expected =
+        artifact.isBinary()
+            ? QByteArray(
+                  reinterpret_cast<const char*>(
+                      artifact.binaryContent.data()),
+                  static_cast<qsizetype>(
+                      artifact.binaryContent.size()))
+            : QByteArray(
+                  artifact.content.data(),
+                  static_cast<qsizetype>(
+                      artifact.content.size()));
+    if (artifact.isBinary() &&
+        file.size() != expected.size()) {
+        result.state = GeneratedArtifactState::modified;
+        return result;
+    }
+    result.state =
+        file.readAll() == expected
+            ? GeneratedArtifactState::current
+            : GeneratedArtifactState::modified;
+    return result;
+}
+
 std::vector<Diagnostic> writeGeneratedArtifacts(const std::vector<GeneratedArtifact>& artifacts)
 {
     std::vector<Diagnostic> diagnostics;
@@ -727,46 +813,139 @@ std::vector<Diagnostic> writeGeneratedArtifacts(const std::vector<GeneratedArtif
             continue;
         }
 
-        if (information.exists()) {
-            QFile::setPermissions(path, information.permissions() | QFileDevice::WriteOwner);
+        const bool outputExisted =
+            information.exists();
+        if (outputExisted) {
+            const auto inspection =
+                inspectGeneratedArtifact(artifact);
+            if (inspection.contentCurrent()) {
+                if (!inspection.readOnly &&
+                    !QFile::setPermissions(
+                        path,
+                        QFileDevice::ReadOwner |
+                            QFileDevice::ReadGroup |
+                            QFileDevice::ReadOther)) {
+                    SourceLocation source;
+                    source.workbook = artifact.path;
+                    addDiagnostic(
+                        diagnostics,
+                        writeFailureCode,
+                        "Generated output is current, but could not be marked read-only: '" +
+                            artifact.path.string() + "'.",
+                        {},
+                        std::move(source));
+                }
+                continue;
+            }
+        }
+        const QFileDevice::Permissions
+            originalPermissions =
+                information.permissions();
+        const auto restorePermissions =
+            [&]() {
+                if (outputExisted) {
+                    QFile::setPermissions(
+                        path,
+                        originalPermissions);
+                }
+            };
+        if (outputExisted) {
+            QFile::setPermissions(
+                path,
+                originalPermissions |
+                    QFileDevice::WriteOwner);
         }
 
-        QSaveFile file(path);
         const QIODevice::OpenMode mode =
             artifact.isBinary() ? QIODevice::WriteOnly : QIODevice::WriteOnly | QIODevice::Text;
-        if (!file.open(mode)) {
-            SourceLocation source;
-            source.workbook = artifact.path;
-            addDiagnostic(diagnostics, writeFailureCode,
-                          outputWriteFailureMessage(artifact, "open", file.errorString()), {},
-                          std::move(source));
-            continue;
-        }
         const QByteArray bytes =
             artifact.isBinary()
                 ? QByteArray(reinterpret_cast<const char*>(artifact.binaryContent.data()),
                              static_cast<qsizetype>(artifact.binaryContent.size()))
                 : QByteArray(artifact.content.data(),
                              static_cast<qsizetype>(artifact.content.size()));
-        if (file.write(bytes) != bytes.size()) {
-            SourceLocation source;
-            source.workbook = artifact.path;
-            addDiagnostic(diagnostics, writeFailureCode,
-                          outputWriteFailureMessage(artifact, "write", file.errorString()),
-                          {}, std::move(source));
-            continue;
-        }
-        if (!file.commit()) {
+
+        bool committed = false;
+        for (int attempt = 0;
+             attempt < generatedOutputWriteAttempts;
+             ++attempt) {
+            QSaveFile file(path);
+            if (!file.open(mode)) {
+                SourceLocation source;
+                source.workbook = artifact.path;
+                addDiagnostic(
+                    diagnostics,
+                    writeFailureCode,
+                    outputWriteFailureMessage(
+                        artifact,
+                        "open",
+                        file.errorString()),
+                    {},
+                    std::move(source));
+                break;
+            }
+            if (file.write(bytes) != bytes.size()) {
+                SourceLocation source;
+                source.workbook = artifact.path;
+                addDiagnostic(
+                    diagnostics,
+                    writeFailureCode,
+                    outputWriteFailureMessage(
+                        artifact,
+                        "write",
+                        file.errorString()),
+                    {},
+                    std::move(source));
+                break;
+            }
+            if (file.commit()) {
+                committed = true;
+                break;
+            }
+
+            const QFileDevice::FileError error =
+                file.error();
+            const QString errorText =
+                file.errorString();
+            if (attempt + 1 <
+                    generatedOutputWriteAttempts &&
+                retryableReplacementError(error)) {
+                waitBeforeReplacementRetry(attempt);
+                continue;
+            }
+
             SourceLocation source;
             source.workbook = artifact.path;
             addDiagnostic(
-                diagnostics, writeFailureCode,
-                outputWriteFailureMessage(artifact, "replace", file.errorString()), {},
+                diagnostics,
+                writeFailureCode,
+                outputWriteFailureMessage(
+                    artifact,
+                    "replace",
+                    errorText),
+                {},
                 std::move(source));
+            break;
+        }
+        if (!committed) {
+            restorePermissions();
             continue;
         }
-        QFile::setPermissions(path, QFileDevice::ReadOwner | QFileDevice::ReadGroup |
-                                        QFileDevice::ReadOther);
+        if (!QFile::setPermissions(
+                path,
+                QFileDevice::ReadOwner |
+                    QFileDevice::ReadGroup |
+                    QFileDevice::ReadOther)) {
+            SourceLocation source;
+            source.workbook = artifact.path;
+            addDiagnostic(
+                diagnostics,
+                writeFailureCode,
+                "Generated output was written, but could not be marked read-only: '" +
+                    artifact.path.string() + "'.",
+                {},
+                std::move(source));
+        }
     }
     return diagnostics;
 }

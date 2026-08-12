@@ -1,8 +1,10 @@
 #include "bitfield_view.hpp"
 
+#include <QApplication>
 #include <QColor>
 #include <QEvent>
 #include <QFontMetrics>
+#include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPaintEvent>
 #include <QPainter>
@@ -40,7 +42,14 @@ BitfieldView::BitfieldView(QWidget* parent)
     setMinimumHeight(158);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     setMouseTracking(true);
-    setToolTip(QStringLiteral("Click to select; drag a field to move it"));
+    setFocusPolicy(
+        Qt::StrongFocus);
+    setAccessibleName(
+        QStringLiteral(
+            "Register bit-field layout"));
+    setToolTip(
+        QStringLiteral(
+            "Click or use Left/Right and Home/End to select a Field; drag or use Alt+Left/Alt+Right to move it."));
 }
 
 void BitfieldView::setRegister(const regmap::Register* reg)
@@ -59,9 +68,14 @@ void BitfieldView::setSelectedField(const regmap::Field* field)
 
 bool BitfieldView::event(QEvent* event)
 {
-    if (dragging_) {
+    if (dragPending_ ||
+        dragging_) {
         switch (event->type()) {
         case QEvent::UngrabMouse:
+            if (dragging_) {
+                cancelDrag();
+            }
+            break;
         case QEvent::WindowDeactivate:
         case QEvent::Hide:
             cancelDrag();
@@ -196,6 +210,21 @@ void BitfieldView::paintEvent(QPaintEvent* event)
         ++fieldIndex;
     }
 
+    if (hasFocus()) {
+        painter.setPen(
+            QPen(
+                palette()
+                    .highlight()
+                    .color(),
+                2,
+                Qt::DashLine));
+        painter.setBrush(
+            Qt::NoBrush);
+        painter.drawRoundedRect(
+            bar.adjusted(
+                -2, -2, 2, 2),
+            4, 4);
+    }
     painter.setPen(QColor(QStringLiteral("#385D8A")));
     painter.drawText(QRect(left, top + barHeight + 7, available, 20), Qt::AlignCenter,
                      dragging_ && previewLsb_ ? QStringLiteral("Moving field [%1:%2]")
@@ -206,10 +235,14 @@ void BitfieldView::paintEvent(QPaintEvent* event)
 
 void BitfieldView::mousePressEvent(QMouseEvent* event)
 {
+    if (event->button() ==
+        Qt::LeftButton) {
+        setFocus(
+            Qt::MouseFocusReason);
+    }
     for (auto iterator = hitRegions_.crbegin(); iterator != hitRegions_.crend(); ++iterator) {
         const auto& [rectangle, id] = *iterator;
         if (rectangle.contains(event->position().toPoint())) {
-            emit fieldActivated(id);
             if (event->button() == Qt::LeftButton) {
                 if (const auto* field = fieldById(id)) {
                     const std::uint64_t width = field->width();
@@ -221,11 +254,17 @@ void BitfieldView::mousePressEvent(QMouseEvent* event)
                                              ? std::min(clickedBit - field->lsb, draggedWidth_ - 1)
                                              : 0;
                         previewLsb_ = field->lsb;
-                        dragging_ = true;
-                        grabMouse();
+                        dragStartPosition_ =
+                            event->position()
+                                .toPoint();
+                        dragPending_ = true;
+                        dragging_ = false;
                     }
                 }
             }
+            emit fieldActivated(id);
+            setFocus(
+                Qt::MouseFocusReason);
             event->accept();
             return;
         }
@@ -235,6 +274,29 @@ void BitfieldView::mousePressEvent(QMouseEvent* event)
 
 void BitfieldView::mouseMoveEvent(QMouseEvent* event)
 {
+    if (dragPending_) {
+        if (!(event->buttons() &
+              Qt::LeftButton)) {
+            cancelDrag();
+            QWidget::mouseMoveEvent(
+                event);
+            return;
+        }
+        const int distance =
+            (event->position()
+                 .toPoint() -
+             dragStartPosition_)
+                .manhattanLength();
+        if (distance <
+            QApplication::
+                startDragDistance()) {
+            event->accept();
+            return;
+        }
+        dragPending_ = false;
+        dragging_ = true;
+        grabMouse();
+    }
     if (dragging_) {
         updateDrag(event->position().x());
         event->accept();
@@ -245,6 +307,13 @@ void BitfieldView::mouseMoveEvent(QMouseEvent* event)
 
 void BitfieldView::mouseReleaseEvent(QMouseEvent* event)
 {
+    if (dragPending_ &&
+        event->button() ==
+            Qt::LeftButton) {
+        cancelDrag();
+        event->accept();
+        return;
+    }
     if (dragging_ && event->button() == Qt::LeftButton) {
         updateDrag(event->position().x());
         const QString id = draggedFieldId_;
@@ -256,6 +325,146 @@ void BitfieldView::mouseReleaseEvent(QMouseEvent* event)
         return;
     }
     QWidget::mouseReleaseEvent(event);
+}
+
+void BitfieldView::keyPressEvent(
+    QKeyEvent* event)
+{
+    if (event == nullptr) {
+        return;
+    }
+    if ((dragPending_ ||
+         dragging_) &&
+        event->key() ==
+            Qt::Key_Escape) {
+        const QString fieldId =
+            draggedFieldId_;
+        cancelDrag();
+        QToolTip::hideText();
+        emit fieldDragCancelled(
+            fieldId);
+        event->accept();
+        return;
+    }
+    if (dragging_ ||
+        dragPending_ ||
+        !register_) {
+        QWidget::keyPressEvent(
+            event);
+        return;
+    }
+
+    std::vector<std::size_t> ordered;
+    ordered.reserve(
+        register_->fields.size());
+    for (std::size_t index = 0;
+         index <
+         register_->fields.size();
+         ++index) {
+        const regmap::Field& field =
+            register_->fields[index];
+        if (field.msb >= field.lsb &&
+            field.msb <
+                register_->width) {
+            ordered.push_back(index);
+        }
+    }
+    if (ordered.empty()) {
+        QWidget::keyPressEvent(
+            event);
+        return;
+    }
+    std::ranges::stable_sort(
+        ordered,
+        [this](
+            std::size_t left,
+            std::size_t right) {
+            const regmap::Field& leftField =
+                register_->fields[left];
+            const regmap::Field& rightField =
+                register_->fields[right];
+            if (leftField.msb !=
+                rightField.msb) {
+                return leftField.msb >
+                    rightField.msb;
+            }
+            if (leftField.lsb !=
+                rightField.lsb) {
+                return leftField.lsb >
+                    rightField.lsb;
+            }
+            return leftField.id <
+                rightField.id;
+        });
+    const auto selected =
+        std::ranges::find_if(
+            ordered,
+            [this](
+                std::size_t index) {
+                return register_
+                           ->fields[index]
+                           .id ==
+                    selectedFieldId_;
+            });
+    const bool hasSelected =
+        selected != ordered.end();
+    const std::size_t selectedPosition =
+        hasSelected
+        ? static_cast<std::size_t>(
+              std::distance(
+                  ordered.begin(),
+                  selected))
+        : 0;
+    std::optional<std::size_t>
+        targetPosition;
+    switch (event->key()) {
+    case Qt::Key_Left:
+        targetPosition =
+            hasSelected
+            ? (selectedPosition == 0
+                   ? 0
+                   : selectedPosition - 1)
+            : 0;
+        break;
+    case Qt::Key_Right:
+        targetPosition =
+            hasSelected
+            ? std::min(
+                  selectedPosition + 1,
+                  ordered.size() - 1)
+            : ordered.size() - 1;
+        break;
+    case Qt::Key_Home:
+        targetPosition = 0;
+        break;
+    case Qt::Key_End:
+        targetPosition =
+            ordered.size() - 1;
+        break;
+    case Qt::Key_Return:
+    case Qt::Key_Enter:
+    case Qt::Key_Space:
+        targetPosition =
+            hasSelected
+            ? selectedPosition
+            : 0;
+        break;
+    default:
+        QWidget::keyPressEvent(
+            event);
+        return;
+    }
+
+    const regmap::Field& field =
+        register_->fields[
+            ordered[*targetPosition]];
+    selectedFieldId_ = field.id;
+    update();
+    emit fieldActivated(
+        fromUtf8(field.id));
+    setFocus(
+        Qt::OtherFocusReason);
+    event->accept();
 }
 
 const regmap::Field* BitfieldView::fieldById(const QString& id) const
@@ -283,12 +492,18 @@ std::uint32_t BitfieldView::bitAtX(qreal x) const
 
 void BitfieldView::cancelDrag()
 {
-    const bool changed = dragging_ || !draggedFieldId_.isEmpty() || previewLsb_.has_value();
+    const bool changed =
+        dragPending_ ||
+        dragging_ ||
+        !draggedFieldId_.isEmpty() ||
+        previewLsb_.has_value();
+    dragPending_ = false;
     dragging_ = false;
     draggedFieldId_.clear();
     previewLsb_.reset();
     draggedWidth_ = 0;
     anchorFromLsb_ = 0;
+    dragStartPosition_ = {};
 
     if (QWidget::mouseGrabber() == this) {
         releaseMouse();

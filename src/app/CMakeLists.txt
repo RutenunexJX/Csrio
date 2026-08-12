@@ -3,6 +3,8 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets)
 add_library(
     regmap_workbench_ui
     STATIC
+    address_space_view.cpp
+    address_space_view.hpp
     bitfield_view.cpp
     bitfield_view.hpp
     main_window.cpp
@@ -11,6 +13,8 @@ add_library(
     project_controller.hpp
     source_navigation.cpp
     source_navigation.hpp
+    startup_options.cpp
+    startup_options.hpp
     workbench_theme.cpp
     workbench_theme.hpp
 )
@@ -44,4 +48,9 @@ if(WIN32)
         COMPONENT Runtime
     )
     install(FILES "${PROJECT_SOURCE_DIR}/README.md" DESTINATION . COMPONENT Runtime)
+    install(
+        FILES "${PROJECT_SOURCE_DIR}/docs/cli.md"
+        DESTINATION docs
+        COMPONENT Runtime
+    )
 endif()

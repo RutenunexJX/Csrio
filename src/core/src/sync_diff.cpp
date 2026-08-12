@@ -61,8 +61,8 @@ template <typename Enum> void appendEnum(std::ostringstream& output, Enum value)
 {
     std::ostringstream output;
     appendString(output, value.name);
-    output << value.offset << ';' << value.width << ';' << value.array.count << ';'
-           << value.array.stride << ';';
+    output << value.offset << ';' << value.addressFixed << ';' << value.width << ';'
+           << value.array.count << ';' << value.array.stride << ';';
     appendEnum(output, value.type);
     appendString(output, value.minimumValue.value_or(std::string{}));
     appendString(output, value.maximumValue.value_or(std::string{}));
@@ -228,7 +228,7 @@ std::string_view toString(ObjectKind kind) noexcept
     case ObjectKind::workspace:
         return "Workspace";
     case ObjectKind::addressSpace:
-        return "Address Space";
+        return "Page";
     case ObjectKind::registerBlock:
         return "Register Block";
     case ObjectKind::reg:

@@ -1,0 +1,24 @@
+diff --git a/QXlsx/source/xlsxdocpropscore.cpp b/QXlsx/source/xlsxdocpropscore.cpp
+index e71b75b..f794305 100644
+--- a/QXlsx/source/xlsxdocpropscore.cpp
++++ b/QXlsx/source/xlsxdocpropscore.cpp
+@@ -20,6 +20,7 @@ bool DocPropsCore::setProperty(const QString &name, const QString &value)
+                                           QStringLiteral("category"),
+                                           QStringLiteral("status"),
+                                           QStringLiteral("created"),
++                                          QStringLiteral("modified"),
+                                           QStringLiteral("creator")};
+ 
+     if (!validKeys.contains(name))
+@@ -108,7 +108,10 @@ QByteArray DocPropsCore::saveToXmlData() const
+ 
+     writer.writeStartElement(dcterms, QStringLiteral("modified"));
+     writer.writeAttribute(xsi, QStringLiteral("type"), QStringLiteral("dcterms:W3CDTF"));
+-    writer.writeCharacters(QDateTime::currentDateTime().toString(Qt::ISODate));
++    it = m_properties.constFind(QStringLiteral("modified"));
++    writer.writeCharacters(it != m_properties.constEnd()
++                               ? it.value()
++                               : QDateTime::currentDateTime().toString(Qt::ISODate));
+     writer.writeEndElement(); // dcterms:created
+ 
+     it = m_properties.constFind(QStringLiteral("category"));

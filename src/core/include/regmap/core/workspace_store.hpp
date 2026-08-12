@@ -16,6 +16,7 @@ namespace regmap {
 class WorkspaceStore {
 public:
     using Mutation = std::function<void(Workspace&)>;
+    static constexpr std::size_t historyLimit = 256;
 
     WorkspaceStore() = default;
     explicit WorkspaceStore(Workspace workspace);
@@ -53,6 +54,9 @@ private:
     std::vector<HistoryEntry> redo_;
     std::uint64_t revision_ {0};
 
+    static void appendHistory(
+        std::vector<HistoryEntry>& history,
+        HistoryEntry entry);
     void revalidate();
 };
 

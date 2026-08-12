@@ -13,20 +13,26 @@ namespace WorkbenchTheme {
 
 void apply(QApplication& application)
 {
-    if (QStyle* style = QStyleFactory::create(QStringLiteral("Fusion"))) {
-        application.setStyle(style);
+    if (application.style() == nullptr ||
+        application.style()->objectName().compare(
+            QStringLiteral("fusion"),
+            Qt::CaseInsensitive) != 0) {
+        if (QStyle* style =
+                QStyleFactory::create(
+                    QStringLiteral("Fusion"))) {
+            application.setStyle(style);
+        }
     }
 
     const QStringList availableFamilies = QFontDatabase::families();
-    QString fontFamily = QStringLiteral("Segoe UI");
+    QFont font = application.font();
     for (const QString& candidate :
          {QStringLiteral("Aptos"), QStringLiteral("Segoe UI"), QStringLiteral("Carlito")}) {
         if (availableFamilies.contains(candidate, Qt::CaseInsensitive)) {
-            fontFamily = candidate;
+            font.setFamily(candidate);
             break;
         }
     }
-    QFont font(fontFamily);
     font.setPointSizeF(10.0);
     font.setWeight(QFont::Normal);
     application.setFont(font);
@@ -134,6 +140,15 @@ QToolBar QToolButton:checked {
 QToolBar QToolButton:disabled {
     color: #9FB0C4;
 }
+QToolBar QToolButton#openXlsxButton[state="stale"] {
+    color: #FFFFFF;
+    background: #8A5A00;
+    border-color: #D6B656;
+}
+QToolBar QToolButton#openXlsxButton[state="stale"]:hover {
+    background: #704900;
+    border-color: #F2C94C;
+}
 
 QToolBar QLineEdit#globalSearchEdit {
     min-width: 230px;
@@ -146,8 +161,19 @@ QToolBar QLineEdit#globalSearchEdit {
 }
 QToolBar QLabel#searchResultLabel {
     color: #DCE6F1;
-    min-width: 42px;
+    min-width: 68px;
     padding: 0 3px;
+}
+QStatusBar QLabel#activeContextLabel {
+    color: #17365D;
+    background: #F7FAFD;
+    border: 1px solid #9FB0C4;
+    border-radius: 3px;
+    padding: 2px 7px;
+    margin: 2px 5px;
+}
+QToolBar QToolButton#resultsToggleButton {
+    border-color: #6F8FB2;
 }
 QToolBar QLabel#syncStateBadge {
     color: white;
@@ -364,6 +390,80 @@ QStatusBar {
 }
 QStatusBar::item {
     border: none;
+}
+QWidget#registerToolsBar {
+    background: #EDF3F9;
+    border: 1px solid #C6D2E1;
+    border-radius: 3px;
+}
+QLabel#registerToolsTitle {
+    color: #17365D;
+    font-weight: 600;
+}
+QLabel#fixedAddressLegend {
+    color: #7A3A06;
+}
+QLabel#registerCountLabel {
+    color: #385D8A;
+}
+QToolButton#clearTagFilterButton {
+    color: #385D8A;
+    background: transparent;
+    border: none;
+    padding: 2px 5px;
+}
+QToolButton#clearTagFilterButton:hover {
+    color: #0B1F33;
+    text-decoration: underline;
+}
+QWidget#registerEmptyState {
+    background: #F7FAFD;
+    border: 1px solid #9FB0C4;
+    border-radius: 3px;
+}
+QLabel#registerEmptyTitle {
+    color: #17365D;
+    font-weight: 600;
+}
+QLabel#registerEmptyHint {
+    color: #52677D;
+}
+QPushButton#registerEmptyPrimaryButton {
+    background: #385D8A;
+    color: white;
+    border-color: #17365D;
+}
+QPushButton#registerEmptyPrimaryButton:hover {
+    background: #17365D;
+}
+QLabel#problemsSummaryLabel {
+    color: #385D8A;
+}
+QLabel#problemsSummaryLabel[state="error"] {
+    color: #9C2721;
+    font-weight: 600;
+}
+QLabel#searchResultLabel[state="empty"] {
+    color: #9C2721;
+    font-weight: 600;
+}
+QStatusBar QLabel#recoveryStateBadge {
+    color: #385D8A;
+    background: #FFF2CC;
+    border: 1px solid #D6B656;
+    border-radius: 7px;
+    padding: 2px 7px;
+    margin: 2px 5px;
+}
+QStatusBar QLabel#recoveryStateBadge[state="saved"] {
+    color: #1F4E2B;
+    background: #E2F0D9;
+    border-color: #70AD47;
+}
+QStatusBar QLabel#recoveryStateBadge[state="failed"] {
+    color: #7A1F1B;
+    background: #FCE8E6;
+    border-color: #C65D57;
 }
 QToolTip {
     background: #FFF9E6;

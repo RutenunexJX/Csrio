@@ -1,16 +1,19 @@
 #include "project_controller.hpp"
 
 #include "regmap/core/project.hpp"
+#include "regmap/core/project_creation.hpp"
 #include "regmap/core/rtl_sync.hpp"
 #include "regmap/core/serialization.hpp"
 
 #include <QByteArray>
+#include <QCryptographicHash>
 #include <QFile>
 #include <QFileInfo>
-#include <QUuid>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QSaveFile>
 
 #include <algorithm>
-#include <cctype>
 #include <iterator>
 #include <string>
 #include <utility>
@@ -39,23 +42,63 @@ namespace {
     return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size()));
 }
 
-[[nodiscard]] std::string systemVerilogIdentifier(std::string_view value)
+[[nodiscard]] QByteArray fileDigest(const std::filesystem::path& path)
 {
-    std::string result;
-    result.reserve(value.size() + 1);
-    for (const char rawCharacter : value) {
-        const auto character = static_cast<unsigned char>(rawCharacter);
-        result.push_back(
-            std::isalnum(character) != 0 || rawCharacter == '_' ? rawCharacter : '_');
+    if (path.empty()) {
+        return {};
     }
-    if (result.empty()) {
-        result = "register_map";
+    QFile file(fromPath(path));
+    if (!file.open(QIODevice::ReadOnly)) {
+        return {};
     }
-    const auto first = static_cast<unsigned char>(result.front());
-    if (std::isalpha(first) == 0 && result.front() != '_') {
-        result.insert(result.begin(), '_');
+    return QCryptographicHash::hash(
+        file.readAll(),
+        QCryptographicHash::Sha256);
+}
+
+[[nodiscard]] bool writeRecoveryMetadata(
+    const std::filesystem::path& metadataPath,
+    const std::filesystem::path& basePath,
+    const std::filesystem::path& draftPath,
+    std::string_view workspaceId)
+{
+    QSaveFile file(
+        fromPath(
+            metadataPath));
+    if (!file.open(
+            QIODevice::WriteOnly)) {
+        return false;
     }
-    return result;
+    const QJsonObject metadata{
+        {QStringLiteral(
+             "format_version"),
+         1},
+        {QStringLiteral(
+             "workspace_id"),
+         fromUtf8(
+             workspaceId)},
+        {QStringLiteral(
+             "base_sha256"),
+         QString::fromLatin1(
+             fileDigest(basePath)
+                 .toHex())},
+        {QStringLiteral(
+             "draft_sha256"),
+         QString::fromLatin1(
+             fileDigest(draftPath)
+                 .toHex())},
+    };
+    const QByteArray content =
+        QJsonDocument(
+            metadata)
+            .toJson(
+                QJsonDocument::Compact);
+    if (file.write(content) !=
+        content.size()) {
+        file.cancelWriting();
+        return false;
+    }
+    return file.commit();
 }
 
 void appendDiagnostics(
@@ -68,6 +111,82 @@ void appendDiagnostics(
         std::make_move_iterator(source.end()));
 }
 
+void useProjectSource(
+    regmap::SourceLocation& source,
+    const std::filesystem::path& projectPath)
+{
+    if (!source.empty()) {
+        source.workbook = projectPath;
+    }
+}
+
+void useProjectSources(
+    regmap::PropertySources& sources,
+    const std::filesystem::path& projectPath)
+{
+    for (auto& [property, source] : sources) {
+        static_cast<void>(property);
+        useProjectSource(source, projectPath);
+    }
+}
+
+void useProjectSources(
+    regmap::EnumValue& value,
+    const std::filesystem::path& projectPath)
+{
+    useProjectSource(value.source, projectPath);
+    useProjectSources(
+        value.propertySources, projectPath);
+}
+
+void useProjectSources(
+    regmap::Field& field,
+    const std::filesystem::path& projectPath)
+{
+    useProjectSource(field.source, projectPath);
+    useProjectSources(
+        field.propertySources, projectPath);
+    for (auto& value : field.enumValues) {
+        useProjectSources(value, projectPath);
+    }
+    for (auto& member : field.members) {
+        useProjectSources(member, projectPath);
+    }
+}
+
+void useProjectSources(
+    regmap::Workspace& workspace,
+    const std::filesystem::path& projectPath)
+{
+    workspace.manifestPath = projectPath;
+    for (auto& page : workspace.addressSpaces) {
+        useProjectSource(page.source, projectPath);
+        useProjectSources(
+            page.propertySources, projectPath);
+        for (auto& block : page.blocks) {
+            useProjectSource(
+                block.source, projectPath);
+            useProjectSources(
+                block.propertySources, projectPath);
+            for (auto& reg : block.registers) {
+                useProjectSource(
+                    reg.source, projectPath);
+                useProjectSources(
+                    reg.propertySources, projectPath);
+                for (auto& value :
+                     reg.enumValues) {
+                    useProjectSources(
+                        value, projectPath);
+                }
+                for (auto& field : reg.fields) {
+                    useProjectSources(
+                        field, projectPath);
+                }
+            }
+        }
+    }
+}
+
 } // namespace
 
 ProjectController::ProjectController(QObject* parent)
@@ -77,6 +196,9 @@ ProjectController::ProjectController(QObject* parent)
     stabilityTimer_.setInterval(350);
     generatedFileRefreshTimer_.setSingleShot(true);
     generatedFileRefreshTimer_.setInterval(350);
+    recoveryDraftTimer_.setSingleShot(true);
+    recoveryDraftTimer_.setInterval(1200);
+
     connect(
         &watcher_,
         &QFileSystemWatcher::fileChanged,
@@ -97,6 +219,11 @@ ProjectController::ProjectController(QObject* parent)
         &QTimer::timeout,
         this,
         &ProjectController::refreshGeneratedFileState);
+    connect(
+        &recoveryDraftTimer_,
+        &QTimer::timeout,
+        this,
+        &ProjectController::writeRecoveryDraft);
 }
 
 bool ProjectController::createProject(const QString& manifestPath)
@@ -111,38 +238,15 @@ bool ProjectController::createProject(const QString& manifestPath)
     if (displayName.trimmed().isEmpty()) {
         displayName = QStringLiteral("Register Map");
     }
-    const std::string baseName =
-        systemVerilogIdentifier(displayName.toUtf8().toStdString());
-
-    regmap::Workspace workspace;
-    workspace.id = "workspace-"
-        + QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
-    workspace.name = displayName.toUtf8().toStdString();
-    workspace.manifestPath = path;
-
-    regmap::ProjectManifest manifest;
-    manifest.manifestPath = path;
-    manifest.workspaceId = workspace.id;
-    manifest.workspaceName = workspace.name;
-    manifest.rtl.moduleName = baseName + "_registers";
-    manifest.rtl.path.declared =
-        std::filesystem::path("rtl") / (manifest.rtl.moduleName + ".sv");
-    manifest.rtl.path.resolved =
-        (path.parent_path() / manifest.rtl.path.declared).lexically_normal();
-    manifest.outputDirectory.declared = "generated";
-    manifest.outputDirectory.resolved = (path.parent_path() / "generated").lexically_normal();
-
-    const auto addTarget = [&](regmap::GenerationTargetKind kind, std::filesystem::path name) {
-        regmap::GenerationTargetConfig target;
-        target.kind = kind;
-        target.path.declared = std::move(name);
-        target.path.resolved =
-            (manifest.outputDirectory.resolved / target.path.declared).lexically_normal();
-        manifest.targets.push_back(std::move(target));
-    };
-    addTarget(regmap::GenerationTargetKind::xlsx, "register-map.xlsx");
-    addTarget(regmap::GenerationTargetKind::cHeader, baseName + "_regs.h");
-    addTarget(regmap::GenerationTargetKind::markdown, "register-map.md");
+    regmap::NewProject project =
+        regmap::makeDefaultProject(
+            path,
+            displayName.toUtf8()
+                .toStdString());
+    regmap::ProjectManifest& manifest =
+        project.manifest;
+    regmap::Workspace& workspace =
+        project.workspace;
 
     const auto diagnostics = regmap::saveProjectFile(manifest, workspace);
     if (containsErrors(diagnostics)) {
@@ -201,30 +305,9 @@ bool ProjectController::generatedArtifactIsCurrent(
     if (index >= artifacts_.size()) {
         return false;
     }
-    const auto& artifact = artifacts_[index];
-    QFile file(fromPath(artifact.path));
-    const QIODevice::OpenMode mode =
-        artifact.isBinary()
-            ? QIODevice::ReadOnly
-            : QIODevice::ReadOnly | QIODevice::Text;
-    if (!file.open(mode)) {
-        return false;
-    }
-    const QByteArray expected =
-        artifact.isBinary()
-            ? QByteArray(
-                  reinterpret_cast<const char*>(
-                      artifact.binaryContent.data()),
-                  static_cast<qsizetype>(
-                      artifact.binaryContent.size()))
-            : QByteArray(
-                  artifact.content.data(),
-                  static_cast<qsizetype>(artifact.content.size()));
-    if (artifact.isBinary() &&
-        file.size() != expected.size()) {
-        return false;
-    }
-    return file.readAll() == expected;
+    return regmap::inspectGeneratedArtifact(
+               artifacts_[index])
+        .synchronized();
 }
 
 const std::vector<regmap::ModelChange>& ProjectController::changes() const noexcept
@@ -258,6 +341,264 @@ bool ProjectController::requiresInitialSyncChoice() const noexcept
     return initialSyncChoicePending_;
 }
 
+bool ProjectController::recoveryDraftAvailable() const
+{
+    return recoveryDraftInfo()
+        .has_value();
+}
+
+std::optional<RecoveryDraftInfo>
+ProjectController::recoveryDraftInfo() const
+{
+    const auto* current = store_.workspace();
+    if (manifestPath_.empty() || current == nullptr) {
+        return std::nullopt;
+    }
+    const std::filesystem::path path = recoveryDraftPathFor(manifestPath_);
+    const QFileInfo draftInfo(fromPath(path));
+    if (!draftInfo.exists() || !draftInfo.isFile()) {
+        return std::nullopt;
+    }
+    auto loaded = regmap::loadWorkspaceFromProjectFile(path);
+    if (!loaded.workspace ||
+        loaded.workspace->id !=
+            current->id ||
+        regmap::serializeWorkspaceState(
+            *loaded.workspace,
+            false) ==
+            regmap::serializeWorkspaceState(
+                *current,
+                false)) {
+        return std::nullopt;
+    }
+
+    RecoveryDraftInfo info;
+    if (const auto base =
+            loadRecoveryDraftBase();
+        base &&
+        base->id == current->id) {
+        info.mergeBaseAvailable =
+            true;
+        info.projectChangedSinceDraft =
+            regmap::serializeWorkspaceState(
+                *base,
+                false) !=
+            regmap::serializeWorkspaceState(
+                *current,
+                false);
+        const auto merge =
+            regmap::mergeWorkspaces(
+                *base,
+                *loaded.workspace,
+                *current,
+                regmap::MergePreference::
+                    workbench);
+        info.conflictCount =
+            merge.conflicts.size();
+    } else {
+        const QDateTime savedModified =
+            recoveryBaseModified_.isValid()
+            ? recoveryBaseModified_
+            : QFileInfo(
+                  fromPath(
+                      manifestPath_))
+                  .lastModified();
+        info.projectChangedSinceDraft =
+            savedModified.isValid() &&
+            draftInfo.lastModified() <=
+                savedModified;
+    }
+    return info;
+}
+
+QDateTime ProjectController::recoveryDraftModified() const
+{
+    return manifestPath_.empty()
+        ? QDateTime {}
+        : QFileInfo(fromPath(recoveryDraftPathFor(manifestPath_))).lastModified();
+}
+
+bool ProjectController::hasExternalProjectChange() const noexcept
+{
+    return externalProjectChangePending_;
+}
+
+void ProjectController::deferExternalProjectReload()
+{
+    if (externalProjectChangePending_) {
+        externalProjectReloadDeferred_ =
+            true;
+    }
+}
+
+bool ProjectController::restoreRecoveryDraft(
+    regmap::MergePreference conflictPreference)
+{
+    const auto* current = store_.workspace();
+    if (manifestPath_.empty() || current == nullptr) {
+        return false;
+    }
+    const auto info =
+        recoveryDraftInfo();
+    if (!info) {
+        emit recoveryDraftStatusChanged(
+            QStringLiteral(
+                "Recovery draft is invalid, unchanged, or older than the saved project"));
+        return false;
+    }
+    auto loaded = regmap::loadWorkspaceFromProjectFile(
+        recoveryDraftPathFor(manifestPath_));
+    if (!loaded.workspace || loaded.workspace->id != current->id) {
+        emit recoveryDraftStatusChanged(
+            QStringLiteral("Recovery draft is invalid or belongs to another project"));
+        return false;
+    }
+    regmap::Workspace recovered;
+    if (const auto base =
+            loadRecoveryDraftBase();
+        base &&
+        base->id == current->id) {
+        auto merged =
+            regmap::mergeWorkspaces(
+                *base,
+                *loaded.workspace,
+                *current,
+                conflictPreference);
+        if (!merged.merged) {
+            emit recoveryDraftStatusChanged(
+                QStringLiteral(
+                    "Recovery draft could not be merged with the saved project"));
+            return false;
+        }
+        recovered =
+            std::move(
+                *merged.merged);
+    } else {
+        recovered =
+            std::move(
+                *loaded.workspace);
+    }
+    useProjectSources(recovered, manifestPath_);
+    const bool changed = store_.transact(
+        "Restore recovery draft",
+        [recovered = std::move(recovered)](regmap::Workspace& workspace) {
+            workspace = recovered;
+        });
+    if (!changed) {
+        discardRecoveryDraft();
+        emit recoveryDraftStatusChanged(
+            QStringLiteral(
+                "Recovery draft resolved without model changes; the selected "
+                "result is already current"));
+        return true;
+    }
+    notifyModelEdited();
+    QString message =
+        info->mergeBaseAvailable &&
+                info->projectChangedSinceDraft
+            ? QStringLiteral(
+                  "Recovery draft merged with newer project changes")
+            : QStringLiteral(
+                  "Recovery draft restored");
+    if (info->conflictCount > 0) {
+        message +=
+            conflictPreference ==
+                    regmap::MergePreference::
+                        workbench
+            ? QStringLiteral(
+                  "; draft values kept for %1 conflict(s)")
+                  .arg(
+                      info->conflictCount)
+            : QStringLiteral(
+                  "; disk values kept for %1 conflict(s)")
+                  .arg(
+                      info->conflictCount);
+    }
+    message +=
+        QStringLiteral(
+            " with %1 pending object change(s); source links now target "
+            "the project file; Save & Sync to make it permanent")
+            .arg(changes_.size());
+    emit recoveryDraftStatusChanged(
+        message);
+    return true;
+}
+
+void ProjectController::discardRecoveryDraft()
+{
+    discardRecoveryDraft(manifestPath_);
+}
+
+void ProjectController::discardRecoveryDraft(
+    const std::filesystem::path& projectPath)
+{
+    if (projectPath.empty()) {
+        return;
+    }
+    static_cast<void>(
+        QFile::remove(
+            fromPath(
+                recoveryDraftPathFor(
+                    projectPath))));
+    static_cast<void>(
+        QFile::remove(
+            fromPath(
+                recoveryBasePathFor(
+                    projectPath))));
+    static_cast<void>(
+        QFile::remove(
+            fromPath(
+                recoveryMetadataPathFor(
+                    projectPath))));
+}
+
+void ProjectController::writeRecoveryDraft()
+{
+    if (!manifest_ || !store_.workspace() || !store_.dirty()) {
+        return;
+    }
+    regmap::ProjectManifest draftManifest = *manifest_;
+    const std::filesystem::path draftPath =
+        recoveryDraftPathFor(
+            manifestPath_);
+    const std::filesystem::path basePath =
+        recoveryBasePathFor(
+            manifestPath_);
+    const std::filesystem::path metadataPath =
+        recoveryMetadataPathFor(
+            manifestPath_);
+    draftManifest.manifestPath =
+        draftPath;
+    std::vector<regmap::Diagnostic> diagnostics;
+    if (recoveryBaseWorkspace_) {
+        appendDiagnostics(
+            diagnostics,
+            regmap::saveSyncBaseline(
+                basePath,
+                *recoveryBaseWorkspace_));
+    }
+    appendDiagnostics(
+        diagnostics,
+        regmap::saveProjectFile(
+            draftManifest,
+            *store_.workspace()));
+    const bool metadataSaved =
+        !containsErrors(diagnostics) &&
+        recoveryBaseWorkspace_.has_value() &&
+        writeRecoveryMetadata(
+            metadataPath,
+            basePath,
+            draftPath,
+            store_.workspace()->id);
+    emit recoveryDraftStatusChanged(
+        containsErrors(diagnostics)
+            ? QStringLiteral("Recovery draft could not be saved")
+            : !metadataSaved
+            ? QStringLiteral(
+                  "Recovery draft saved, but its merge baseline could not be saved")
+            : QStringLiteral("Recovery draft saved at %1; project remains unsaved")
+                  .arg(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss"))));
+}
 bool ProjectController::isDirty() const
 {
     return store_.dirty();
@@ -316,6 +657,8 @@ bool ProjectController::openProject(const QString& manifestPath)
     const std::filesystem::path requestedPath =
         std::filesystem::absolute(std::filesystem::path(manifestPath.toStdWString()))
             .lexically_normal();
+    const QByteArray requestedDigest =
+        fileDigest(requestedPath);
     auto loaded = regmap::openProject(requestedPath);
     const std::optional<std::string> requestedWorkspaceId =
         loaded.workspace ? std::optional<std::string>(loaded.workspace->id)
@@ -337,9 +680,13 @@ bool ProjectController::openProject(const QString& manifestPath)
     }
 
     manifestPath_ = requestedPath;
+    recoveryBaseModified_ =
+        QFileInfo(fromPath(requestedPath))
+            .lastModified();
     manifest_.reset();
     store_ = regmap::WorkspaceStore {};
     baseline_.reset();
+    recoveryBaseWorkspace_.reset();
     initialSyncChoicePending_ = false;
     artifacts_.clear();
     changes_.clear();
@@ -349,7 +696,16 @@ bool ProjectController::openProject(const QString& manifestPath)
     generationDiagnostics_.clear();
     diagnostics_.clear();
     lastAcceptedModelWasValid_ = false;
-    reloadImpl(false, &loaded);
+    externalProjectChangePending_ = false;
+    externalProjectReloadDeferred_ =
+        false;
+    acceptedManifestDigest_.clear();
+    acceptedManifestDigestKnown_ =
+        false;
+    reloadImpl(
+        false,
+        &loaded,
+        requestedDigest);
     return requestedWorkspaceId.has_value() && manifestPath_ == requestedPath &&
         store_.workspace() != nullptr &&
         store_.workspace()->id == *requestedWorkspaceId;
@@ -357,10 +713,16 @@ bool ProjectController::openProject(const QString& manifestPath)
 
 void ProjectController::reload()
 {
+    recoveryBaseModified_ =
+        QFileInfo(fromPath(manifestPath_))
+            .lastModified();
     reloadImpl(false);
 }
 
-void ProjectController::reloadImpl(bool automatic, regmap::ProjectOpenResult* preloaded)
+void ProjectController::reloadImpl(
+    bool automatic,
+    regmap::ProjectOpenResult* preloaded,
+    const QByteArray& preloadedDigest)
 {
     if (manifestPath_.empty()) {
         return;
@@ -376,8 +738,14 @@ void ProjectController::reloadImpl(bool automatic, regmap::ProjectOpenResult* pr
         automatic ? QStringLiteral("Synchronizing saved project data...")
                   : QStringLiteral("Loading project..."));
 
-    auto loaded = preloaded == nullptr ? regmap::openProject(manifestPath_)
-                                       : std::move(*preloaded);
+    const QByteArray loadedDigest =
+        preloaded == nullptr
+        ? fileDigest(manifestPath_)
+        : preloadedDigest;
+    auto loaded =
+        preloaded == nullptr
+        ? regmap::openProject(manifestPath_)
+        : std::move(*preloaded);
     loadDiagnostics_ = std::move(loaded.diagnostics);
     std::erase_if(loadDiagnostics_, isValidationDiagnostic);
     changes_.clear();
@@ -391,6 +759,14 @@ void ProjectController::reloadImpl(bool automatic, regmap::ProjectOpenResult* pr
         }
         manifest_ = std::move(loaded.manifest);
         store_.reset(std::move(*loaded.workspace));
+        recoveryBaseWorkspace_ =
+            *store_.workspace();
+        acceptedManifestDigest_ =
+            loadedDigest;
+        acceptedManifestDigestKnown_ =
+            true;
+        setExternalProjectChangePending(
+            manifestChangedOnDisk());
         lastAcceptedModelWasValid_ = true;
         artifacts_.clear();
         generationDiagnostics_.clear();
@@ -403,7 +779,14 @@ void ProjectController::reloadImpl(bool automatic, regmap::ProjectOpenResult* pr
         emit conflictsChanged();
         emit editStateChanged();
 
-        if (conflicts_.empty() && !containsErrors(syncDiagnostics_)) {
+        if (externalProjectChangePending_) {
+            emit syncStatusChanged(
+                QStringLiteral(
+                    "Project changed again while it was loading; "
+                    "Workbench kept the loaded model and paused saving"));
+        } else if (
+            conflicts_.empty() &&
+            !containsErrors(syncDiagnostics_)) {
             emit syncStatusChanged(
                 automatic
                     ? QStringLiteral("Synchronized: %1 object change(s)").arg(changes_.size())
@@ -412,6 +795,8 @@ void ProjectController::reloadImpl(bool automatic, regmap::ProjectOpenResult* pr
         return;
     }
 
+    setExternalProjectChangePending(
+        manifestChangedOnDisk());
     if (!lastAcceptedModelWasValid_) {
         manifest_ = std::move(loaded.manifest);
         store_ = regmap::WorkspaceStore {};
@@ -508,8 +893,34 @@ void ProjectController::save()
     if (!manifest_ || !store_.workspace()) {
         return;
     }
+    if (manifestChangedOnDisk()) {
+        setExternalProjectChangePending(
+            true);
+        emit syncStatusChanged(
+            QStringLiteral(
+                "Save paused: the project changed on disk after it was loaded; "
+                "no file was overwritten"));
+        emit externalProjectSaveConflict();
+        return;
+    }
+    setExternalProjectChangePending(
+        false);
     emit syncStatusChanged(QStringLiteral("Merging Workbench and managed RTL..."));
     synchronizeRtl(false, true);
+}
+
+void ProjectController::saveOverExternalProjectChange()
+{
+    if (!manifest_ || !store_.workspace()) {
+        return;
+    }
+    acceptedManifestDigest_ =
+        fileDigest(manifestPath_);
+    acceptedManifestDigestKnown_ =
+        true;
+    setExternalProjectChangePending(
+        false);
+    save();
 }
 
 void ProjectController::undo()
@@ -613,7 +1024,7 @@ void ProjectController::synchronizeRtl(bool automatic, bool persistWhenClean)
     }
 
     if (persistWhenClean) {
-        if (persistSynchronizedModel()) {
+        if (persistSynchronizedModel(automatic)) {
             emit syncStatusChanged(
                 automatic ? QStringLiteral("Workbench and managed RTL synchronized")
                           : QStringLiteral("Project, managed RTL, and read-only outputs saved"));
@@ -712,7 +1123,8 @@ void ProjectController::resolveConflicts(regmap::MergePreference preference)
     }
 }
 
-bool ProjectController::persistSynchronizedModel()
+bool ProjectController::persistSynchronizedModel(
+    bool preserveDivergentRecoveryDraft)
 {
     if (!manifest_ || !store_.workspace()) {
         return false;
@@ -723,6 +1135,20 @@ bool ProjectController::persistSynchronizedModel()
         emit syncStatusChanged(QStringLiteral("Save blocked by model validation errors"));
         return false;
     }
+    if (manifestChangedOnDisk()) {
+        setExternalProjectChangePending(
+            true);
+        rebuildDiagnostics();
+        emit diagnosticsChanged();
+        emit syncStatusChanged(
+            QStringLiteral(
+                "Save paused: the project changed on disk during synchronization; "
+                "Workbench edits and the external file were both retained"));
+        return false;
+    }
+
+    const bool keepRecoveryDraft =
+        preserveDivergentRecoveryDraft && recoveryDraftAvailable();
 
     if (!watcher_.files().isEmpty()) {
         watcher_.removePaths(watcher_.files());
@@ -733,6 +1159,14 @@ bool ProjectController::persistSynchronizedModel()
     syncDiagnostics_.clear();
     appendDiagnostics(
         syncDiagnostics_, regmap::saveProjectFile(*manifest_, *store_.workspace()));
+    if (!containsErrors(syncDiagnostics_)) {
+        acceptedManifestDigest_ =
+            fileDigest(manifestPath_);
+        acceptedManifestDigestKnown_ =
+            true;
+        setExternalProjectChangePending(
+            false);
+    }
     if (!containsErrors(syncDiagnostics_)) {
         appendDiagnostics(
             syncDiagnostics_,
@@ -755,6 +1189,15 @@ bool ProjectController::persistSynchronizedModel()
 
     baseline_ = *store_.workspace();
     store_.markSaved();
+    recoveryBaseWorkspace_ =
+        *store_.workspace();
+    recoveryDraftTimer_.stop();
+    if (!keepRecoveryDraft) {
+        discardRecoveryDraft();
+        recoveryBaseModified_ =
+            QFileInfo(fromPath(manifestPath_))
+                .lastModified();
+    }
     changes_.clear();
     conflicts_.clear();
     loadDiagnostics_.clear();
@@ -771,6 +1214,32 @@ bool ProjectController::persistSynchronizedModel()
     emit conflictsChanged();
     emit editStateChanged();
     return !containsErrors(generationDiagnostics_);
+}
+
+bool ProjectController::manifestChangedOnDisk() const
+{
+    if (manifestPath_.empty() ||
+        !acceptedManifestDigestKnown_) {
+        return false;
+    }
+    return fileDigest(manifestPath_) !=
+        acceptedManifestDigest_;
+}
+
+void ProjectController::setExternalProjectChangePending(
+    bool pending)
+{
+    if (externalProjectChangePending_ ==
+        pending) {
+        return;
+    }
+    externalProjectChangePending_ =
+        pending;
+    if (!pending) {
+        externalProjectReloadDeferred_ =
+            false;
+    }
+    emit externalProjectChangeChanged();
 }
 
 void ProjectController::generateNow()
@@ -850,6 +1319,22 @@ void ProjectController::refreshWatchPaths()
 
     QStringList files;
     QStringList directories;
+    if (!manifestPath_.empty()) {
+        const QString projectFile =
+            fromPath(manifestPath_);
+        const QFileInfo information(
+            projectFile);
+        if (information.exists()) {
+            files.push_back(
+                projectFile);
+        }
+        const QString directory =
+            information.absolutePath();
+        if (QFileInfo(directory).isDir()) {
+            directories.push_back(
+                directory);
+        }
+    }
     if (manifest_) {
         const QString rtlFile = fromPath(manifest_->rtl.path.resolved);
         if (QFileInfo::exists(rtlFile) && !files.contains(rtlFile)) {
@@ -881,6 +1366,13 @@ void ProjectController::notifyModelEdited()
     changes_ = baseline_ && store_.workspace()
         ? regmap::diffWorkspaces(*baseline_, *store_.workspace())
         : std::vector<regmap::ModelChange> {};
+    if (store_.dirty()) {
+        recoveryDraftTimer_.start();
+    } else {
+        recoveryDraftTimer_.stop();
+        discardRecoveryDraft();
+    }
+
     rebuildDiagnostics();
     emit projectChanged();
     emit diagnosticsChanged();
@@ -928,6 +1420,121 @@ std::filesystem::path ProjectController::baselinePath() const
         / (manifestPath_.filename().generic_string() + ".sync.json");
 }
 
+std::filesystem::path ProjectController::recoveryDraftPathFor(
+    const std::filesystem::path& projectPath)
+{
+    if (projectPath.empty()) {
+        return {};
+    }
+    return projectPath.parent_path() /
+        ".regmap-workbench" /
+        (projectPath.filename().generic_string() +
+         ".autosave.yaml");
+}
+
+std::filesystem::path ProjectController::recoveryBasePathFor(
+    const std::filesystem::path& projectPath)
+{
+    if (projectPath.empty()) {
+        return {};
+    }
+    return projectPath.parent_path() /
+        ".regmap-workbench" /
+        (projectPath.filename().generic_string() +
+         ".autosave.base.json");
+}
+
+std::filesystem::path ProjectController::recoveryMetadataPathFor(
+    const std::filesystem::path& projectPath)
+{
+    if (projectPath.empty()) {
+        return {};
+    }
+    return projectPath.parent_path() /
+        ".regmap-workbench" /
+        (projectPath.filename().generic_string() +
+         ".autosave.meta.json");
+}
+
+std::optional<regmap::Workspace>
+ProjectController::loadRecoveryDraftBase() const
+{
+    if (manifestPath_.empty()) {
+        return std::nullopt;
+    }
+    const std::filesystem::path draftPath =
+        recoveryDraftPathFor(
+            manifestPath_);
+    const std::filesystem::path basePath =
+        recoveryBasePathFor(
+            manifestPath_);
+    QFile metadataFile(
+        fromPath(
+            recoveryMetadataPathFor(
+                manifestPath_)));
+    if (!metadataFile.open(
+            QIODevice::ReadOnly)) {
+        return std::nullopt;
+    }
+    QJsonParseError parseError;
+    const QJsonDocument document =
+        QJsonDocument::fromJson(
+            metadataFile.readAll(),
+            &parseError);
+    if (parseError.error !=
+            QJsonParseError::NoError ||
+        !document.isObject()) {
+        return std::nullopt;
+    }
+    const QJsonObject metadata =
+        document.object();
+    const QString expectedBase =
+        metadata.value(
+                    QStringLiteral(
+                        "base_sha256"))
+            .toString();
+    const QString expectedDraft =
+        metadata.value(
+                    QStringLiteral(
+                        "draft_sha256"))
+            .toString();
+    if (metadata.value(
+                    QStringLiteral(
+                        "format_version"))
+                .toInt() != 1 ||
+        expectedBase.size() != 64 ||
+        expectedDraft.size() != 64 ||
+        expectedBase !=
+            QString::fromLatin1(
+                fileDigest(
+                    basePath)
+                    .toHex()) ||
+        expectedDraft !=
+            QString::fromLatin1(
+                fileDigest(
+                    draftPath)
+                    .toHex())) {
+        return std::nullopt;
+    }
+    auto loaded =
+        regmap::loadSyncBaseline(
+            basePath);
+    if (!loaded.workspace ||
+        containsErrors(
+            loaded.diagnostics) ||
+        metadata.value(
+                    QStringLiteral(
+                        "workspace_id"))
+                .toString()
+                .toUtf8()
+                .toStdString() !=
+            loaded.workspace->id) {
+        return std::nullopt;
+    }
+    return std::move(
+        loaded.workspace);
+}
+
 void ProjectController::onWatchedFileChanged(const QString& path)
 {
     const bool generatedOutput =
@@ -942,13 +1549,31 @@ void ProjectController::onWatchedFileChanged(const QString& path)
     pendingFiles_.insert(path);
     fileSnapshots_.remove(path);
     stabilityAttempts_ = 0;
-    emit syncStatusChanged(QStringLiteral("Waiting for the saved editable file to become stable..."));
+    emit syncStatusChanged(
+        path ==
+                fromPath(
+                    manifestPath_)
+            ? QStringLiteral(
+                  "Waiting for the externally saved project to become stable...")
+            : QStringLiteral(
+                  "Waiting for the saved editable file to become stable..."));
     stabilityTimer_.start();
 }
 
 void ProjectController::onWatchedDirectoryChanged(
     const QString&)
 {
+    if (manifestChangedOnDisk()) {
+        const QString projectFile =
+            fromPath(
+                manifestPath_);
+        pendingFiles_.insert(
+            projectFile);
+        fileSnapshots_.remove(
+            projectFile);
+        stabilityAttempts_ = 0;
+        stabilityTimer_.start();
+    }
     if (!artifacts_.empty()) {
         generatedFileRefreshTimer_.start();
     }
@@ -1006,6 +1631,38 @@ void ProjectController::checkPendingFiles()
     pendingFiles_.clear();
     fileSnapshots_.clear();
     stabilityAttempts_ = 0;
+
+    const QString projectFile =
+        fromPath(
+            manifestPath_);
+    if (!projectFile.isEmpty() &&
+        changedPaths.contains(
+            projectFile)) {
+        if (!manifestChangedOnDisk()) {
+            setExternalProjectChangePending(
+                false);
+            refreshWatchPaths();
+        } else {
+            setExternalProjectChangePending(
+                true);
+            if (store_.dirty() ||
+                externalProjectReloadDeferred_) {
+                refreshWatchPaths();
+                emit syncStatusChanged(
+                    store_.dirty()
+                        ? QStringLiteral(
+                              "Project changed on disk; unsaved Workbench edits were "
+                              "retained and Save & Sync is paused until you choose a version")
+                        : QStringLiteral(
+                              "Project changed on disk; the active Workbench editor "
+                              "was retained and automatic reload was paused"));
+            } else {
+                reloadImpl(
+                    true);
+            }
+        }
+        return;
+    }
 
     const QString rtlFile = manifest_ ? fromPath(manifest_->rtl.path.resolved) : QString {};
     if (!rtlFile.isEmpty() && changedPaths.contains(rtlFile)) {

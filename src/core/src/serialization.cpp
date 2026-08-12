@@ -4,6 +4,7 @@
 
 #include <QByteArray>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QIODevice>
 #include <QSaveFile>
@@ -343,6 +344,8 @@ template <typename Enum, typename Parser>
     result.id = scalar(node, "id", true, filePath, path, diagnostics).value_or("");
     result.name = scalar(node, "name", true, filePath, path, diagnostics).value_or("");
     result.offset = uint64Value(node, "offset", true, filePath, path, diagnostics).value_or(0);
+    result.addressFixed =
+        boolValue(node, "fixed", false, filePath, path, diagnostics).value_or(false);
     result.width = uint32Value(node, "width", true, filePath, path, diagnostics).value_or(32);
     const bool hasExplicitType = static_cast<bool>(node["type"]);
     result.type = enumValue<FieldType>(node, "type", FieldType::unsignedInteger, parseFieldType,
@@ -387,6 +390,7 @@ template <typename Enum, typename Parser>
 
     setPropertySource(result, "name", filePath, node, "name", childPath(path, "name"));
     setPropertySource(result, "offset", filePath, node, "offset", childPath(path, "offset"));
+    setPropertySource(result, "fixed", filePath, node, "fixed", childPath(path, "fixed"));
     setPropertySource(result, "width", filePath, node, "width", childPath(path, "width"));
     setPropertySource(result, "type", filePath, node, "type", childPath(path, "type"));
     setPropertySource(result, "minimum", filePath, node, "minimum", childPath(path, "minimum"));
@@ -548,7 +552,11 @@ void emitRegister(YAML::Emitter& output, const Register& reg)
 {
     output << YAML::BeginMap << YAML::Key << "id" << YAML::Value << reg.id << YAML::Key << "name"
            << YAML::Value << reg.name << YAML::Key << "offset" << YAML::Value << hex(reg.offset)
-           << YAML::Key << "width" << YAML::Value << reg.width << YAML::Key << "array"
+           << YAML::Key << "width" << YAML::Value << reg.width;
+    if (reg.addressFixed) {
+        output << YAML::Key << "fixed" << YAML::Value << true;
+    }
+    output << YAML::Key << "array"
            << YAML::Value << YAML::BeginMap << YAML::Key << "count" << YAML::Value
            << reg.array.count << YAML::Key << "stride" << YAML::Value << hex(reg.array.stride)
            << YAML::EndMap << YAML::Key << "type" << YAML::Value << std::string(toString(reg.type));
@@ -631,46 +639,54 @@ bool WorkspaceFileLoadResult::hasErrors() const noexcept
     });
 }
 
-WorkspaceFileLoadResult loadWorkspaceFromProjectFile(const std::filesystem::path& path)
+bool ProjectTextSerializationResult::hasErrors() const noexcept
+{
+    return std::ranges::any_of(diagnostics, [](const Diagnostic& diagnostic) {
+        return diagnostic.severity == DiagnosticSeverity::error;
+    });
+}
+
+WorkspaceFileLoadResult loadWorkspaceFromProjectText(
+    std::string_view text,
+    const std::filesystem::path& sourcePath)
 {
     WorkspaceFileLoadResult result;
-    const std::filesystem::path absolutePath = std::filesystem::absolute(path).lexically_normal();
     YAML::Node root;
     try {
-        root = YAML::LoadFile(absolutePath.string());
+        root = YAML::Load(std::string(text));
     } catch (const YAML::Exception& error) {
         addDiagnostic(result.diagnostics, invalidYamlCode,
-                      "Cannot parse project model: " + std::string(error.what()), absolutePath, {},
+                      "Cannot parse project model: " + std::string(error.what()), sourcePath, {},
                       "workspace");
         return result;
     }
     if (!root.IsMap()) {
         addDiagnostic(result.diagnostics, invalidYamlCode, "Project root must be a mapping.",
-                      absolutePath, root);
+                      sourcePath, root);
         return result;
     }
 
     const YAML::Node workspaceNode = root["workspace"];
     if (!workspaceNode || !workspaceNode.IsMap()) {
         addDiagnostic(result.diagnostics, missingValueCode,
-                      "Required mapping 'workspace' is missing.", absolutePath,
+                      "Required mapping 'workspace' is missing.", sourcePath,
                       workspaceNode ? workspaceNode : root, "workspace");
         return result;
     }
 
     Workspace workspace;
-    workspace.manifestPath = absolutePath;
-    workspace.id = scalar(workspaceNode, "id", true, absolutePath, "workspace", result.diagnostics)
+    workspace.manifestPath = sourcePath;
+    workspace.id = scalar(workspaceNode, "id", true, sourcePath, "workspace", result.diagnostics)
                        .value_or("");
     workspace.name =
-        scalar(workspaceNode, "name", true, absolutePath, "workspace", result.diagnostics)
+        scalar(workspaceNode, "name", true, sourcePath, "workspace", result.diagnostics)
             .value_or("");
     const std::string spacesPath = "workspace.address_spaces";
-    const YAML::Node spaces = sequence(workspaceNode, "address_spaces", true, absolutePath,
+    const YAML::Node spaces = sequence(workspaceNode, "address_spaces", true, sourcePath,
                                        "workspace", result.diagnostics);
     for (std::size_t index = 0; index < spaces.size(); ++index) {
         workspace.addressSpaces.push_back(parseAddressSpace(
-            spaces[index], absolutePath, indexedPath(spacesPath, index), result.diagnostics));
+            spaces[index], sourcePath, indexedPath(spacesPath, index), result.diagnostics));
     }
 
     if (!result.hasErrors()) {
@@ -679,7 +695,40 @@ WorkspaceFileLoadResult loadWorkspaceFromProjectFile(const std::filesystem::path
     return result;
 }
 
-std::vector<Diagnostic> saveProjectFile(const ProjectManifest& manifest, const Workspace& workspace)
+WorkspaceFileLoadResult loadWorkspaceFromProjectFile(const std::filesystem::path& path)
+{
+    WorkspaceFileLoadResult result;
+    const std::filesystem::path absolutePath = std::filesystem::absolute(path).lexically_normal();
+    QFile file(fromPath(absolutePath));
+    if (!file.open(QIODevice::ReadOnly)) {
+        addDiagnostic(
+            result.diagnostics,
+            invalidYamlCode,
+            "Cannot read project model: " + file.errorString().toUtf8().toStdString(),
+            absolutePath,
+            {},
+            "workspace");
+        return result;
+    }
+    const QByteArray bytes = file.readAll();
+    if (file.error() != QFileDevice::NoError) {
+        addDiagnostic(
+            result.diagnostics,
+            invalidYamlCode,
+            "Cannot read project model: " + file.errorString().toUtf8().toStdString(),
+            absolutePath,
+            {},
+            "workspace");
+        return result;
+    }
+    return loadWorkspaceFromProjectText(
+        std::string_view(bytes.constData(), static_cast<std::size_t>(bytes.size())),
+        absolutePath);
+}
+
+ProjectTextSerializationResult serializeProjectText(
+    const ProjectManifest& manifest,
+    const Workspace& workspace)
 {
     YAML::Emitter output;
     output.SetIndent(2);
@@ -713,14 +762,24 @@ std::vector<Diagnostic> saveProjectFile(const ProjectManifest& manifest, const W
     }
     output << YAML::EndSeq << YAML::EndMap << YAML::EndMap;
 
-    std::vector<Diagnostic> diagnostics;
+    ProjectTextSerializationResult result;
     if (!output.good()) {
         Diagnostic diagnostic;
         diagnostic.code = writeFailureCode;
         diagnostic.message = "Cannot serialize project file: " + output.GetLastError();
         diagnostic.source.workbook = manifest.manifestPath;
-        diagnostics.push_back(std::move(diagnostic));
-        return diagnostics;
+        result.diagnostics.push_back(std::move(diagnostic));
+        return result;
+    }
+    result.text = std::string(output.c_str()) + '\n';
+    return result;
+}
+
+std::vector<Diagnostic> saveProjectFile(const ProjectManifest& manifest, const Workspace& workspace)
+{
+    ProjectTextSerializationResult serialized = serializeProjectText(manifest, workspace);
+    if (!serialized.text) {
+        return std::move(serialized.diagnostics);
     }
 
     const QString filePath = fromPath(manifest.manifestPath);
@@ -730,8 +789,8 @@ std::vector<Diagnostic> saveProjectFile(const ProjectManifest& manifest, const W
         diagnostic.code = writeFailureCode;
         diagnostic.message = "Cannot create the project file directory.";
         diagnostic.source.workbook = manifest.manifestPath;
-        diagnostics.push_back(std::move(diagnostic));
-        return diagnostics;
+        serialized.diagnostics.push_back(std::move(diagnostic));
+        return serialized.diagnostics;
     }
 
     QSaveFile file(filePath);
@@ -741,10 +800,10 @@ std::vector<Diagnostic> saveProjectFile(const ProjectManifest& manifest, const W
         diagnostic.message =
             "Cannot open the project file for writing: " + file.errorString().toStdString();
         diagnostic.source.workbook = manifest.manifestPath;
-        diagnostics.push_back(std::move(diagnostic));
-        return diagnostics;
+        serialized.diagnostics.push_back(std::move(diagnostic));
+        return serialized.diagnostics;
     }
-    const std::string text = std::string(output.c_str()) + '\n';
+    const std::string& text = *serialized.text;
     const QByteArray bytes(text.data(), static_cast<qsizetype>(text.size()));
     if (file.write(bytes) != bytes.size() || !file.commit()) {
         Diagnostic diagnostic;
@@ -752,9 +811,9 @@ std::vector<Diagnostic> saveProjectFile(const ProjectManifest& manifest, const W
         diagnostic.message =
             "Cannot atomically save the project file: " + file.errorString().toStdString();
         diagnostic.source.workbook = manifest.manifestPath;
-        diagnostics.push_back(std::move(diagnostic));
+        serialized.diagnostics.push_back(std::move(diagnostic));
     }
-    return diagnostics;
+    return serialized.diagnostics;
 }
 
 } // namespace regmap

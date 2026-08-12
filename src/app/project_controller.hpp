@@ -9,6 +9,7 @@
 #include "regmap/core/workspace_store.hpp"
 
 #include <QDateTime>
+#include <QByteArray>
 #include <QFileSystemWatcher>
 #include <QHash>
 #include <QObject>
@@ -25,6 +26,12 @@
 namespace regmap {
 struct ProjectOpenResult;
 }
+
+struct RecoveryDraftInfo {
+    bool mergeBaseAvailable{false};
+    bool projectChangedSinceDraft{false};
+    std::size_t conflictCount{0};
+};
 
 class ProjectController final : public QObject {
     Q_OBJECT
@@ -51,6 +58,17 @@ public:
     [[nodiscard]] const std::vector<regmap::MergeConflict>& conflicts() const noexcept;
     [[nodiscard]] bool hasConflicts() const noexcept;
     [[nodiscard]] bool requiresInitialSyncChoice() const noexcept;
+    [[nodiscard]] bool recoveryDraftAvailable() const;
+    [[nodiscard]] std::optional<RecoveryDraftInfo>
+    recoveryDraftInfo() const;
+    [[nodiscard]] QDateTime recoveryDraftModified() const;
+    [[nodiscard]] bool hasExternalProjectChange() const noexcept;
+    bool restoreRecoveryDraft(
+        regmap::MergePreference conflictPreference =
+            regmap::MergePreference::workbench);
+    void discardRecoveryDraft();
+    void discardRecoveryDraft(const std::filesystem::path& projectPath);
+    void deferExternalProjectReload();
 
     bool editWorkspace(
         const QString& description,
@@ -61,6 +79,7 @@ public slots:
     bool openProject(const QString& manifestPath);
     void reload();
     void save();
+    void saveOverExternalProjectChange();
     void undo();
     void redo();
     void synchronizeNow();
@@ -75,17 +94,25 @@ signals:
     void editStateChanged();
     void conflictsChanged();
     void syncStatusChanged(const QString& message);
+    void recoveryDraftStatusChanged(const QString& message);
+    void externalProjectChangeChanged();
+    void externalProjectSaveConflict();
 
 private slots:
     void onWatchedFileChanged(const QString& path);
     void onWatchedDirectoryChanged(const QString& path);
     void checkPendingFiles();
     void refreshGeneratedFileState();
+    void writeRecoveryDraft();
 
 private:
     QFileSystemWatcher watcher_;
     QTimer stabilityTimer_;
     QTimer generatedFileRefreshTimer_;
+    QTimer recoveryDraftTimer_;
+    QDateTime recoveryBaseModified_;
+    QByteArray acceptedManifestDigest_;
+    bool acceptedManifestDigestKnown_{false};
     QSet<QString> pendingFiles_;
     QHash<QString, std::pair<qint64, QDateTime>> fileSnapshots_;
     int stabilityAttempts_ {0};
@@ -101,10 +128,16 @@ private:
     std::vector<regmap::ModelChange> changes_;
     std::vector<regmap::MergeConflict> conflicts_;
     std::optional<regmap::Workspace> baseline_;
+    std::optional<regmap::Workspace> recoveryBaseWorkspace_;
     bool lastAcceptedModelWasValid_ {false};
     bool initialSyncChoicePending_ {false};
+    bool externalProjectChangePending_ {false};
+    bool externalProjectReloadDeferred_{false};
 
-    void reloadImpl(bool automatic, regmap::ProjectOpenResult* preloaded = nullptr);
+    void reloadImpl(
+        bool automatic,
+        regmap::ProjectOpenResult* preloaded = nullptr,
+        const QByteArray& preloadedDigest = {});
     void generateImpl(bool automatic);
     void rebuildDiagnostics();
     void refreshWatchPaths();
@@ -112,6 +145,17 @@ private:
     void initializeSynchronization();
     void synchronizeRtl(bool automatic, bool persistWhenClean);
     void resolveConflicts(regmap::MergePreference preference);
-    [[nodiscard]] bool persistSynchronizedModel();
+    [[nodiscard]] bool persistSynchronizedModel(
+        bool preserveDivergentRecoveryDraft = false);
+    [[nodiscard]] bool manifestChangedOnDisk() const;
+    void setExternalProjectChangePending(bool pending);
     [[nodiscard]] std::filesystem::path baselinePath() const;
+    [[nodiscard]] static std::filesystem::path recoveryDraftPathFor(
+        const std::filesystem::path& projectPath);
+    [[nodiscard]] static std::filesystem::path recoveryBasePathFor(
+        const std::filesystem::path& projectPath);
+    [[nodiscard]] static std::filesystem::path recoveryMetadataPathFor(
+        const std::filesystem::path& projectPath);
+    [[nodiscard]] std::optional<regmap::Workspace>
+    loadRecoveryDraftBase() const;
 };

@@ -180,6 +180,59 @@ struct SignedMagnitude {
     return value.magnitude == UnsignedValue::bitMask(width - 1, 1);
 }
 
+[[nodiscard]] int compareTwosComplementMagnitude(const UnsignedValue& encoded,
+                                                  std::uint64_t width,
+                                                  const UnsignedValue& magnitude)
+{
+    std::uint64_t leastSetBit = 0;
+    while (leastSetBit < width && !encoded.testBit(leastSetBit)) {
+        ++leastSetBit;
+    }
+
+    const std::uint64_t comparisonWidth =
+        std::max<std::uint64_t>(width, magnitude.bitWidth());
+    for (std::uint64_t index = comparisonWidth; index > 0; --index) {
+        const std::uint64_t bit = index - 1;
+        bool encodedMagnitudeBit = false;
+        if (bit < width) {
+            if (bit == leastSetBit) {
+                encodedMagnitudeBit = true;
+            } else if (bit > leastSetBit) {
+                encodedMagnitudeBit = !encoded.testBit(bit);
+            }
+        }
+        const bool boundMagnitudeBit = magnitude.testBit(bit);
+        if (encodedMagnitudeBit != boundMagnitudeBit) {
+            return encodedMagnitudeBit ? 1 : -1;
+        }
+    }
+    return 0;
+}
+
+[[nodiscard]] int compareEncodedNumericValue(const UnsignedValue& encoded, FieldType type,
+                                             std::uint64_t width,
+                                             const SignedMagnitude& bound)
+{
+    const bool negative =
+        type == FieldType::signedInteger && width > 0 && encoded.testBit(width - 1);
+    if (negative != bound.negative) {
+        return negative ? -1 : 1;
+    }
+    if (!negative) {
+        return compareMagnitude(encoded, bound.magnitude);
+    }
+    return -compareTwosComplementMagnitude(encoded, width, bound.magnitude);
+}
+
+[[nodiscard]] bool encodedNumericValueIsInRange(
+    const UnsignedValue& encoded, FieldType type, std::uint64_t width,
+    const std::optional<SignedMagnitude>& minimum,
+    const std::optional<SignedMagnitude>& maximum)
+{
+    return (!minimum || compareEncodedNumericValue(encoded, type, width, *minimum) >= 0) &&
+           (!maximum || compareEncodedNumericValue(encoded, type, width, *maximum) <= 0);
+}
+
 [[nodiscard]] bool diagnosticLess(const Diagnostic& left, const Diagnostic& right)
 {
     const auto severityRank = [](DiagnosticSeverity severity) {
@@ -289,7 +342,7 @@ void Validator::validateWorkspaceIdentity()
     for (const auto& addressSpace : workspace_.addressSpaces) {
         if (!addressSpace.name.empty() && !names.insert(addressSpace.name).second) {
             addDiagnostic(diagnostics_, duplicateNameCode,
-                          "Address-space name '" + addressSpace.name + "' is duplicated.",
+                          "Page name '" + addressSpace.name + "' is duplicated.",
                           addressSpace.id, propertySource(addressSpace, "address_space_name"));
         }
     }
@@ -297,7 +350,7 @@ void Validator::validateWorkspaceIdentity()
 
 void Validator::validateAddressSpace(const AddressSpace& addressSpace)
 {
-    validateIdentity(addressSpace.id, addressSpace.name, "address space", addressSpace.source);
+    validateIdentity(addressSpace.id, addressSpace.name, "page", addressSpace.source);
     if (addressSpace.addressWidth == 0 || addressSpace.addressWidth > 64) {
         addDiagnostic(diagnostics_, addressWidthCode,
                       "Address width must be between 1 and 64 bits.", addressSpace.id,
@@ -306,7 +359,7 @@ void Validator::validateAddressSpace(const AddressSpace& addressSpace)
         const std::uint64_t limit = std::uint64_t{1} << addressSpace.addressWidth;
         if (addressSpace.baseAddress >= limit) {
             addDiagnostic(diagnostics_, addressRangeCode,
-                          "Address-space base address does not fit its address width.",
+                          "Page base address does not fit its address width.",
                           addressSpace.id, propertySource(addressSpace, "address_space_base"));
         }
     }
@@ -318,7 +371,7 @@ void Validator::validateAddressSpace(const AddressSpace& addressSpace)
         if (!block.name.empty() && !blockNames.insert(block.name).second) {
             addDiagnostic(diagnostics_, duplicateNameCode,
                           "Register-block name '" + block.name +
-                              "' is duplicated in address space '" + addressSpace.name + "'.",
+                              "' is duplicated in page '" + addressSpace.name + "'.",
                           block.id, propertySource(block, "block_name"));
         }
         validateBlock(addressSpace, block, intervals, blockIntervals);
@@ -361,7 +414,7 @@ void Validator::validateBlock(const AddressSpace& addressSpace, const RegisterBl
                 if (blockLast >= limit) {
                     addDiagnostic(
                         diagnostics_, addressRangeCode,
-                        "Declared register-block range lies outside the address-space width.",
+                        "Declared Register Block range lies outside the Page address width.",
                         block.id, propertySource(block, "block_size"));
                 }
             }
@@ -416,7 +469,7 @@ void Validator::validateBlock(const AddressSpace& addressSpace, const RegisterBl
                 const std::uint64_t limit = std::uint64_t{1} << addressSpace.addressWidth;
                 if (absoluteLast >= limit) {
                     addDiagnostic(diagnostics_, addressRangeCode,
-                                  "Register instance lies outside the address-space width.", reg.id,
+                                  "Register instance lies outside the Page address width.", reg.id,
                                   propertySource(reg, "offset"));
                 }
             }
@@ -578,7 +631,15 @@ void Validator::validateRegister(const Register& reg)
     if (reg.maximumValue) {
         maximum = parseSignedMagnitude(*reg.maximumValue);
     }
-    if ((reg.minimumValue && !minimum) || (reg.maximumValue && !maximum)) {
+    const bool rangeSyntaxValid =
+        (!reg.minimumValue || minimum.has_value()) &&
+        (!reg.maximumValue || maximum.has_value());
+    const bool rangeWidthValid =
+        (!minimum || fitsNumericType(*minimum, reg.type, reg.width)) &&
+        (!maximum || fitsNumericType(*maximum, reg.type, reg.width));
+    const bool rangeOrderValid =
+        !minimum || !maximum || compareSigned(*minimum, *maximum) <= 0;
+    if (!rangeSyntaxValid) {
         addDiagnostic(diagnostics_, numericRangeCode,
                       "Register range bound must be a signed integer literal.", reg.id,
                       propertySource(reg, "minimum"));
@@ -587,17 +648,31 @@ void Validator::validateRegister(const Register& reg)
                       "Only signed and unsigned numeric registers may define a range.", reg.id,
                       propertySource(reg, "minimum"));
     } else if (numeric) {
-        if ((minimum && !fitsNumericType(*minimum, reg.type, reg.width)) ||
-            (maximum && !fitsNumericType(*maximum, reg.type, reg.width))) {
+        if (!rangeWidthValid) {
             addDiagnostic(diagnostics_, numericRangeCode,
                           "Numeric range does not fit the register type and width.", reg.id,
                           propertySource(reg, "minimum"));
         }
-        if (minimum && maximum && compareSigned(*minimum, *maximum) > 0) {
+        if (!rangeOrderValid) {
             addDiagnostic(diagnostics_, numericRangeCode,
                           "Register minimum is greater than the maximum.", reg.id,
                           propertySource(reg, "minimum"));
         }
+    }
+    const bool configuredRangeValid =
+        (reg.minimumValue || reg.maximumValue) && numeric && reg.width > 0 &&
+        rangeSyntaxValid && rangeWidthValid && rangeOrderValid;
+    if (configuredRangeValid && reg.initialValue && reg.initialValue->fitsInBits(reg.width) &&
+        !encodedNumericValueIsInRange(*reg.initialValue, reg.type, reg.width, minimum, maximum)) {
+        addDiagnostic(diagnostics_, numericRangeCode,
+                      "Register initial value lies outside the configured numeric range.", reg.id,
+                      propertySource(reg, "initial"));
+    }
+    if (configuredRangeValid && reg.resetValue && reg.resetValue->fitsInBits(reg.width) &&
+        !encodedNumericValueIsInRange(*reg.resetValue, reg.type, reg.width, minimum, maximum)) {
+        addDiagnostic(diagnostics_, numericRangeCode,
+                      "Register reset value lies outside the configured numeric range.", reg.id,
+                      propertySource(reg, "reset"), DiagnosticSeverity::warning);
     }
 
     if (reg.type == FieldType::structure && reg.fields.empty()) {
@@ -808,7 +883,15 @@ void Validator::validateField(const Register& reg, const Field& field, std::uint
     if (field.maximumValue) {
         maximum = parseSignedMagnitude(*field.maximumValue);
     }
-    if ((field.minimumValue && !minimum) || (field.maximumValue && !maximum)) {
+    const bool rangeSyntaxValid =
+        (!field.minimumValue || minimum.has_value()) &&
+        (!field.maximumValue || maximum.has_value());
+    const bool rangeWidthValid =
+        (!minimum || fitsNumericType(*minimum, field.type, fieldWidth)) &&
+        (!maximum || fitsNumericType(*maximum, field.type, fieldWidth));
+    const bool rangeOrderValid =
+        !minimum || !maximum || compareSigned(*minimum, *maximum) <= 0;
+    if (!rangeSyntaxValid) {
         addDiagnostic(diagnostics_, numericRangeCode,
                       "Numeric range bound must be a signed integer literal.", field.id,
                       propertySource(field, "minimum"));
@@ -817,17 +900,27 @@ void Validator::validateField(const Register& reg, const Field& field, std::uint
                       "Only signed and unsigned numeric fields may define a range.", field.id,
                       propertySource(field, "minimum"));
     } else if (numeric) {
-        if ((minimum && !fitsNumericType(*minimum, field.type, fieldWidth)) ||
-            (maximum && !fitsNumericType(*maximum, field.type, fieldWidth))) {
+        if (!rangeWidthValid) {
             addDiagnostic(diagnostics_, numericRangeCode,
                           "Numeric range does not fit the field type and width.", field.id,
                           propertySource(field, "minimum"));
         }
-        if (minimum && maximum && compareSigned(*minimum, *maximum) > 0) {
+        if (!rangeOrderValid) {
             addDiagnostic(diagnostics_, numericRangeCode,
                           "Numeric minimum is greater than the maximum.", field.id,
                           propertySource(field, "minimum"));
         }
+    }
+    const bool configuredRangeValid =
+        (field.minimumValue || field.maximumValue) && numeric && fieldWidth > 0 &&
+        rangeSyntaxValid && rangeWidthValid && rangeOrderValid;
+    if (configuredRangeValid && effectiveReset && effectiveReset->fitsInBits(fieldWidth) &&
+        !encodedNumericValueIsInRange(*effectiveReset, field.type, fieldWidth, minimum, maximum)) {
+        addDiagnostic(
+            diagnostics_, numericRangeCode,
+            "Field reset value lies outside the configured numeric range.", field.id,
+            field.resetValue ? propertySource(field, "reset") : propertySource(reg, "reset"),
+            DiagnosticSeverity::warning);
     }
 
     if (field.type == FieldType::structure && field.members.empty()) {
