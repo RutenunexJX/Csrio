@@ -625,6 +625,19 @@ See [architecture.md](docs/architecture.md), [manifest-schema.md](docs/manifest-
 [cli.md](docs/cli.md), [rtl-sync.md](docs/rtl-sync.md), and
 [excel-schema.md](docs/excel-schema.md) for the contracts.
 
+## Suite application protocol
+
+RegMapWorkbench provides `regmap://project?...` resources through
+`suite-app/v1`. A URI may identify the whole project or a stable object ID.
+The provider exposes `regmap.project.open` and the model Surface
+`regmap.workbench`, while project loading and object lookup remain delegated to
+the existing RegMap core.
+
+The optional neutral Runtime owns discovery and routing only. It does not own
+the register-map project or call `regmapc` through an application-specific
+broker branch. If the Runtime is absent, RegMapWorkbench and `regmapc` continue
+to run as independent products.
+
 ## Configure, build, and test
 
 Requirements are CMake 3.24 or newer, a C++20 compiler, Ninja, and Qt 6.5 or newer. The compiler

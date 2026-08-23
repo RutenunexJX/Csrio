@@ -21,6 +21,15 @@ add_library(
     workbench_theme.hpp
 )
 add_library(RegMap::WorkbenchUi ALIAS regmap_workbench_ui)
+if(SuiteApp_FOUND)
+    target_sources(
+        regmap_workbench_ui
+        PRIVATE
+            suite_integration.cpp
+            suite_integration.hpp
+    )
+    target_link_libraries(regmap_workbench_ui PRIVATE SuiteApp::suiteapp)
+endif()
 set_target_properties(regmap_workbench_ui PROPERTIES AUTOMOC ON)
 target_link_libraries(regmap_workbench_ui PUBLIC RegMap::Core Qt6::Widgets)
 target_include_directories(regmap_workbench_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
@@ -41,6 +50,9 @@ qt_add_resources(
 set_target_properties(regmap_workbench PROPERTIES AUTOMOC ON)
 set_target_properties(regmap_workbench PROPERTIES OUTPUT_NAME RegMapWorkbench)
 target_link_libraries(regmap_workbench PRIVATE RegMap::WorkbenchUi)
+if(SuiteApp_FOUND)
+    target_compile_definitions(regmap_workbench PRIVATE REGMAP_HAS_SUITEAPP=1)
+endif()
 target_compile_features(regmap_workbench PRIVATE cxx_std_20)
 regmap_enable_warnings(regmap_workbench)
 

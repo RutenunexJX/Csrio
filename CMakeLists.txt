@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.24)
 
 project(
     RegMapWorkbench
-    VERSION 0.1.0
+    VERSION 0.2.0
     DESCRIPTION "Register map workbench for FPGA and SystemVerilog development"
     LANGUAGES CXX
 )
@@ -24,6 +24,7 @@ include(RegMapWarnings)
 
 set(QT_NO_PRIVATE_MODULE_WARNING ON)
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui GuiPrivate)
+find_package(SuiteApp 1 CONFIG QUIET)
 include(RegMapDependencies)
 
 add_subdirectory(src/core)

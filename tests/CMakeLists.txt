@@ -126,4 +126,38 @@ if(TARGET RegMap::WorkbenchUi)
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
             ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>"
     )
+
+    if(SuiteApp_FOUND)
+        qt_add_executable(
+            regmap_suiteapp_integration_test
+            suiteapp_integration_test.cpp
+        )
+        set_target_properties(
+            regmap_suiteapp_integration_test
+            PROPERTIES AUTOMOC ON
+        )
+        target_link_libraries(
+            regmap_suiteapp_integration_test
+            PRIVATE
+                RegMap::WorkbenchUi
+                SuiteApp::suiteapp
+                Qt6::Test
+        )
+        target_compile_features(
+            regmap_suiteapp_integration_test
+            PRIVATE cxx_std_20
+        )
+        regmap_enable_warnings(regmap_suiteapp_integration_test)
+        add_test(
+            NAME regmap_suiteapp_integration_test
+            COMMAND regmap_suiteapp_integration_test
+        )
+        set_tests_properties(
+            regmap_suiteapp_integration_test
+            PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+                ENVIRONMENT_MODIFICATION
+                    "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>"
+        )
+    endif()
 endif()

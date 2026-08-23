@@ -1,4 +1,7 @@
 #include "main_window.hpp"
+#ifdef REGMAP_HAS_SUITEAPP
+#include "suite_integration.hpp"
+#endif
 #include "startup_options.hpp"
 #include "workbench_theme.hpp"
 
@@ -72,6 +75,14 @@ int main(int argumentCount, char* arguments[])
 
     MainWindow window;
     window.show();
+
+#ifdef REGMAP_HAS_SUITEAPP
+    regmap::workbench::RegMapSuiteIntegration suiteIntegration(
+        &window, &application);
+    QTimer::singleShot(0, &application, [&suiteIntegration] {
+        suiteIntegration.start();
+    });
+#endif
 
     if (!startup.projectPath
              .isEmpty()) {
