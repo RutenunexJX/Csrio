@@ -12,11 +12,16 @@
 #include <QTextStream>
 #include <QTimer>
 
+#ifndef REGMAP_APP_VERSION
+#define REGMAP_APP_VERSION "0.0.0"
+#endif
+
 int main(int argumentCount, char* arguments[])
 {
     QApplication application(argumentCount, arguments);
     QApplication::setApplicationName(QStringLiteral("Register Map Workbench"));
-    QApplication::setApplicationVersion(QStringLiteral("0.1.0"));
+    QApplication::setApplicationVersion(
+        QStringLiteral(REGMAP_APP_VERSION));
     QApplication::setOrganizationName(QStringLiteral("RegMapWorkbench"));
     QApplication::setWindowIcon(
         QIcon(QStringLiteral(

@@ -50,6 +50,10 @@ qt_add_resources(
 set_target_properties(regmap_workbench PROPERTIES AUTOMOC ON)
 set_target_properties(regmap_workbench PROPERTIES OUTPUT_NAME RegMapWorkbench)
 target_link_libraries(regmap_workbench PRIVATE RegMap::WorkbenchUi)
+target_compile_definitions(
+    regmap_workbench
+    PRIVATE REGMAP_APP_VERSION="${PROJECT_VERSION}"
+)
 if(SuiteApp_FOUND)
     target_compile_definitions(regmap_workbench PRIVATE REGMAP_HAS_SUITEAPP=1)
 endif()
