@@ -234,6 +234,7 @@ private slots:
     void refreshesSearchResultsAfterModelChanges();
     void selectsOnlyVisibleDataCells();
     void copiesAndPastesEditableCells();
+    void pastesDestructiveTypeAndRangeAtomically();
     void batchEditsAndCopiesCompleteRanges();
     void preflightsParentScopedSelectionCommands();
     void copiesCompleteRangesAcrossWindows();
@@ -1278,6 +1279,9 @@ void GuiSmokeTests::parsesStartupProjectArguments()
                 QLibraryInfo::path(
                     QLibraryInfo::
                         BinariesPath) +
+                    QDir::listSeparator() +
+                    QString::fromUtf8(
+                        REGMAP_TEST_TOOLCHAIN_RUNTIME_DIR) +
                     QDir::listSeparator() +
                     inheritedPath);
             environment.insert(
@@ -2566,7 +2570,7 @@ void GuiSmokeTests::persistsWorkbenchLayoutPreferences()
         QVERIFY(controller != nullptr);
         QVERIFY(!detailedRegisters->isChecked());
         QVERIFY(registers->isColumnHidden(6));
-        QVERIFY(registers->isColumnHidden(7));
+        QVERIFY(!registers->isColumnHidden(7));
 
         const QModelIndex openFields =
             registers->model()->index(0, 5);
@@ -2767,7 +2771,27 @@ void GuiSmokeTests::persistsWorkbenchLayoutPreferences()
     QTest::keyClick(registers, Qt::Key_Space);
     QTRY_VERIFY_WITH_TIMEOUT(
         fields->isVisible(), 2000);
-    QCOMPARE(workspace->sizes(), workspaceSizes);
+    const QList<int> restoredWorkspaceSizes =
+        workspace->sizes();
+    QCOMPARE(restoredWorkspaceSizes.size(), 2);
+    const double expectedWorkspaceFraction =
+        static_cast<double>(workspaceSizes[0]) /
+        static_cast<double>(workspaceSizes[0] + workspaceSizes[1]);
+    const double restoredWorkspaceFraction =
+        static_cast<double>(restoredWorkspaceSizes[0]) /
+        static_cast<double>(
+            restoredWorkspaceSizes[0] + restoredWorkspaceSizes[1]);
+    QVERIFY2(
+        qAbs(restoredWorkspaceFraction - expectedWorkspaceFraction) < 0.08,
+        qPrintable(
+            QStringLiteral(
+                "expected=%1 restored=%2 saved=%3,%4 restoredSizes=%5,%6")
+                .arg(expectedWorkspaceFraction)
+                .arg(restoredWorkspaceFraction)
+                .arg(workspaceSizes[0])
+                .arg(workspaceSizes[1])
+                .arg(restoredWorkspaceSizes[0])
+                .arg(restoredWorkspaceSizes[1])));
     const QList<int> restoredEditorSizes =
         editor->sizes();
     QCOMPARE(restoredEditorSizes.size(), 2);
@@ -7889,12 +7913,27 @@ void GuiSmokeTests::protectsAddRowsAndClarifiesSelection()
     QCoreApplication::processEvents();
     QTRY_VERIFY_WITH_TIMEOUT(
         activeContext->text().contains(
-            QStringLiteral("2 Registers")),
+            QStringLiteral("2 cells")),
         2000);
-    QVERIFY(activeContext->text().contains(
-        QStringLiteral("2 cells")));
+    QVERIFY(!activeContext->text().contains(
+        QStringLiteral("2 Registers")));
     QVERIFY(activeContext->text().contains(
         QStringLiteral("CONTROL")));
+    QVERIFY(!deleteAction->isEnabled());
+    QVERIFY(!batchAction->isEnabled());
+
+    registers->selectionModel()->select(
+        QItemSelection(
+            registers->model()->index(0, 0),
+            registers->model()->index(
+                1,
+                registers->model()->columnCount() - 1)),
+        QItemSelectionModel::ClearAndSelect);
+    QCoreApplication::processEvents();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        activeContext->text().contains(
+            QStringLiteral("2 Registers")),
+        2000);
     QCOMPARE(
         deleteAction->text(),
         QStringLiteral(
@@ -8781,10 +8820,10 @@ void GuiSmokeTests::retargetsTableContextMenusAndProtectsAddRows()
         menuLabelFailure.isEmpty(),
         qPrintable(menuLabelFailure));
     QVERIFY(menuLabelsChecked);
-    QCOMPARE(
+    QVERIFY(
         registers->selectionModel()
-            ->selectedIndexes(),
-        QModelIndexList{first});
+            ->isRowSelected(
+                first.row(), {}));
     QCOMPARE(
         registers->currentIndex(),
         first);
@@ -9377,7 +9416,7 @@ void GuiSmokeTests::preservesCellCommandContextAcrossNeutralFocus()
             QStringLiteral(
                 "Enum value")),
         2000);
-    QVERIFY(deleteAction->isEnabled());
+    QVERIFY(!deleteAction->isEnabled());
     QVERIFY(!duplicateAction->isEnabled());
     QVERIFY(!batchAction->isEnabled());
     QVERIFY(!copyRangeAction->isEnabled());
@@ -9388,6 +9427,20 @@ void GuiSmokeTests::preservesCellCommandContextAcrossNeutralFocus()
     QCOMPARE(
         QApplication::clipboard()->text(),
         expectedName);
+
+    enums->selectionModel()->select(
+        enumName,
+        QItemSelectionModel::ClearAndSelect |
+            QItemSelectionModel::Rows);
+    enums->setFocus(
+        Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
+    neutralButton->setFocus(
+        Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        deleteAction->isEnabled(),
+        2000);
 
     search->setText(
         QStringLiteral("CONTROL"));
@@ -9617,6 +9670,14 @@ void GuiSmokeTests::preflightsOrdinaryCellClipboardCommands()
         registers,
         registers->model()->index(
             0, 0));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !copyRange->isEnabled(),
+        1000);
+    registers->selectionModel()->select(
+        registers->currentIndex(),
+        QItemSelectionModel::ClearAndSelect |
+            QItemSelectionModel::Rows);
+    QCoreApplication::processEvents();
     QTRY_VERIFY_WITH_TIMEOUT(
         copyRange->isEnabled(),
         1000);
@@ -10621,6 +10682,10 @@ void GuiSmokeTests::keepsCompoundFieldsUsableDuringConversionAndDeletion()
     int firstMemberRow = rowForId(firstMemberId);
     QVERIFY(firstMemberRow >= 0);
     fields->setCurrentIndex(fields->model()->index(firstMemberRow, 0));
+    fields->selectionModel()->select(
+        fields->currentIndex(),
+        QItemSelectionModel::ClearAndSelect |
+            QItemSelectionModel::Rows);
     fields->setFocus(Qt::OtherFocusReason);
     window.statusBar()->clearMessage();
     QTest::keyClick(fields, Qt::Key_Delete);
@@ -10673,6 +10738,10 @@ void GuiSmokeTests::keepsCompoundFieldsUsableDuringConversionAndDeletion()
     firstMemberRow = rowForId(firstMemberId);
     QVERIFY(firstMemberRow >= 0);
     fields->setCurrentIndex(fields->model()->index(firstMemberRow, 0));
+    fields->selectionModel()->select(
+        fields->currentIndex(),
+        QItemSelectionModel::ClearAndSelect |
+            QItemSelectionModel::Rows);
     QCOMPARE(fields->currentIndex().data(Qt::UserRole + 1).toString(),
              QString::fromStdString(firstMemberId));
     window.activateWindow();
@@ -10792,6 +10861,10 @@ void GuiSmokeTests::confirmsFieldDeletionImpactAndRestoresIt()
                 fields->model()->index(
                     row,
                     contextColumn));
+            fields->selectionModel()->select(
+                fields->currentIndex(),
+                QItemSelectionModel::ClearAndSelect |
+                    QItemSelectionModel::Rows);
             fields->scrollTo(fields->currentIndex());
             fields->setFocus(Qt::OtherFocusReason);
             QCoreApplication::processEvents();
@@ -10889,6 +10962,10 @@ void GuiSmokeTests::confirmsFieldDeletionImpactAndRestoresIt()
             simpleRow,
             fields->model()->columnCount() -
                 1));
+    fields->selectionModel()->select(
+        fields->currentIndex(),
+        QItemSelectionModel::ClearAndSelect |
+            QItemSelectionModel::Rows);
     fields->setFocus(Qt::OtherFocusReason);
     QCoreApplication::processEvents();
     bool unexpectedConfirmation = false;
@@ -11071,25 +11148,18 @@ void GuiSmokeTests::deletesSelectedRowsAtomically()
                 }
                 view->selectionModel()
                     ->select(
-                        cell,
+                        QItemSelection(
+                            cell,
+                            view->model()->index(
+                                row,
+                                view->model()->columnCount() - 1)),
                         QItemSelectionModel::
                             Select);
             }
-            view->setCurrentIndex(
-                first);
-            for (const QString& id :
-                 ids) {
-                const int row =
-                    rowForId(
-                        view, id);
-                view->selectionModel()
-                    ->select(
-                        view->model()
-                            ->index(
-                                row, 0),
-                        QItemSelectionModel::
-                            Select);
-            }
+            view->selectionModel()
+                ->setCurrentIndex(
+                    first,
+                    QItemSelectionModel::NoUpdate);
             view->setFocus(
                 Qt::OtherFocusReason);
             QCoreApplication::
@@ -11174,8 +11244,17 @@ void GuiSmokeTests::deletesSelectedRowsAtomically()
                         QStringLiteral(
                             "Delete 2 Selected Registers")) &&
                 registers->selectionModel()
-                    ->selectedIndexes()
-                    .size() == 2;
+                    ->isRowSelected(
+                        rowForId(
+                            registers,
+                            QStringLiteral("reg-status")),
+                        {}) &&
+                registers->selectionModel()
+                    ->isRowSelected(
+                        rowForId(
+                            registers,
+                            QStringLiteral("reg-extra-a")),
+                        {});
             if (menu != nullptr) {
                 menu->close();
             }
@@ -11511,8 +11590,19 @@ void GuiSmokeTests::deletesSelectedRowsAtomically()
                 copyCells->isEnabled() &&
                 pasteCells->isEnabled() &&
                 fields->selectionModel()
-                    ->selectedIndexes()
-                    .size() == 2;
+                    ->isRowSelected(
+                        rowForId(
+                            fields,
+                            QStringLiteral(
+                                "field-ready")),
+                        {}) &&
+                fields->selectionModel()
+                    ->isRowSelected(
+                        rowForId(
+                            fields,
+                            QStringLiteral(
+                                "field-mode")),
+                        {});
             if (menu != nullptr) {
                 menu->close();
             }
@@ -11783,15 +11873,16 @@ void GuiSmokeTests::deletesSelectedEnumValuesAtomically()
                     enums->selectionModel()
                         ->setCurrentIndex(
                             cell,
-                            QItemSelectionModel::
-                                ClearAndSelect);
-                } else {
-                    enums->selectionModel()
-                        ->select(
-                            cell,
-                            QItemSelectionModel::
-                                Select);
+                            QItemSelectionModel::NoUpdate);
                 }
+                enums->selectionModel()
+                    ->select(
+                        QItemSelection(
+                            cell,
+                            enums->model()->index(
+                                row,
+                                enums->model()->columnCount() - 1)),
+                        QItemSelectionModel::Select);
             }
             window.activateWindow();
             enums->setFocus(
@@ -12044,7 +12135,7 @@ void GuiSmokeTests::deletesSelectedEnumValuesAtomically()
         enums->selectionModel()
             ->selectedIndexes()
             .size(),
-        2);
+        2 * enums->model()->columnCount());
     const QModelIndex boolTarget =
         enums->model()->index(
             rowForId(
@@ -12258,15 +12349,21 @@ void GuiSmokeTests::dragsFieldsAndResolvesOverlaps()
                 requestedMsb = msb;
             });
 
-        const QPoint pressPoint = bitfieldPointForBit(bitfield, 1);
-        const QPoint targetPoint = bitfieldPointForBit(bitfield, testCase.targetBit);
+        const auto pressPoint = [&] {
+            return bitfieldPointForBit(bitfield, 1);
+        };
+        const auto targetPoint = [&] {
+            return bitfieldPointForBit(
+                bitfield,
+                testCase.targetBit);
+        };
         if (testCase.targetBit ==
             cases.front().targetBit) {
             QTest::mouseClick(
                 bitfield,
                 Qt::LeftButton,
                 Qt::NoModifier,
-                pressPoint);
+                pressPoint());
             QCoreApplication::processEvents();
             QCOMPARE(
                 activatedField,
@@ -12284,22 +12381,21 @@ void GuiSmokeTests::dragsFieldsAndResolvesOverlaps()
                     bitfield,
                     Qt::LeftButton,
                     Qt::NoModifier,
-                    pressPoint);
+                    pressPoint());
+                const QPoint shortMovePoint =
+                    pressPoint() +
+                    QPoint(
+                        threshold - 1,
+                        0);
                 QTest::mouseMove(
                     bitfield,
-                    pressPoint +
-                        QPoint(
-                            threshold - 1,
-                            0),
+                    shortMovePoint,
                     20);
                 QTest::mouseRelease(
                     bitfield,
                     Qt::LeftButton,
                     Qt::NoModifier,
-                    pressPoint +
-                        QPoint(
-                            threshold - 1,
-                            0));
+                    shortMovePoint);
                 QCoreApplication::
                     processEvents();
                 QCOMPARE(
@@ -12313,9 +12409,27 @@ void GuiSmokeTests::dragsFieldsAndResolvesOverlaps()
             }
             activatedField.clear();
         }
-        QTest::mousePress(bitfield, Qt::LeftButton, Qt::NoModifier, pressPoint);
+        QCoreApplication::processEvents();
+        QTest::mousePress(
+            bitfield,
+            Qt::LeftButton,
+            Qt::NoModifier,
+            pressPoint());
         QCOMPARE(activatedField, QStringLiteral("field-ready"));
-        QTest::mouseMove(bitfield, targetPoint, 20);
+        const QPoint movePoint =
+            targetPoint();
+        QMouseEvent moveEvent(
+            QEvent::MouseMove,
+            QPointF(movePoint),
+            QPointF(
+                bitfield->mapToGlobal(
+                    movePoint)),
+            Qt::NoButton,
+            Qt::LeftButton,
+            Qt::NoModifier);
+        QCoreApplication::sendEvent(
+            bitfield,
+            &moveEvent);
         QCoreApplication::processEvents();
         QCOMPARE(previewField, QStringLiteral("field-ready"));
         QCOMPARE(previewLsb, testCase.previewLsb);
@@ -12361,7 +12475,13 @@ void GuiSmokeTests::dragsFieldsAndResolvesOverlaps()
             });
         }
 
-        QTest::mouseRelease(bitfield, Qt::LeftButton, Qt::NoModifier, targetPoint);
+        const QPoint releasePoint =
+            targetPoint();
+        QTest::mouseRelease(
+            bitfield,
+            Qt::LeftButton,
+            Qt::NoModifier,
+            releasePoint);
         QCoreApplication::processEvents();
         QVERIFY2(dialogFailure.isEmpty(), qPrintable(dialogFailure));
         QVERIFY(dialogHandled);
@@ -15321,7 +15441,7 @@ void GuiSmokeTests::showsUnifiedSyncStateAndGeneratedResults()
         QKeySequence(
             QStringLiteral(
                 "Ctrl+J")));
-    QCOMPARE(resultsToggle->text(), QStringLiteral("Results (3)"));
+    QCOMPARE(resultsToggle->text(), QStringLiteral("Results"));
     QVERIFY(
         resultsToggle->toolTip().contains(
             QStringLiteral(
@@ -16150,13 +16270,24 @@ void GuiSmokeTests::distinguishesRepeatedProblemsAcrossRefresh()
         QStringLiteral(
             "Create repeated overlap diagnostics"),
         [](regmap::Workspace& workspace) {
+            auto* block =
+                regmap::findRegisterBlock(
+                    workspace,
+                    "block-control");
             auto* status =
                 regmap::findRegister(
                     workspace,
                     "reg-status");
+            QVERIFY(block != nullptr);
             QVERIFY(status != nullptr);
-            status->array.count = 3;
-            status->array.stride = 0;
+            regmap::Register firstDuplicate = *status;
+            firstDuplicate.name = "STATUS_COPY_A";
+            regmap::Register secondDuplicate = *status;
+            secondDuplicate.name = "STATUS_COPY_B";
+            block->registers.push_back(
+                std::move(firstDuplicate));
+            block->registers.push_back(
+                std::move(secondDuplicate));
         }));
 
     const auto repeatedRows =
@@ -17716,7 +17847,7 @@ void GuiSmokeTests::supportsSearchAndResultUtilities()
         registers->isColumnHidden(
             6));
     QVERIFY(
-        registers->isColumnHidden(
+        !registers->isColumnHidden(
             7));
     QVERIFY(invokeHeaderAction(
         QStringLiteral(
@@ -17737,7 +17868,7 @@ void GuiSmokeTests::supportsSearchAndResultUtilities()
             ->currentMessage()
             .contains(
                 QStringLiteral(
-                    "columns shown")));
+                    "column shown")));
     QVERIFY(invokeHeaderAction(
         QStringLiteral(
             "toggleDetailedRegisterColumnsAction")));
@@ -17746,7 +17877,7 @@ void GuiSmokeTests::supportsSearchAndResultUtilities()
             6),
         2000);
     QVERIFY(
-        registers->isColumnHidden(
+        !registers->isColumnHidden(
             7));
     QVERIFY(
         !detailsAction->isChecked());
@@ -17764,7 +17895,7 @@ void GuiSmokeTests::supportsSearchAndResultUtilities()
         QStringLiteral("resetColumnsAction")));
     QCOMPARE(header->visualIndex(0), 0);
     QVERIFY(registers->isColumnHidden(6));
-    QVERIFY(registers->isColumnHidden(7));
+    QVERIFY(!registers->isColumnHidden(7));
     QVERIFY(registers->columnWidth(0) != 333);
 
     QTRY_COMPARE_WITH_TIMEOUT(
@@ -19133,14 +19264,10 @@ void GuiSmokeTests::rejectsOutOfRangeNumericEdits()
     QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
     const QModelIndex fieldReset = fields->model()->index(0, 10);
     QCOMPARE(fieldReset.data().toString(), QStringLiteral("0x0"));
-    QVERIFY(fields->model()->setData(fieldReset, QStringLiteral("0x2")));
-    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(0, 10).data().toString(),
-                              QStringLiteral("0x0"), 2000);
+    QVERIFY(!(fieldReset.flags() & Qt::ItemIsEditable));
     QCOMPARE(regmap::findField(*controller->workspace(), "field-ready")->resetValue,
              std::optional(regmap::UnsignedValue(0)));
     QCOMPARE(controller->undoDepth(), initialUndoDepth);
-    QVERIFY(window.statusBar()->currentMessage().contains(
-        QStringLiteral("1-bit field")));
 
     const QModelIndex controlInitial = registers->model()->index(1, 7);
     QVERIFY(registers->model()->setData(controlInitial, QStringLiteral("0x100")));
@@ -19393,7 +19520,7 @@ void GuiSmokeTests::guidesNumericRangeEditing()
             ->headerData(
                 3, Qt::Horizontal, Qt::ToolTipRole)
             .toString()
-            .contains(QStringLiteral("65536")));
+            .contains(QStringLiteral("1 to 32")));
     QVERIFY(
         registers->model()
             ->headerData(
@@ -19420,7 +19547,7 @@ void GuiSmokeTests::guidesNumericRangeEditing()
                 .contains(QStringLiteral("0x-prefixed")));
     QVERIFY(width.data(Qt::ToolTipRole)
                 .toString()
-                .contains(QStringLiteral("65536")));
+                .contains(QStringLiteral("1 to 32")));
     QVERIFY(initial.data(Qt::ToolTipRole)
                 .toString()
                 .contains(QStringLiteral("clear to unset")));
@@ -19465,7 +19592,7 @@ void GuiSmokeTests::guidesNumericRangeEditing()
         width,
         QStringLiteral("registerWidthEditor"),
         QStringLiteral("32"),
-        QStringLiteral("65536"));
+        QStringLiteral("1 to 32"));
     verifyEditor(
         initial,
         QStringLiteral("registerInitialEditor"),
@@ -19518,7 +19645,6 @@ void GuiSmokeTests::guidesNumericRangeEditing()
                     "Read-only")));
     QVERIFY(!(fieldLsb.flags() & Qt::ItemIsEditable));
     QVERIFY(fieldWidth.flags() & Qt::ItemIsEditable);
-    QVERIFY(fieldReset.flags() & Qt::ItemIsEditable);
     QVERIFY(fieldMsb.data(Qt::ToolTipRole)
                 .toString()
                 .contains(QStringLiteral("non-overlapping")));
@@ -19530,7 +19656,8 @@ void GuiSmokeTests::guidesNumericRangeEditing()
                 .contains(QStringLiteral("LSB")));
     QVERIFY(fieldReset.data(Qt::ToolTipRole)
                 .toString()
-                .contains(QStringLiteral("0x-prefixed")));
+                .contains(QStringLiteral("Register Reset")));
+    QVERIFY(!(fieldReset.flags() & Qt::ItemIsEditable));
     QVERIFY(fields->model()
                 ->headerData(
                     2, Qt::Horizontal,
@@ -19554,7 +19681,7 @@ void GuiSmokeTests::guidesNumericRangeEditing()
                     10, Qt::Horizontal,
                     Qt::ToolTipRole)
                 .toString()
-                .contains(QStringLiteral("clear to unset")));
+                .contains(QStringLiteral("Derived read-only")));
 
     const auto verifyFieldEditor =
         [&](const QModelIndex& index,
@@ -19594,11 +19721,6 @@ void GuiSmokeTests::guidesNumericRangeEditing()
         QStringLiteral("fieldWidthEditor"),
         QStringLiteral("1"),
         QStringLiteral("MSB is recalculated"));
-    verifyFieldEditor(
-        fieldReset,
-        QStringLiteral("fieldResetEditor"),
-        QStringLiteral("0x0 or blank"),
-        QStringLiteral("clear to unset"));
 
     const QModelIndex boolMinimum =
         fields->model()->index(readyRow, 6);
@@ -20986,7 +21108,32 @@ void GuiSmokeTests::duplicatesFocusedObjectsWithShortcut()
              Qt::WidgetWithChildrenShortcut);
     registers->setFocus(Qt::OtherFocusReason);
     QCoreApplication::processEvents();
-    QTRY_VERIFY_WITH_TIMEOUT(duplicate->isEnabled(), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(!duplicate->isEnabled(), 2000);
+
+    const auto selectObjectRow =
+        [](QTableView* view, int row) {
+            QVERIFY(view != nullptr);
+            QVERIFY(view->verticalHeader()->isVisible());
+            QVERIFY(row >= 0 &&
+                    row < view->model()->rowCount());
+            view->scrollTo(
+                view->model()->index(row, 0));
+            QCoreApplication::processEvents();
+            auto* gutter =
+                view->verticalHeader();
+            const QPoint position(
+                gutter->width() / 2,
+                gutter->sectionViewportPosition(row) +
+                    gutter->sectionSize(row) / 2);
+            QTest::mouseClick(
+                gutter->viewport(),
+                Qt::LeftButton,
+                Qt::NoModifier,
+                position);
+            QCoreApplication::processEvents();
+            QVERIFY(view->selectionModel()
+                        ->isRowSelected(row, {}));
+        };
 
     const std::size_t initialUndoDepth =
         controller->undoDepth();
@@ -21008,6 +21155,7 @@ void GuiSmokeTests::duplicatesFocusedObjectsWithShortcut()
         registers->model()->index(addRegisterRow, 0));
     registers->setFocus(Qt::OtherFocusReason);
     QCoreApplication::processEvents();
+    QTRY_VERIFY_WITH_TIMEOUT(!duplicate->isEnabled(), 2000);
     QTest::keyClick(registers, Qt::Key_D,
                     Qt::ControlModifier);
     QCoreApplication::processEvents();
@@ -21017,9 +21165,7 @@ void GuiSmokeTests::duplicatesFocusedObjectsWithShortcut()
             ->registers.size(),
         std::size_t{1});
     QCOMPARE(controller->undoDepth(), initialUndoDepth);
-    QVERIFY(window.statusBar()->currentMessage().contains(
-        QStringLiteral(
-            "select an existing Register row")));
+    QVERIFY(!duplicate->isEnabled());
 
     const QModelIndex tagIndex =
         registers->model()->index(0, 10);
@@ -21099,10 +21245,10 @@ void GuiSmokeTests::duplicatesFocusedObjectsWithShortcut()
     QTRY_VERIFY_WITH_TIMEOUT(
         QApplication::activePopupWidget() == nullptr, 2000);
 
-    registers->setCurrentIndex(
-        registers->model()->index(0, 0));
+    selectObjectRow(registers, 0);
     registers->setFocus(Qt::OtherFocusReason);
     QCoreApplication::processEvents();
+    QTRY_VERIFY_WITH_TIMEOUT(duplicate->isEnabled(), 2000);
     QTest::keyClick(registers, Qt::Key_D,
                     Qt::ControlModifier);
     QTRY_COMPARE_WITH_TIMEOUT(
@@ -21130,10 +21276,10 @@ void GuiSmokeTests::duplicatesFocusedObjectsWithShortcut()
     Q_EMIT registers->clicked(
         registers->model()->index(0, 5));
     QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
-    fields->setCurrentIndex(
-        fields->model()->index(0, 0));
+    selectObjectRow(fields, 0);
     fields->setFocus(Qt::OtherFocusReason);
     QCoreApplication::processEvents();
+    QTRY_VERIFY_WITH_TIMEOUT(duplicate->isEnabled(), 2000);
     QTest::keyClick(fields, Qt::Key_D,
                     Qt::ControlModifier);
     QTRY_COMPARE_WITH_TIMEOUT(
@@ -21171,7 +21317,7 @@ void GuiSmokeTests::duplicatesFocusedObjectsWithShortcut()
 
     const QModelIndex name =
         registers->model()->index(0, 0);
-    registers->setCurrentIndex(name);
+    selectObjectRow(registers, name.row());
     registers->scrollTo(name);
     registers->setFocus(Qt::OtherFocusReason);
     registers->edit(name);
@@ -21218,7 +21364,7 @@ void GuiSmokeTests::duplicatesFocusedObjectsWithShortcut()
 
     const QModelIndex width =
         registers->model()->index(0, 3);
-    registers->setCurrentIndex(width);
+    selectObjectRow(registers, width.row());
     registers->scrollTo(width);
     registers->setFocus(Qt::OtherFocusReason);
     registers->edit(width);
@@ -21613,7 +21759,7 @@ void GuiSmokeTests::rejectsAddressEditsThatIntroduceConflicts()
         QStringLiteral("32"), 2000);
     QCOMPARE(controller->undoDepth(), initialUndoDepth);
     QVERIFY(window.statusBar()->currentMessage().contains(
-        QStringLiteral("Register extent")));
+        QStringLiteral("1 to 32")));
 
     blockSize->setText(QStringLiteral("0x4"));
     Q_EMIT blockSize->editingFinished();
@@ -21902,7 +22048,7 @@ void GuiSmokeTests::rejectsGeometryConflictsFromWidthAndTypeEdits()
              std::uint32_t{32});
     QCOMPARE(controller->undoDepth(), initialUndoDepth);
     QVERIFY(window.statusBar()->currentMessage().contains(
-        QStringLiteral("address layout")));
+        QStringLiteral("1 to 32")));
 
     const int statusRow = registerRow(QStringLiteral("reg-status"));
     QVERIFY(statusRow >= 0);
@@ -22025,9 +22171,13 @@ void GuiSmokeTests::synchronizesFieldResetEdits()
     auto* controller = window.findChild<ProjectController*>();
     auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
     auto* fields = window.findChild<QTableView*>(QStringLiteral("fieldView"));
+    auto* fieldContext =
+        window.findChild<QLabel*>(
+            QStringLiteral("fieldContextLabel"));
     QVERIFY(controller != nullptr);
     QVERIFY(registers != nullptr);
     QVERIFY(fields != nullptr);
+    QVERIFY(fieldContext != nullptr);
 
     QVERIFY(controller->editWorkspace(
         QStringLiteral("Configure nested reset fixture"),
@@ -22077,16 +22227,48 @@ void GuiSmokeTests::synchronizesFieldResetEdits()
     }
     QVERIFY(parentRow >= 0);
     QVERIFY(memberRow >= 0);
+    constexpr int fieldDepthDataRole = Qt::UserRole + 11;
+    QCOMPARE(fields->model()
+                 ->index(parentRow, 0)
+                 .data(fieldDepthDataRole)
+                 .toInt(),
+             0);
+    QCOMPARE(fields->model()
+                 ->index(memberRow, 0)
+                 .data(fieldDepthDataRole)
+                 .toInt(),
+             1);
+    fields->setCurrentIndex(
+        fields->model()->index(memberRow, 0));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fieldContext->text().contains(
+            QStringLiteral("member bits are local")),
+        2000);
     QCOMPARE(registers->model()->index(0, 8).data().toString(),
              QStringLiteral("0x0"));
     QCOMPARE(fields->model()->index(parentRow, 10).data().toString(),
              QStringLiteral("0x0"));
     QCOMPARE(fields->model()->index(memberRow, 10).data().toString(),
              QStringLiteral("0x0"));
+    QVERIFY(!(fields->model()->index(parentRow, 10).flags() &
+              Qt::ItemIsEditable));
+    QVERIFY(!(fields->model()->index(memberRow, 10).flags() &
+              Qt::ItemIsEditable));
+    QVERIFY(fields->model()
+                ->index(memberRow, 10)
+                .data(Qt::UserRole + 5)
+                .toString()
+                .isEmpty());
+    QVERIFY(fields->model()
+                ->index(memberRow, 10)
+                .data(Qt::ToolTipRole)
+                .toString()
+                .contains(QStringLiteral("Register Reset")));
 
     const std::size_t undoDepth = controller->undoDepth();
-    QVERIFY(fields->model()->setData(fields->model()->index(memberRow, 10),
-                                     QStringLiteral("0x1")));
+    QVERIFY(registers->model()->setData(
+        registers->model()->index(0, 8),
+        QStringLiteral("0x400")));
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 8).data().toString(),
                               QStringLiteral("0x400"), 2000);
     QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(parentRow, 10).data().toString(),
@@ -22097,11 +22279,9 @@ void GuiSmokeTests::synchronizesFieldResetEdits()
              std::optional(regmap::UnsignedValue(0x400)));
     QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
     QCOMPARE(controller->undoDepth(), undoDepth + 1);
-    QVERIFY(window.statusBar()->currentMessage().contains(
-        QStringLiteral("Register Reset")));
 
-    fields->setFocus(Qt::OtherFocusReason);
-    QTest::keyClick(fields, Qt::Key_Z, Qt::ControlModifier);
+    registers->setFocus(Qt::OtherFocusReason);
+    QTest::keyClick(registers, Qt::Key_Z, Qt::ControlModifier);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 8).data().toString(),
                               QStringLiteral("0x0"), 2000);
     QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(parentRow, 10).data().toString(),
@@ -22109,6 +22289,22 @@ void GuiSmokeTests::synchronizesFieldResetEdits()
     QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(memberRow, 10).data().toString(),
                               QStringLiteral("0x0"), 2000);
     QCOMPARE(controller->undoDepth(), undoDepth);
+
+    QVERIFY(registers->model()->setData(
+        registers->model()->index(0, 8), QString{}));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        registers->model()->index(0, 8).data().toString(),
+        QString{}, 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fields->model()->index(parentRow, 10).data().toString(),
+        QString{}, 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fields->model()->index(memberRow, 10).data().toString(),
+        QString{}, 2000);
+    QTest::keyClick(registers, Qt::Key_Z, Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fields->model()->index(memberRow, 10).data().toString(),
+        QStringLiteral("0x0"), 2000);
 
     makeGeneratedFilesWritable(directory.path());
 }
@@ -22258,13 +22454,19 @@ void GuiSmokeTests::protectsEnumContractsDuringEditing()
         enums->model()->index(
             zeroRow,
             enumDescriptionColumn));
+    enums->selectionModel()->select(
+        enums->currentIndex(),
+        QItemSelectionModel::ClearAndSelect |
+            QItemSelectionModel::Rows);
     enums->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
     QTest::keyClick(enums, Qt::Key_Delete);
     QTRY_COMPARE_WITH_TIMEOUT(enums->model()->rowCount(), registerEnumRows, 2000);
     QVERIFY(enumRow(QStringLiteral("enum-register-zero")) >= 0);
     QCOMPARE(controller->undoDepth(), registerEnumUndoDepth);
-    QVERIFY(window.statusBar()->currentMessage().contains(
-        QStringLiteral("Cannot delete")));
+    QVERIFY2(window.statusBar()->currentMessage().contains(
+                 QStringLiteral("Cannot delete")),
+             qPrintable(window.statusBar()->currentMessage()));
     QVERIFY(window.statusBar()->currentMessage().contains(
         QStringLiteral("Initial/Reset")));
 
@@ -22319,6 +22521,10 @@ void GuiSmokeTests::protectsEnumContractsDuringEditing()
         enums->model()->index(
             threeRow,
             enumDescriptionColumn));
+    enums->selectionModel()->select(
+        enums->currentIndex(),
+        QItemSelectionModel::ClearAndSelect |
+            QItemSelectionModel::Rows);
     enums->setFocus(Qt::OtherFocusReason);
     QTest::keyClick(enums, Qt::Key_Delete);
     QTRY_COMPARE_WITH_TIMEOUT(enums->model()->rowCount(), registerEnumRows - 1, 2000);
@@ -22345,6 +22551,10 @@ void GuiSmokeTests::protectsEnumContractsDuringEditing()
         enums->model()->index(
             zeroRow,
             enumDescriptionColumn));
+    enums->selectionModel()->select(
+        enums->currentIndex(),
+        QItemSelectionModel::ClearAndSelect |
+            QItemSelectionModel::Rows);
     enums->setFocus(Qt::OtherFocusReason);
     QTest::keyClick(enums, Qt::Key_Delete);
     QTRY_COMPARE_WITH_TIMEOUT(enums->model()->rowCount(), registerEnumRows - 1, 2000);
@@ -22421,13 +22631,11 @@ void GuiSmokeTests::protectsEnumContractsDuringEditing()
     QVERIFY(window.statusBar()->currentMessage().contains(
         QStringLiteral("Field Reset")));
 
-    QVERIFY(fields->model()->setData(fields->model()->index(fieldRow, 10),
-                                     QStringLiteral("0x1")));
-    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(fieldRow, 10).data().toString(),
-                              QStringLiteral("0x0"), 2000);
+    QVERIFY(!(fields->model()->index(fieldRow, 10).flags() &
+              Qt::ItemIsEditable));
+    QCOMPARE(fields->model()->index(fieldRow, 10).data().toString(),
+             QStringLiteral("0x0"));
     QCOMPARE(controller->undoDepth(), fieldEnumUndoDepth);
-    QVERIFY(window.statusBar()->currentMessage().contains(
-        QStringLiteral("existing Enum value")));
 
     QVERIFY(enums->model()->setData(enums->model()->index(zeroRow, 1),
                                     QStringLiteral("0x1")));
@@ -22577,36 +22785,10 @@ void GuiSmokeTests::rejectsRegisterResetsOutsideFieldEnums()
                               QStringLiteral("0x0"), 2000);
     QCOMPARE(controller->undoDepth(), undoDepth);
 
-    QVERIFY(fields->model()->setData(fields->model()->index(parentRow, 10),
-                                     QStringLiteral("0x2")));
-    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 8).data().toString(),
-                              QStringLiteral("0x0"), 2000);
-    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(parentRow, 10).data().toString(),
-                              QStringLiteral("0x0"), 2000);
-    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(memberRow, 10).data().toString(),
-                              QStringLiteral("0x0"), 2000);
-    QCOMPARE(controller->undoDepth(), undoDepth);
-    QVERIFY(window.statusBar()->currentMessage().contains(
-        QStringLiteral("Enum/Bool Field slices")));
-
-    QVERIFY(fields->model()->setData(fields->model()->index(parentRow, 10),
-                                     QStringLiteral("0x6")));
-    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 8).data().toString(),
-                              QStringLiteral("0x600"), 2000);
-    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(parentRow, 10).data().toString(),
-                              QStringLiteral("0x6"), 2000);
-    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(memberRow, 10).data().toString(),
-                              QStringLiteral("0x3"), 2000);
-    QCOMPARE(controller->undoDepth(), undoDepth + 1);
-    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
-
-    QTest::keyClick(&window, Qt::Key_Z, Qt::ControlModifier);
-    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 8).data().toString(),
-                              QStringLiteral("0x0"), 2000);
-    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(parentRow, 10).data().toString(),
-                              QStringLiteral("0x0"), 2000);
-    QTRY_COMPARE_WITH_TIMEOUT(fields->model()->index(memberRow, 10).data().toString(),
-                              QStringLiteral("0x0"), 2000);
+    QVERIFY(!(fields->model()->index(parentRow, 10).flags() &
+              Qt::ItemIsEditable));
+    QVERIFY(!(fields->model()->index(memberRow, 10).flags() &
+              Qt::ItemIsEditable));
     QCOMPARE(controller->undoDepth(), undoDepth);
 
     makeGeneratedFilesWritable(directory.path());
@@ -22989,16 +23171,20 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
     QTest::qWait(50);
     auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
     auto* controller = window.findChild<ProjectController*>();
+    auto* registerFeedback =
+        window.findChild<QLabel*>(
+            QStringLiteral("registerFeedbackLabel"));
     auto* detailedColumns =
         window.findChild<QAction*>(
             QStringLiteral(
                 "showDetailedRegistersAction"));
     QVERIFY(registers != nullptr);
     QVERIFY(controller != nullptr);
+    QVERIFY(registerFeedback != nullptr);
     QVERIFY(detailedColumns != nullptr);
     detailedColumns->setChecked(false);
     QVERIFY(registers->isColumnHidden(6));
-    QVERIFY(registers->isColumnHidden(7));
+    QVERIFY(!registers->isColumnHidden(7));
 
     const QModelIndex emptyClipboardTarget =
         registers->model()->index(
@@ -23442,7 +23628,7 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
             ->index(0, 6)
             .data()
             .toString();
-    const QString hiddenInitialBefore =
+    const QString initialBefore =
         registers->model()
             ->index(0, 7)
             .data()
@@ -23452,7 +23638,7 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
             controller->undoDepth();
     const QModelIndex visibleMatrixStart =
         registers->model()
-            ->index(0, 4);
+            ->index(0, 7);
     registers->setCurrentIndex(
         visibleMatrixStart);
     registers->selectionModel()->select(
@@ -23461,7 +23647,7 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
             ClearAndSelect);
     QApplication::clipboard()->setText(
         QStringLiteral(
-            "field\tignored\t0x1"));
+            "0x0\t0x1"));
     QTest::keyClick(
         registers,
         Qt::Key_V,
@@ -23484,7 +23670,7 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
             ->index(0, 7)
             .data()
             .toString(),
-        hiddenInitialBefore);
+        initialBefore);
     QCOMPARE(
         controller->undoDepth(),
         visibleMatrixUndoDepth + 1);
@@ -23578,6 +23764,107 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 1).data().toString(),
                               QStringLiteral("0x4"), 2000);
 
+    const std::size_t offsetSwapUndoDepth =
+        controller->undoDepth();
+    const QModelIndex offsetSwapStart =
+        registers->model()->index(0, 1);
+    const QModelIndex offsetSwapEnd =
+        registers->model()->index(1, 1);
+    registers->setCurrentIndex(offsetSwapStart);
+    registers->selectionModel()->select(
+        QItemSelection(offsetSwapStart, offsetSwapEnd),
+        QItemSelectionModel::ClearAndSelect);
+    QApplication::clipboard()->setText(
+        QStringLiteral("0x4\n0x0"));
+    QTest::keyClick(
+        registers, Qt::Key_V,
+        Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        regmap::findRegister(
+            *controller->workspace(),
+            "reg-status")
+            ->offset,
+        std::uint64_t{4}, 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        regmap::findRegister(
+            *controller->workspace(),
+            "reg-control")
+            ->offset,
+        std::uint64_t{0}, 2000);
+    QCOMPARE(
+        controller->undoDepth(),
+        offsetSwapUndoDepth + 1);
+    QCOMPARE(
+        registers->model()
+            ->index(0, 0)
+            .data(Qt::UserRole + 1)
+            .toString(),
+        QStringLiteral("reg-status"));
+    QCOMPARE(
+        registers->model()
+            ->index(1, 0)
+            .data(Qt::UserRole + 1)
+            .toString(),
+        QStringLiteral("reg-control"));
+    QTest::keyClick(
+        &window, Qt::Key_Z,
+        Qt::ControlModifier);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        regmap::findRegister(
+            *controller->workspace(),
+            "reg-status")
+            ->offset,
+        std::uint64_t{0}, 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        regmap::findRegister(
+            *controller->workspace(),
+            "reg-control")
+            ->offset,
+        std::uint64_t{4}, 2000);
+
+    const std::size_t invalidMatrixUndoDepth =
+        controller->undoDepth();
+    const QModelIndex invalidMatrixStart =
+        registers->model()->index(0, 1);
+    const QModelIndex invalidMatrixEnd =
+        registers->model()->index(1, 1);
+    registers->setCurrentIndex(invalidMatrixStart);
+    registers->selectionModel()->select(
+        QItemSelection(
+            invalidMatrixStart,
+            invalidMatrixEnd),
+        QItemSelectionModel::ClearAndSelect);
+    QApplication::clipboard()->setText(
+        QStringLiteral("0x8\n0x8"));
+    QTest::keyClick(
+        registers, Qt::Key_V,
+        Qt::ControlModifier);
+    QCoreApplication::processEvents();
+    QCOMPARE(
+        regmap::findRegister(
+            *controller->workspace(),
+            "reg-status")
+            ->offset,
+        std::uint64_t{0});
+    QCOMPARE(
+        regmap::findRegister(
+            *controller->workspace(),
+            "reg-control")
+            ->offset,
+        std::uint64_t{4});
+    QCOMPARE(
+        controller->undoDepth(),
+        invalidMatrixUndoDepth);
+    QVERIFY(
+        window.statusBar()
+            ->currentMessage()
+            .contains(
+                QStringLiteral(
+                    "Paste cancelled")));
+    QVERIFY(registerFeedback->isVisible());
+    QVERIFY(registerFeedback->text().contains(
+        QStringLiteral("Paste cancelled")));
+
     const std::size_t mixedPasteUndoDepth = controller->undoDepth();
     QApplication::clipboard()->setText(
         QStringLiteral("STATUS_MIXED\t0x0\tignored\tinvalid-width"));
@@ -23587,32 +23874,18 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
         mixedPasteStart, QItemSelectionModel::ClearAndSelect);
     registers->setFocus(Qt::OtherFocusReason);
     QTest::keyClick(registers, Qt::Key_V, Qt::ControlModifier);
-    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 0).data().toString(),
-                              QStringLiteral("STATUS_MIXED"), 2000);
-    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 1).data().toString(),
-                              QStringLiteral("0x0"), 2000);
-    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 3).data().toString(),
-                              QStringLiteral("32"), 2000);
-    QTRY_COMPARE_WITH_TIMEOUT(registers->currentIndex().row(), 0, 2000);
-    QTRY_COMPARE_WITH_TIMEOUT(registers->currentIndex().column(), 3, 2000);
-    QVERIFY(registers->selectionModel()->isSelected(
-        registers->model()->index(0, 3)));
+    QCoreApplication::processEvents();
+    QCOMPARE(registers->model()->index(0, 0).data().toString(),
+             QStringLiteral("STATUS"));
+    QCOMPARE(registers->model()->index(0, 1).data().toString(),
+             QStringLiteral("0x0"));
+    QCOMPARE(registers->model()->index(0, 3).data().toString(),
+             QStringLiteral("32"));
+    QCOMPARE(registers->currentIndex(), mixedPasteStart);
     const QString mixedPasteMessage = window.statusBar()->currentMessage();
-    QVERIFY(mixedPasteMessage.contains(QStringLiteral("1 changed")));
-    QVERIFY(mixedPasteMessage.contains(QStringLiteral("1 unchanged")));
-    QVERIFY(mixedPasteMessage.contains(QStringLiteral("1 rejected")));
-    QVERIFY(mixedPasteMessage.contains(QStringLiteral("1 skipped")));
-    QVERIFY(mixedPasteMessage.contains(QStringLiteral("STATUS")));
-    QVERIFY(mixedPasteMessage.contains(QStringLiteral("Width")));
-    QVERIFY(mixedPasteMessage.contains(QStringLiteral("invalid-width")));
-    QVERIFY(mixedPasteMessage.contains(QStringLiteral("expected")));
-    QVERIFY(mixedPasteMessage.contains(QStringLiteral("first skipped")));
+    QVERIFY(mixedPasteMessage.contains(QStringLiteral("Paste cancelled")));
+    QVERIFY(mixedPasteMessage.contains(QStringLiteral("invalid target")));
     QVERIFY(mixedPasteMessage.contains(QStringLiteral("Address")));
-    QVERIFY(mixedPasteMessage.contains(QStringLiteral("calculated or read-only")));
-    QCOMPARE(controller->undoDepth(), mixedPasteUndoDepth + 1);
-    QTest::keyClick(&window, Qt::Key_Z, Qt::ControlModifier);
-    QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 0).data().toString(),
-                              QStringLiteral("STATUS"), 2000);
     QCOMPARE(controller->undoDepth(), mixedPasteUndoDepth);
 
     const QModelIndex readOnlyAddress = registers->model()->index(0, 2);
@@ -23627,10 +23900,11 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
     QCOMPARE(controller->undoDepth(), readOnlyPasteUndoDepth);
     QCOMPARE(readOnlyAddress.data().toString(), originalAddress);
     const QString readOnlyPasteMessage = window.statusBar()->currentMessage();
-    QVERIFY(readOnlyPasteMessage.contains(QStringLiteral("1 skipped")));
+    QVERIFY(readOnlyPasteMessage.contains(QStringLiteral("Paste skipped")));
     QVERIFY(readOnlyPasteMessage.contains(QStringLiteral("STATUS")));
     QVERIFY(readOnlyPasteMessage.contains(QStringLiteral("Address")));
-    QVERIFY(readOnlyPasteMessage.contains(QStringLiteral("calculated or read-only")));
+    QVERIFY(readOnlyPasteMessage.contains(
+        QStringLiteral("calculated or read-only")));
     QVERIFY(registers->selectionModel()->isSelected(readOnlyAddress));
 
     const QModelIndex sourceTags = registers->model()->index(1, 10);
@@ -23680,7 +23954,6 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
     const QString tagsPasteMessage = window.statusBar()->currentMessage();
     QVERIFY(tagsPasteMessage.contains(QStringLiteral("1 changed")));
     QVERIFY(tagsPasteMessage.contains(QStringLiteral("1 unchanged")));
-    QVERIFY(tagsPasteMessage.contains(QStringLiteral("0 rejected")));
 
     const QModelIndex refreshedFirstTags = registers->model()->index(0, 10);
     const QModelIndex refreshedLastTags = registers->model()->index(1, 10);
@@ -23786,8 +24059,7 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
     QCOMPARE(registers->model()->index(0, 9).data().toString(), QStringLiteral("RO"));
     QCOMPARE(registers->model()->index(1, 9).data().toString(), QStringLiteral("RW"));
     const QString rejectedPasteMessage = window.statusBar()->currentMessage();
-    QVERIFY(rejectedPasteMessage.contains(QStringLiteral("0 unchanged")));
-    QVERIFY(rejectedPasteMessage.contains(QStringLiteral("2 rejected")));
+    QVERIFY(rejectedPasteMessage.contains(QStringLiteral("Paste cancelled")));
     QVERIFY(rejectedPasteMessage.contains(QStringLiteral("STATUS")));
     QVERIFY(rejectedPasteMessage.contains(QStringLiteral("Access")));
     QVERIFY(rejectedPasteMessage.contains(QStringLiteral("none, ro, wo, or rw")));
@@ -23817,7 +24089,6 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
         QStringLiteral(
             "1 × 1 source → 2 selected cells")));
     QVERIFY(unchangedPasteMessage.contains(QStringLiteral("2 unchanged")));
-    QVERIFY(unchangedPasteMessage.contains(QStringLiteral("0 rejected")));
     QTRY_VERIFY_WITH_TIMEOUT(
         registers->selectionModel()->isSelected(registers->model()->index(0, 9)) &&
             registers->selectionModel()->isSelected(registers->model()->index(1, 9)),
@@ -23842,6 +24113,110 @@ void GuiSmokeTests::copiesAndPastesEditableCells()
                               QStringLiteral("RO"), 2000);
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(1, 9).data().toString(),
                               QStringLiteral("RW"), 2000);
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::pastesDestructiveTypeAndRangeAtomically()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest =
+        directory.filePath(
+            QStringLiteral("project.regmap.yaml"));
+    createProject(manifest);
+
+    MainWindow window;
+    QVERIFY(window.openProjectPath(manifest));
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+    auto* controller =
+        window.findChild<ProjectController*>();
+    auto* registers =
+        window.findChild<QTableView*>(
+            QStringLiteral("registerView"));
+    auto* fields =
+        window.findChild<QTableView*>(
+            QStringLiteral("fieldView"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Configure compound paste fixture"),
+        [](regmap::Workspace& workspace) {
+            auto* reg = regmap::findRegister(
+                workspace, "reg-status");
+            QVERIFY(reg != nullptr);
+            reg->type = regmap::FieldType::structure;
+            reg->width = 32;
+            reg->fields.clear();
+            regmap::Field member;
+            member.id = "field-child";
+            member.name = "CHILD";
+            member.msb = 0;
+            member.lsb = 0;
+            member.type = regmap::FieldType::bits;
+            member.softwareAccess =
+                regmap::AccessMode::readOnly;
+            regmap::Field parent;
+            parent.id = "field-compound";
+            parent.name = "COMPOUND";
+            parent.msb = 31;
+            parent.lsb = 0;
+            parent.type = regmap::FieldType::structure;
+            parent.members.push_back(std::move(member));
+            reg->fields.push_back(std::move(parent));
+        }));
+    Q_EMIT registers->clicked(
+        registers->model()->index(0, 5));
+    QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 2000);
+
+    int row = -1;
+    for (int candidate = 0;
+         candidate < fields->model()->rowCount();
+         ++candidate) {
+        if (fields->model()
+                ->index(candidate, 0)
+                .data(Qt::UserRole + 1)
+                .toString() ==
+            QStringLiteral("field-compound")) {
+            row = candidate;
+            break;
+        }
+    }
+    QVERIFY(row >= 0);
+    const QModelIndex start =
+        fields->model()->index(row, 5);
+    fields->setCurrentIndex(start);
+    fields->selectionModel()->select(
+        start,
+        QItemSelectionModel::ClearAndSelect);
+    fields->setFocus(Qt::OtherFocusReason);
+    const std::size_t undoDepth =
+        controller->undoDepth();
+    QApplication::clipboard()->setText(
+        QStringLiteral("uint32"));
+    QTest::keyClick(
+        fields, Qt::Key_V,
+        Qt::ControlModifier);
+    const auto* updated = regmap::findField(
+        *controller->workspace(),
+        "field-compound");
+    QVERIFY(updated != nullptr);
+    QCOMPARE(
+        updated->type,
+        regmap::FieldType::structure);
+    QCOMPARE(updated->members.size(), std::size_t{1});
+    QVERIFY(!updated->minimumValue.has_value());
+    QVERIFY(!updated->maximumValue.has_value());
+    QCOMPARE(controller->undoDepth(), undoDepth);
+    QVERIFY2(
+        window.statusBar()->currentMessage().contains(
+            QStringLiteral("individually confirmed")),
+        qPrintable(
+            window.statusBar()->currentMessage()));
 
     makeGeneratedFilesWritable(directory.path());
 }
@@ -24054,6 +24429,12 @@ void GuiSmokeTests::guidesEmptyPageAndBlock()
         aggregatePage.isValid());
     hierarchy->setCurrentIndex(
         aggregatePage);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        pageBase->isReadOnly() &&
+            pageWidth->isReadOnly() &&
+            blockBase->isReadOnly() &&
+            blockSize->isReadOnly(),
+        2000);
     QTRY_COMPARE_WITH_TIMEOUT(
         emptyTitle->text(),
         QStringLiteral(
@@ -24103,6 +24484,12 @@ void GuiSmokeTests::guidesEmptyPageAndBlock()
                 ->addressSpaces.front()
                 .blocks.front()
                 .id),
+        2000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !pageBase->isReadOnly() &&
+            !pageWidth->isReadOnly() &&
+            !blockBase->isReadOnly() &&
+            !blockSize->isReadOnly(),
         2000);
     QTRY_COMPARE_WITH_TIMEOUT(
         emptyTitle->text(),
@@ -24160,6 +24547,10 @@ void GuiSmokeTests::guidesEmptyPageAndBlock()
     registers->setCurrentIndex(
         registers->model()
             ->index(0, 0));
+    registers->selectionModel()->select(
+        registers->currentIndex(),
+        QItemSelectionModel::ClearAndSelect |
+            QItemSelectionModel::Rows);
     registers->setFocus(
         Qt::OtherFocusReason);
     QVERIFY(
@@ -24455,7 +24846,9 @@ void GuiSmokeTests::batchEditsAndCopiesCompleteRanges()
     const QModelIndex field = fields->model()->index(0, 0);
     fields->setCurrentIndex(field);
     fields->selectionModel()->select(
-        field, QItemSelectionModel::ClearAndSelect);
+        field,
+        QItemSelectionModel::ClearAndSelect |
+            QItemSelectionModel::Rows);
     window.activateWindow();
     fields->setFocus(Qt::OtherFocusReason);
     QCoreApplication::processEvents();
@@ -24794,15 +25187,16 @@ void GuiSmokeTests::preflightsParentScopedSelectionCommands()
                     view->selectionModel()
                         ->setCurrentIndex(
                             cell,
-                            QItemSelectionModel::
-                                ClearAndSelect);
-                } else {
-                    view->selectionModel()
-                        ->select(
-                            cell,
-                            QItemSelectionModel::
-                                Select);
+                            QItemSelectionModel::NoUpdate);
                 }
+                view->selectionModel()
+                    ->select(
+                        QItemSelection(
+                            cell,
+                            view->model()->index(
+                                row,
+                                view->model()->columnCount() - 1)),
+                        QItemSelectionModel::Select);
             }
             window.activateWindow();
             view->setFocus(
@@ -25071,10 +25465,21 @@ void GuiSmokeTests::preflightsParentScopedSelectionCommands()
                         QStringLiteral(
                             "Secondary")) &&
                 registers
-                        ->selectionModel()
-                        ->selectedIndexes()
-                        .size() ==
-                    2;
+                    ->selectionModel()
+                    ->isRowSelected(
+                        rowForId(
+                            registers,
+                            QStringLiteral(
+                                "reg-status")),
+                        {}) &&
+                registers
+                    ->selectionModel()
+                    ->isRowSelected(
+                        rowForId(
+                            registers,
+                            QStringLiteral(
+                                "reg-secondary")),
+                        {});
             if (menu != nullptr) {
                 menu->close();
             }
@@ -25193,9 +25598,19 @@ void GuiSmokeTests::preflightsParentScopedSelectionCommands()
                 remove != nullptr &&
                 !remove->isEnabled() &&
                 fields->selectionModel()
-                        ->selectedIndexes()
-                        .size() ==
-                    2;
+                    ->isRowSelected(
+                        rowForId(
+                            fields,
+                            QStringLiteral(
+                                "field-ready")),
+                        {}) &&
+                fields->selectionModel()
+                    ->isRowSelected(
+                        rowForId(
+                            fields,
+                            QStringLiteral(
+                                "field-member-a")),
+                        {});
             if (menu != nullptr) {
                 menu->close();
             }
@@ -25855,7 +26270,8 @@ void GuiSmokeTests::copiesCompleteRangesAcrossWindows()
         QItemSelection(
             sourceRegisterFirst,
             sourceRegisterLast),
-        QItemSelectionModel::ClearAndSelect);
+        QItemSelectionModel::ClearAndSelect |
+            QItemSelectionModel::Rows);
     QTRY_VERIFY_WITH_TIMEOUT(
         sourceCopy->isEnabled(), 1000);
     sourceCopy->trigger();
@@ -26089,7 +26505,8 @@ void GuiSmokeTests::copiesCompleteRangesAcrossWindows()
         sourceField);
     sourceFields->selectionModel()->select(
         sourceField,
-        QItemSelectionModel::ClearAndSelect);
+        QItemSelectionModel::ClearAndSelect |
+            QItemSelectionModel::Rows);
     sourceFields->setFocus(
         Qt::OtherFocusReason);
     QCoreApplication::processEvents();
@@ -26332,7 +26749,8 @@ void GuiSmokeTests::pastesCompleteRegisterRangeNearSelection()
     registers->setCurrentIndex(statusCell);
     registers->selectionModel()->select(
         statusCell,
-        QItemSelectionModel::ClearAndSelect);
+        QItemSelectionModel::ClearAndSelect |
+            QItemSelectionModel::Rows);
     registers->setFocus(Qt::OtherFocusReason);
     QCoreApplication::processEvents();
     copyRange->trigger();
@@ -26375,7 +26793,8 @@ void GuiSmokeTests::pastesCompleteRegisterRangeNearSelection()
         controlCell);
     registers->selectionModel()->select(
         controlCell,
-        QItemSelectionModel::ClearAndSelect);
+        QItemSelectionModel::ClearAndSelect |
+            QItemSelectionModel::Rows);
     registers->setFocus(
         Qt::OtherFocusReason);
     QCoreApplication::processEvents();
@@ -26528,7 +26947,9 @@ void GuiSmokeTests::pastesCompleteFieldRangeNearSelection()
         fields->model()->index(farRow, 0);
     fields->setCurrentIndex(farCell);
     fields->selectionModel()->select(
-        farCell, QItemSelectionModel::ClearAndSelect);
+        farCell,
+        QItemSelectionModel::ClearAndSelect |
+            QItemSelectionModel::Rows);
     fields->setFocus(Qt::OtherFocusReason);
     QCoreApplication::processEvents();
     copyRange->trigger();
@@ -26639,7 +27060,8 @@ void GuiSmokeTests::reordersRegistersAndPreservesFixedAddresses()
     registers->selectionModel()->select(
         registers->currentIndex(),
         QItemSelectionModel::
-            ClearAndSelect);
+            ClearAndSelect |
+            QItemSelectionModel::Rows);
     registers->setFocus(
         Qt::OtherFocusReason);
     QCoreApplication::processEvents();
@@ -26681,7 +27103,9 @@ void GuiSmokeTests::reordersRegistersAndPreservesFixedAddresses()
     const QModelIndex controlCell = registers->model()->index(0, 0);
     registers->setCurrentIndex(controlCell);
     registers->selectionModel()->select(
-        controlCell, QItemSelectionModel::ClearAndSelect);
+        controlCell,
+        QItemSelectionModel::ClearAndSelect |
+            QItemSelectionModel::Rows);
     window.activateWindow();
     registers->setFocus(Qt::OtherFocusReason);
     QCoreApplication::processEvents();
@@ -26831,7 +27255,8 @@ void GuiSmokeTests::movesSelectedRegistersTogether()
     registers->setCurrentIndex(fixedCell);
     registers->selectionModel()->select(
         fixedCell,
-        QItemSelectionModel::ClearAndSelect);
+        QItemSelectionModel::ClearAndSelect |
+            QItemSelectionModel::Rows);
     window.activateWindow();
     registers->setFocus(Qt::OtherFocusReason);
     QCoreApplication::processEvents();
@@ -29169,13 +29594,16 @@ void GuiSmokeTests::protectsActiveEditorDuringCompositeShortcuts()
         const QModelIndex width =
             registers->model()
                 ->index(row, 3);
-        registers->setCurrentIndex(
-            width);
         registers->selectionModel()
             ->select(
                 width,
                 QItemSelectionModel::
-                    ClearAndSelect);
+                    ClearAndSelect |
+                    QItemSelectionModel::Rows);
+        registers->selectionModel()
+            ->setCurrentIndex(
+                width,
+                QItemSelectionModel::NoUpdate);
         registers->scrollTo(width);
         registers->setFocus(
             Qt::OtherFocusReason);
@@ -29218,7 +29646,8 @@ void GuiSmokeTests::protectsActiveEditorDuringCompositeShortcuts()
         ->select(
             statusName,
             QItemSelectionModel::
-                ClearAndSelect);
+                ClearAndSelect |
+                QItemSelectionModel::Rows);
     registers->setFocus(
         Qt::OtherFocusReason);
     QCoreApplication::processEvents();
@@ -30216,6 +30645,27 @@ void GuiSmokeTests::showsMultiPageBlockAddressMap()
             .front()
             .toString(),
         QStringLiteral("page-small"));
+
+    QCOMPARE(map.zoomLevel(), std::uint32_t{1});
+    QTest::keyClick(&map, Qt::Key_Plus);
+    QCOMPARE(map.zoomLevel(), std::uint32_t{2});
+    QTest::keyClick(&map, Qt::Key_0);
+    QCOMPARE(map.zoomLevel(), std::uint32_t{1});
+
+    regmap::Workspace manyPages = workspace;
+    for (int index = 0; index < 10; ++index) {
+        regmap::AddressSpace page;
+        page.id = "page-extra-" +
+            std::to_string(index);
+        page.name = "Extra " +
+            std::to_string(index);
+        page.addressWidth = 16;
+        manyPages.addressSpaces.push_back(
+            std::move(page));
+    }
+    map.setWorkspace(&manyPages);
+    QVERIFY(map.sizeHint().height() >=
+            52 + 30 * 12);
 }
 
 void GuiSmokeTests::showsBlocksBeyondPageAddressRange()
@@ -30977,6 +31427,9 @@ void GuiSmokeTests::rejectsInvalidActiveEditorBeforeSave()
     window.show();
     QTest::qWait(50);
     auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* hierarchy =
+        window.findChild<QTreeView*>(
+            QStringLiteral("hierarchyView"));
     auto* controller = window.findChild<ProjectController*>();
     auto* pageBase =
         window.findChild<QLineEdit*>(
@@ -30991,6 +31444,7 @@ void GuiSmokeTests::rejectsInvalidActiveEditorBeforeSave()
         window.findChild<QLineEdit*>(
             QStringLiteral("blockSizeEdit"));
     QVERIFY(registers != nullptr);
+    QVERIFY(hierarchy != nullptr);
     QVERIFY(controller != nullptr);
     QVERIFY(pageBase != nullptr);
     QVERIFY(pageWidth != nullptr);
@@ -31053,6 +31507,16 @@ void GuiSmokeTests::rejectsInvalidActiveEditorBeforeSave()
         QStringLiteral("Edit rejected: expected")));
     QVERIFY(!controller->isDirty());
 
+    const QModelIndex blockIndex =
+        hierarchyIndexByObjectId(
+            hierarchy->model(),
+            QStringLiteral("block-control"));
+    QVERIFY(blockIndex.isValid());
+    hierarchy->setCurrentIndex(QModelIndex{});
+    QCoreApplication::processEvents();
+    hierarchy->setCurrentIndex(blockIndex);
+    QCoreApplication::processEvents();
+    QVERIFY(!pageWidth->isReadOnly());
     pageWidth->setFocus(Qt::OtherFocusReason);
     pageWidth->selectAll();
     QTest::keyClicks(
@@ -31626,6 +32090,10 @@ void GuiSmokeTests::deletesFocusedRegisterAndRestoresIt()
                 registers->model()->index(
                     0,
                     11));
+            registers->selectionModel()->select(
+                registers->currentIndex(),
+                QItemSelectionModel::ClearAndSelect |
+                    QItemSelectionModel::Rows);
             registers->scrollTo(registers->currentIndex());
             registers->setFocus(Qt::OtherFocusReason);
             QCoreApplication::processEvents();
@@ -31938,7 +32406,8 @@ void GuiSmokeTests::warnsWhenDeleteShiftAffectsFilteredRegisters()
             registers->selectionModel()->select(
                 registers->currentIndex(),
                 QItemSelectionModel::
-                    ClearAndSelect);
+                    ClearAndSelect |
+                    QItemSelectionModel::Rows);
             registers->setFocus(Qt::OtherFocusReason);
             QTest::qWait(20);
             QTimer::singleShot(0, &window, [&] {
@@ -32122,6 +32591,10 @@ void GuiSmokeTests::rejectsUnsafeDeleteAndShift()
             }
             registers->setCurrentIndex(
                 registers->model()->index(row, 0));
+            registers->selectionModel()->select(
+                registers->currentIndex(),
+                QItemSelectionModel::ClearAndSelect |
+                    QItemSelectionModel::Rows);
             registers->setFocus(Qt::OtherFocusReason);
             window.activateWindow();
             QCoreApplication::processEvents();

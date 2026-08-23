@@ -18,6 +18,34 @@ Workspace -> Page -> Register Block -> Register -> Field -> Enum Value
                                                   -> Member Field
 ```
 
+## Quick start
+
+1. Start `RegMapWorkbench.exe` and choose **New Project**, or open an existing
+   `.regmap.yaml` file.
+2. For a new map, use **+ First Register**. To control names and layout explicitly,
+   right-click the Workspace/Page/Block tree and create the required Page, Block, and Register.
+3. Select a Block. Single-click a cell to select it; double-click or press `F2` to edit it.
+   Registers occupy fixed four-byte address slots.
+4. Set a Register to the structure type only when it contains Fields, then use its **Open Fields**
+   action to edit the bit layout. Scalar Registers need no Field setup.
+5. Resolve entries shown in **Problems**. Rejected edits leave the previous valid value unchanged
+   and identify the affected cell or object.
+6. Choose **Save & Sync**. The state badge must show **Synchronized** before treating outputs as
+   current.
+7. Open the generated XLSX from **Outputs**. Its first sheet is a Workspace overview; each Page
+   has a separate detail sheet.
+
+The minimum portable CLI flow is:
+
+```powershell
+.\regmapc.exe --json init .\device.regmap.yaml --name "Device Register Map"
+.\regmapc.exe --json validate .\device.regmap.yaml
+.\regmapc.exe --json generate .\device.regmap.yaml --target xlsx
+```
+
+See [cli.md](docs/cli.md) for guarded edits, target selection, pagination, and JSON response
+contracts.
+
 ## Current capabilities
 
 - Workbench-first creation and editing of every model level, with stable object IDs.
@@ -348,9 +376,9 @@ Workspace -> Page -> Register Block -> Register -> Field -> Enum Value
   generated path, or Diff summary shows its complete text. After a generated file opens,
   Workbench states whether it is synchronized, last-saved, externally changed, or retained
   after a failed generation, so an older derivative is not mistaken for the current model.
-  Non-structure registers hide the Field editor. Low-frequency Register Range/Initial columns and
-  Field columns are available from the corresponding **View** actions or the table-header
-  context menu.
+  Non-structure registers hide the Field editor. Initial Value remains visible in the default
+  Register layout; the type-specific Range column and advanced Field columns are available from
+  the corresponding **View** actions or the table-header context menu.
 
 `regmap_core` owns the model, validation, persistence, synchronization, and generators.
 `RegMapWorkbench` owns the Qt editing experience, and `regmapc` exposes the same core to
@@ -581,12 +609,16 @@ resolved with **Keep Workbench changes** or **Use RTL changes** in the conflict 
 
 XLSX, C header, and Markdown files are derivative views. Their filesystem permissions are set
 read-only after generation, they are never imported, and any external changes are replaced by
-the next successful generation. The workbook opens on the first Page worksheet. Page base and
-address width appear once at the top; each Block has a section band containing its base and size.
+the next successful generation. The workbook opens on an **Overview** worksheet containing one
+row per Block, grouped by Page. Page base, mapped span, Block allocation, absolute address range,
+and Register count can therefore be inspected and filtered without expanding detail rows. Each
+Page also has a separate detail worksheet. Page base and address width appear once at the top;
+each Block has a section band containing its base and size.
 Register rows expose address, offset, type, width, access, initial/reset values,
 tags, range or enum summary, and description. Structure registers can expand their initially
 collapsed proportional bitfield diagram and field rows. Only the table header stays visible
-while scrolling, and the table includes Excel filters. There is no duplicate flat
+while scrolling. Filters are confined to the flat Overview sheet so Block bands and collapsed
+Field groups cannot be mistaken for data rows. There is no duplicate flat
 `Registers` worksheet.
 
 See [architecture.md](docs/architecture.md), [manifest-schema.md](docs/manifest-schema.md),
@@ -628,14 +660,16 @@ The package target uses Qt's deployment API to collect the Qt plugins, MinGW run
 runtime dependencies required by the built executable. It writes these files under `out`:
 
 ```text
-RegMapWorkbench-0.1.0-win64-<git-revision>.zip
-RegMapWorkbench-0.1.0-win64-<git-revision>.zip.sha256
+RegMapWorkbench-0.1.0-win64-<git-revision>[-dirty|-source-unknown].zip
+RegMapWorkbench-0.1.0-win64-<git-revision>[-dirty|-source-unknown].zip.sha256
 ```
 
 The archive contains `RegMapWorkbench.exe`, `regmapc.exe`, `README.md`, `docs/cli.md`,
 `BUILD-INFO.txt`, and the deployed libraries and plugins. `BUILD-INFO.txt` records the revision
-at package time, so a package can be matched to its source even when CMake was configured before
-the latest commit. `regmapc --json version` reports both its API version and supported project
+and whether tracked or untracked source changes existed at package time. A dirty package receives
+the `-dirty` filename suffix; a package whose source state could not be inspected receives
+`-source-unknown`. Neither can be mistaken for an artifact built exactly from the named commit.
+`regmapc --json version` reports both its API version and supported project
 schema versions before a host opens a project.
 
 The checked-in [minimal project](examples/minimal/.regmap.yaml) is a complete schema-version-2

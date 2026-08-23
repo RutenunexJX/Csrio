@@ -29,9 +29,6 @@ workspace:
               fixed: true
               width: 32
               type: field
-              array:
-                count: 1
-                stride: 0x4
               initial: 0x0
               reset: 0x0
               access: rw
@@ -46,7 +43,6 @@ workspace:
                   type: bool
                   sw_access: rw
                   hw_access: ro
-                  reset: 0x0
                   read_side_effect: none
                   write_side_effect: write
                   description: Enables the block.
@@ -60,7 +56,6 @@ workspace:
                   maximum: 100
                   sw_access: rw
                   hw_access: ro
-                  reset: 0x0
                   read_side_effect: none
                   write_side_effect: write
                   enum_values: []
@@ -87,7 +82,7 @@ generation:
 ## Model fields
 
 All `id` values are non-empty, contain no whitespace, and are unique across the complete
-workspace. Names are user-facing identifiers. Addresses and strides are unsigned 64-bit values.
+workspace. Names are user-facing identifiers. Addresses are unsigned 64-bit values. Register
 Reset and enum values are arbitrary-width unsigned values. Numeric scalars may use decimal or
 hexadecimal notation.
 
@@ -95,16 +90,25 @@ hexadecimal notation.
 - Register block: `id`, `name`, `base`, optional `size`, `description`, `registers`.
 - Register: `id`, `name`, `offset`, optional `fixed`, `width`, `type`, optional `minimum`, optional `maximum`,
   optional `initial`, optional `reset`, `access`, optional `reserved`, optional `tags`,
-  `description`, `enum_values`, `fields`, and compatibility-only `array.count` / `array.stride`.
+  `description`, `enum_values`, and `fields`.
   `fixed: true` keeps the Register Offset anchored during drag reorder and delete-with-shift;
   it is omitted for movable Registers.
   Register `enum_values` use the same stable-ID objects as field enum values. A reserved
   register has `type: reserved`, `access: none`, no fields, and a zero or absent reset while
-  retaining its address slot. Array count and stride remain serialized for backward
-  compatibility but are not exposed in Workbench or XLSX.
-- Field: `id`, `name`, `msb`, `lsb`, `type`, `sw_access`, `hw_access`, optional `reset`,
+  retaining its address slot. Every Register occupies one four-byte slot and its Offset must be
+  four-byte aligned. Legacy `array.count` and `array.stride` input is accepted, normalized to one
+  four-byte slot, and omitted on the next save.
+- Field: `id`, `name`, `msb`, `lsb`, `type`, `sw_access`, `hw_access`,
   `read_side_effect`, `write_side_effect`, optional `minimum`, optional `maximum`,
   `description`, `enum_values`, and optional recursive `members`.
+  A structure Register's Field Reset values are derived from the corresponding bits of the
+  Register Reset. Legacy Field `reset` input is accepted only for migration and is not an
+  independent persisted value. If a legacy structure Register has no Reset, valid Field resets
+  are composed into a Register Reset, uncovered bits default to zero, and a migration warning is
+  reported. If both forms exist and disagree, the Register Reset remains authoritative and the
+  replacement is reported as a warning. Conflicting, overlapping, out-of-range, or width-invalid
+  legacy Field resets cannot be migrated without an explicit Register Reset and prevent the
+  project from being saved.
 - Enum value: `id`, `name`, `value`, `description`.
 
 A Block with `size` reserves the half-open Page-relative interval `[base, base + size)`.

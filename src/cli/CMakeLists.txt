@@ -1,7 +1,11 @@
 add_library(
     regmap_cli_support
+    cli_artifacts.cpp
+    cli_artifacts.hpp
     cli_app.cpp
     cli_app.hpp
+    cli_runtime.cpp
+    cli_runtime.hpp
 )
 add_library(RegMap::Cli ALIAS regmap_cli_support)
 

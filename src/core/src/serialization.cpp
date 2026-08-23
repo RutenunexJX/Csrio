@@ -28,6 +28,8 @@ constexpr std::string_view invalidYamlCode = "RM1100";
 constexpr std::string_view missingValueCode = "RM1101";
 constexpr std::string_view invalidValueCode = "RM1102";
 constexpr std::string_view writeFailureCode = "RM1103";
+constexpr std::string_view legacyResetMigrationCode = "RM1104";
+constexpr std::string_view legacyResetConflictCode = "RM1105";
 
 [[nodiscard]] SourceLocation yamlLocation(const std::filesystem::path& path, const YAML::Mark& mark,
                                           std::string yamlPath = {})
@@ -45,13 +47,28 @@ constexpr std::string_view writeFailureCode = "RM1103";
 
 void addDiagnostic(std::vector<Diagnostic>& diagnostics, std::string_view code, std::string message,
                    const std::filesystem::path& filePath, const YAML::Node& node = {},
-                   std::string yamlPath = {}, ObjectId objectId = {})
+                   std::string yamlPath = {}, ObjectId objectId = {},
+                   DiagnosticSeverity severity = DiagnosticSeverity::error)
 {
     Diagnostic diagnostic;
     diagnostic.code = code;
+    diagnostic.severity = severity;
     diagnostic.message = std::move(message);
     diagnostic.objectId = std::move(objectId);
     diagnostic.source = yamlLocation(filePath, node.Mark(), std::move(yamlPath));
+    diagnostics.push_back(std::move(diagnostic));
+}
+
+void addSourceDiagnostic(std::vector<Diagnostic>& diagnostics, std::string_view code,
+                         std::string message, const SourceLocation& source, ObjectId objectId,
+                         DiagnosticSeverity severity)
+{
+    Diagnostic diagnostic;
+    diagnostic.code = code;
+    diagnostic.severity = severity;
+    diagnostic.message = std::move(message);
+    diagnostic.objectId = std::move(objectId);
+    diagnostic.source = source;
     diagnostics.push_back(std::move(diagnostic));
 }
 
@@ -330,6 +347,118 @@ template <typename Enum, typename Parser>
     return result;
 }
 
+void normalizeFieldResets(std::vector<Field>& fields,
+                          const std::optional<UnsignedValue>& registerReset,
+                          std::uint64_t registerWidth, const SourceLocation& resetSource,
+                          std::uint64_t parentLsb = 0)
+{
+    for (auto& field : fields) {
+        const std::uint64_t width = field.width();
+        const std::uint64_t absoluteLsb = parentLsb + field.lsb;
+        const bool rangeValid = width > 0 && absoluteLsb >= parentLsb &&
+            absoluteLsb <= registerWidth && width <= registerWidth - absoluteLsb;
+        if (!registerReset.has_value() || !rangeValid) {
+            field.resetValue.reset();
+            field.propertySources.erase("reset");
+        } else {
+            field.resetValue = registerReset->slice(absoluteLsb, width);
+            field.propertySources["reset"] = resetSource;
+        }
+        normalizeFieldResets(field.members, registerReset, registerWidth, resetSource,
+                             absoluteLsb);
+    }
+}
+
+struct LegacyResetMigration {
+    UnsignedValue value;
+    std::vector<std::optional<bool>> assignedBits;
+    std::optional<SourceLocation> firstSource;
+    bool foundReset {false};
+    bool hasConflict {false};
+};
+
+void collectLegacyFieldResets(const std::vector<Field>& fields, std::uint64_t registerWidth,
+                              std::vector<Diagnostic>& diagnostics,
+                              LegacyResetMigration& migration, std::uint64_t parentLsb = 0)
+{
+    for (const auto& field : fields) {
+        const std::uint64_t width = field.width();
+        const std::uint64_t absoluteLsb = parentLsb + field.lsb;
+        const bool rangeValid = registerWidth >= 1 && registerWidth <= 32 && width > 0 &&
+            absoluteLsb >= parentLsb &&
+            absoluteLsb <= registerWidth && width <= registerWidth - absoluteLsb;
+        if (field.resetValue) {
+            migration.foundReset = true;
+            const auto source = field.propertySources.contains("reset")
+                ? field.propertySources.at("reset")
+                : field.source;
+            if (!migration.firstSource) {
+                migration.firstSource = source;
+            }
+            if (!rangeValid || !field.resetValue->fitsInBits(static_cast<std::size_t>(width))) {
+                addSourceDiagnostic(
+                    diagnostics, legacyResetConflictCode,
+                    "Legacy Field reset cannot be represented by its Register because the "
+                    "Field range or reset width is invalid.",
+                    source, field.id, DiagnosticSeverity::error);
+                migration.hasConflict = true;
+            } else {
+                for (std::uint64_t bit = 0; bit < width; ++bit) {
+                    const auto registerBit = static_cast<std::size_t>(absoluteLsb + bit);
+                    const bool value = field.resetValue->testBit(static_cast<std::size_t>(bit));
+                    if (migration.assignedBits[registerBit].has_value() &&
+                        *migration.assignedBits[registerBit] != value) {
+                        addSourceDiagnostic(
+                            diagnostics, legacyResetConflictCode,
+                            "Legacy Field resets assign conflicting values to Register bit " +
+                                std::to_string(registerBit) +
+                                ". Add an explicit Register reset before migrating this project.",
+                            source, field.id, DiagnosticSeverity::error);
+                        migration.hasConflict = true;
+                        continue;
+                    }
+                    migration.assignedBits[registerBit] = value;
+                    if (value) {
+                        migration.value = *migration.value.replacingSlice(
+                            registerBit, 1, UnsignedValue(1));
+                    }
+                }
+            }
+        }
+        collectLegacyFieldResets(field.members, registerWidth, diagnostics, migration,
+                                 absoluteLsb);
+    }
+}
+
+void reportOverriddenLegacyFieldResets(const std::vector<Field>& fields,
+                                       const UnsignedValue& registerReset,
+                                       std::uint64_t registerWidth,
+                                       std::vector<Diagnostic>& diagnostics,
+                                       std::uint64_t parentLsb = 0)
+{
+    for (const auto& field : fields) {
+        const std::uint64_t width = field.width();
+        const std::uint64_t absoluteLsb = parentLsb + field.lsb;
+        const bool rangeValid = width > 0 && absoluteLsb >= parentLsb &&
+            absoluteLsb <= registerWidth && width <= registerWidth - absoluteLsb;
+        if (field.resetValue &&
+            (!rangeValid || !field.resetValue->fitsInBits(static_cast<std::size_t>(width)) ||
+             *field.resetValue != registerReset.slice(static_cast<std::size_t>(absoluteLsb),
+                                                      static_cast<std::size_t>(width)))) {
+            const auto source = field.propertySources.contains("reset")
+                ? field.propertySources.at("reset")
+                : field.source;
+            addSourceDiagnostic(
+                diagnostics, legacyResetConflictCode,
+                "Legacy Field reset differs from the authoritative Register reset and was "
+                "replaced by the corresponding Register reset bits.",
+                source, field.id, DiagnosticSeverity::warning);
+        }
+        reportOverriddenLegacyFieldResets(field.members, registerReset, registerWidth,
+                                          diagnostics, absoluteLsb);
+    }
+}
+
 [[nodiscard]] Register parseRegister(const YAML::Node& node, const std::filesystem::path& filePath,
                                      const std::string& path, std::vector<Diagnostic>& diagnostics)
 {
@@ -381,12 +510,12 @@ template <typename Enum, typename Parser>
                           "Value '" + arrayPath + "' must be a mapping.", filePath, array,
                           arrayPath);
         } else {
-            result.array.count =
-                uint32Value(array, "count", false, filePath, arrayPath, diagnostics).value_or(1);
-            result.array.stride =
-                uint64Value(array, "stride", false, filePath, arrayPath, diagnostics).value_or(0);
+            (void)uint32Value(array, "count", false, filePath, arrayPath, diagnostics);
+            (void)uint64Value(array, "stride", false, filePath, arrayPath, diagnostics);
         }
     }
+    result.array.count = 1;
+    result.array.stride = 4;
 
     setPropertySource(result, "name", filePath, node, "name", childPath(path, "name"));
     setPropertySource(result, "offset", filePath, node, "offset", childPath(path, "offset"));
@@ -396,10 +525,6 @@ template <typename Enum, typename Parser>
     setPropertySource(result, "minimum", filePath, node, "minimum", childPath(path, "minimum"));
     setPropertySource(result, "maximum", filePath, node, "maximum", childPath(path, "maximum"));
     setPropertySource(result, "initial", filePath, node, "initial", childPath(path, "initial"));
-    setPropertySource(result, "array_count", filePath, array ? array : node, "count",
-                      childPath(arrayPath, "count"));
-    setPropertySource(result, "stride", filePath, array ? array : node, "stride",
-                      childPath(arrayPath, "stride"));
     setPropertySource(result, "reset", filePath, node, "reset", childPath(path, "reset"));
     setPropertySource(result, "access", filePath, node, "access", childPath(path, "access"));
     setPropertySource(result, "reserved", filePath, node, "reserved", childPath(path, "reserved"));
@@ -422,6 +547,29 @@ template <typename Enum, typename Parser>
         result.type = result.reserved ? FieldType::reserved
                                       : (result.fields.empty() ? FieldType::unsignedInteger
                                                                : FieldType::structure);
+    }
+    if (result.type == FieldType::structure) {
+        if (result.resetValue) {
+            reportOverriddenLegacyFieldResets(result.fields, *result.resetValue, result.width,
+                                              diagnostics);
+        } else {
+            LegacyResetMigration migration;
+            migration.assignedBits.resize(std::min<std::uint32_t>(result.width, 32));
+            collectLegacyFieldResets(result.fields, result.width, diagnostics, migration);
+            if (migration.foundReset && !migration.hasConflict) {
+                result.resetValue = migration.value;
+                result.propertySources["reset"] = *migration.firstSource;
+                addSourceDiagnostic(
+                    diagnostics, legacyResetMigrationCode,
+                    "Register reset was inferred from legacy Field reset values; uncovered "
+                    "Register bits were set to zero. Save the project to complete migration.",
+                    *migration.firstSource, result.id, DiagnosticSeverity::warning);
+            }
+        }
+        const auto resetSource = result.propertySources.find("reset");
+        normalizeFieldResets(result.fields, result.resetValue, result.width,
+                             resetSource == result.propertySources.end() ? result.source
+                                                                         : resetSource->second);
     }
     return result;
 }
@@ -520,9 +668,6 @@ void emitField(YAML::Emitter& output, const Field& field)
            << std::string(toString(field.type)) << YAML::Key << "sw_access" << YAML::Value
            << std::string(toString(field.softwareAccess)) << YAML::Key << "hw_access" << YAML::Value
            << std::string(toString(field.hardwareAccess));
-    if (field.resetValue) {
-        output << YAML::Key << "reset" << YAML::Value << field.resetValue->toHexString();
-    }
     output << YAML::Key << "read_side_effect" << YAML::Value
            << std::string(toString(field.readSideEffect)) << YAML::Key << "write_side_effect"
            << YAML::Value << std::string(toString(field.writeSideEffect));
@@ -556,10 +701,7 @@ void emitRegister(YAML::Emitter& output, const Register& reg)
     if (reg.addressFixed) {
         output << YAML::Key << "fixed" << YAML::Value << true;
     }
-    output << YAML::Key << "array"
-           << YAML::Value << YAML::BeginMap << YAML::Key << "count" << YAML::Value
-           << reg.array.count << YAML::Key << "stride" << YAML::Value << hex(reg.array.stride)
-           << YAML::EndMap << YAML::Key << "type" << YAML::Value << std::string(toString(reg.type));
+    output << YAML::Key << "type" << YAML::Value << std::string(toString(reg.type));
     if (reg.minimumValue) {
         output << YAML::Key << "minimum" << YAML::Value << *reg.minimumValue;
     }

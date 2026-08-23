@@ -893,6 +893,14 @@ void ProjectController::save()
     if (!manifest_ || !store_.workspace()) {
         return;
     }
+    if (containsErrors(loadDiagnostics_)) {
+        rebuildDiagnostics();
+        emit diagnosticsChanged();
+        emit syncStatusChanged(
+            QStringLiteral(
+                "Save blocked by project migration errors; repair the reported source values first"));
+        return;
+    }
     if (manifestChangedOnDisk()) {
         setExternalProjectChangePending(
             true);
@@ -1129,10 +1137,13 @@ bool ProjectController::persistSynchronizedModel(
     if (!manifest_ || !store_.workspace()) {
         return false;
     }
-    if (containsErrors(store_.diagnostics())) {
+    if (containsErrors(loadDiagnostics_) || containsErrors(store_.diagnostics())) {
         rebuildDiagnostics();
         emit diagnosticsChanged();
-        emit syncStatusChanged(QStringLiteral("Save blocked by model validation errors"));
+        emit syncStatusChanged(
+            containsErrors(loadDiagnostics_)
+                ? QStringLiteral("Save blocked by project migration errors; repair the reported source values first")
+                : QStringLiteral("Save blocked by model validation errors"));
         return false;
     }
     if (manifestChangedOnDisk()) {

@@ -34,6 +34,7 @@ namespace {
 constexpr std::string_view exportFailureCode = "RM4100";
 constexpr int worksheetColumnCount = 11;
 constexpr int worksheetDescriptionColumn = worksheetColumnCount;
+constexpr std::uint64_t registerAddressSlotBytes = 4;
 constexpr std::uint32_t zipLocalHeaderSignature = 0x04034B50U;
 constexpr std::uint32_t zipCentralHeaderSignature = 0x02014B50U;
 constexpr std::uint32_t zipEndSignature = 0x06054B50U;
@@ -653,6 +654,230 @@ void configureColumns(QXlsx::Document& document, const std::vector<double>& widt
     return result;
 }
 
+[[nodiscard]] std::uint64_t saturatedAdd(
+    std::uint64_t left,
+    std::uint64_t right)
+{
+    if (right > std::numeric_limits<std::uint64_t>::max() - left) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    return left + right;
+}
+
+[[nodiscard]] std::uint64_t inferredBlockExtent(
+    const RegisterBlock& block)
+{
+    if (block.size && *block.size > 0) {
+        return *block.size;
+    }
+    std::uint64_t extent = 0;
+    for (const auto& reg : block.registers) {
+        extent = std::max(
+            extent,
+            saturatedAdd(
+                reg.offset,
+                registerAddressSlotBytes));
+    }
+    return extent;
+}
+
+[[nodiscard]] std::uint64_t mappedPageSpan(
+    const AddressSpace& space)
+{
+    std::uint64_t span = 0;
+    for (const auto& block : space.blocks) {
+        span = std::max(
+            span,
+            saturatedAdd(
+                block.baseAddress,
+                inferredBlockExtent(block)));
+    }
+    return span;
+}
+
+[[nodiscard]] QVariant overviewAddress(
+    std::uint64_t value,
+    std::uint32_t bitWidth)
+{
+    return fixedHex(value, bitWidth);
+}
+
+[[nodiscard]] bool writeOverviewSheet(
+    QXlsx::Document& document,
+    const Workspace& workspace,
+    const WorkbookFormats& style)
+{
+    auto* worksheet = document.currentWorksheet();
+    if (worksheet == nullptr) {
+        return false;
+    }
+    worksheet->setGridLinesVisible(false);
+    worksheet->freezePanes(4, 0);
+    writeTitle(
+        document,
+        QStringLiteral("Register Map Overview - ") +
+            text(workspace.name),
+        worksheetColumnCount,
+        style);
+
+    std::size_t blockCount = 0;
+    std::size_t registerCount = 0;
+    for (const auto& space : workspace.addressSpaces) {
+        blockCount += space.blocks.size();
+        for (const auto& block : space.blocks) {
+            registerCount += block.registers.size();
+        }
+    }
+    QXlsx::Format summary = style.pageValue;
+    summary.setHorizontalAlignment(QXlsx::Format::AlignLeft);
+    if (!document.mergeCells(
+            QXlsx::CellRange(
+                2, 1, 2,
+                worksheetColumnCount),
+            summary)) {
+        return false;
+    }
+    document.write(
+        2,
+        1,
+        QStringLiteral("%1 Page(s) · %2 Block(s) · %3 Register(s)")
+            .arg(workspace.addressSpaces.size())
+            .arg(blockCount)
+            .arg(registerCount),
+        summary);
+    document.setRowHeight(2, 24.0);
+    document.setRowHeight(3, 9.0);
+    writeHeaders(
+        document,
+        4,
+        {QStringLiteral("Page"),
+         QStringLiteral("Page Base"),
+         QStringLiteral("Address Width"),
+         QStringLiteral("Mapped Span"),
+         QStringLiteral("Block Count"),
+         QStringLiteral("Block"),
+         QStringLiteral("Block Base"),
+         QStringLiteral("Block Size"),
+         QStringLiteral("Absolute Start"),
+         QStringLiteral("Absolute End"),
+         QStringLiteral("Registers")},
+        style);
+
+    int row = 5;
+    for (std::size_t pageIndex = 0;
+         pageIndex < workspace.addressSpaces.size();
+         ++pageIndex) {
+        const auto& space =
+            workspace.addressSpaces[pageIndex];
+        const bool alternate =
+            (pageIndex % 2U) != 0U;
+        const QXlsx::Format& rowFormat =
+            alternate
+                ? style.sectionAlternate
+                : style.section;
+        const QXlsx::Format& addressFormat =
+            alternate
+                ? style.sectionAddressAlternate
+                : style.sectionAddress;
+        const std::uint64_t pageSpan =
+            mappedPageSpan(space);
+        const auto writeOverviewRow =
+            [&](const RegisterBlock* block) {
+                const std::uint64_t blockExtent =
+                    block == nullptr
+                        ? 0
+                        : inferredBlockExtent(*block);
+                const std::uint64_t absoluteStart =
+                    block == nullptr
+                        ? space.baseAddress
+                        : saturatedAdd(
+                              space.baseAddress,
+                              block->baseAddress);
+                const std::uint64_t absoluteEnd =
+                    block == nullptr ||
+                            blockExtent == 0
+                        ? absoluteStart
+                        : saturatedAdd(
+                              absoluteStart,
+                              blockExtent - 1);
+                writeRow(
+                    document,
+                    row,
+                    {text(space.name),
+                     overviewAddress(
+                         space.baseAddress,
+                         space.addressWidth),
+                     QStringLiteral("%1 bits")
+                         .arg(space.addressWidth),
+                     overviewAddress(
+                         pageSpan,
+                         space.addressWidth),
+                     static_cast<qulonglong>(
+                         space.blocks.size()),
+                     block == nullptr
+                         ? QVariant{
+                               QStringLiteral("Empty")}
+                         : QVariant{text(block->name)},
+                     block == nullptr
+                         ? QVariant{}
+                         : overviewAddress(
+                               block->baseAddress,
+                               space.addressWidth),
+                     block == nullptr
+                         ? QVariant{}
+                         : (block->size
+                                ? overviewAddress(
+                                      *block->size,
+                                      space.addressWidth)
+                                : QVariant{
+                                      QStringLiteral("Auto (%1)")
+                                          .arg(fixedHex(
+                                              blockExtent,
+                                              space.addressWidth))}),
+                     block == nullptr
+                         ? QVariant{}
+                         : overviewAddress(
+                               absoluteStart,
+                               space.addressWidth),
+                     block == nullptr
+                         ? QVariant{}
+                         : overviewAddress(
+                               absoluteEnd,
+                               space.addressWidth),
+                     static_cast<qulonglong>(
+                         block == nullptr
+                             ? 0
+                             : block->registers.size())},
+                    style,
+                    {2, 4, 7, 8, 9, 10},
+                    &rowFormat,
+                    alternate,
+                    &addressFormat);
+                document.setRowHeight(row, 24.0);
+                ++row;
+            };
+        if (space.blocks.empty()) {
+            writeOverviewRow(nullptr);
+        } else {
+            for (const auto& block : space.blocks) {
+                writeOverviewRow(&block);
+            }
+        }
+    }
+
+    const int lastRow = std::max(4, row - 1);
+    if (!worksheet->setAutoFilter(
+            QXlsx::CellRange(
+                4, 1, lastRow,
+                worksheetColumnCount))) {
+        return false;
+    }
+    configureColumns(
+        document,
+        {24, 16, 14, 16, 14, 24, 16, 18, 18, 18, 12});
+    return true;
+}
+
 [[nodiscard]] QImage renderBitfieldDiagram(const Register& reg)
 {
     constexpr int imageWidth = 1240;
@@ -821,7 +1046,10 @@ void writePageMetadata(QXlsx::Document& document, const AddressSpace& space,
 }
 
 void writeFieldRows(QXlsx::Document& document, int& row, const std::vector<Field>& fields,
-                    std::uint64_t parentLsb, const WorkbookFormats& style)
+                    std::uint64_t parentLsb,
+                    const std::optional<UnsignedValue>& registerReset,
+                    std::uint64_t registerWidth,
+                    const WorkbookFormats& style)
 {
     for (const auto& field : fields) {
         const std::uint64_t absoluteLsb = parentLsb + field.lsb;
@@ -829,17 +1057,34 @@ void writeFieldRows(QXlsx::Document& document, int& row, const std::vector<Field
         const QString bits = absoluteMsb == absoluteLsb
                                  ? QString::number(absoluteLsb)
                                  : QStringLiteral("%1:%2").arg(absoluteMsb).arg(absoluteLsb);
+        const std::uint64_t fieldWidth = field.width();
+        const bool resetRangeValid =
+            registerReset.has_value() &&
+            fieldWidth > 0 &&
+            absoluteLsb <= registerWidth &&
+            fieldWidth <= registerWidth - absoluteLsb;
         writeRow(document, row,
                  {QVariant{}, QVariant{}, text(field.name), fieldTypeText(field), bits,
                   fieldAccessText(field), QVariant{},
-                  field.resetValue ? fixedHex(*field.resetValue,
-                                              static_cast<std::uint32_t>(field.width()))
-                                   : QVariant{},
+                  resetRangeValid
+                      ? QVariant{fixedHex(
+                            registerReset->slice(
+                                absoluteLsb,
+                                fieldWidth),
+                            static_cast<std::uint32_t>(fieldWidth))}
+                      : QVariant{},
                   QVariant{}, fieldRangeText(field), text(field.description)},
                  style, {8}, &style.field, false, &style.fieldAddress);
         document.setRowHeight(row, 22.0);
         ++row;
-        writeFieldRows(document, row, field.members, absoluteLsb, style);
+        writeFieldRows(
+            document,
+            row,
+            field.members,
+            absoluteLsb,
+            registerReset,
+            registerWidth,
+            style);
     }
 }
 
@@ -904,15 +1149,18 @@ void writeFieldRows(QXlsx::Document& document, int& row, const std::vector<Field
             if (worksheet->insertImage(row - 1, 2, row, worksheetColumnCount, diagram) == 0)
                 return false;
             ++row;
-            writeFieldRows(document, row, reg.fields, 0, style);
+            writeFieldRows(
+                document,
+                row,
+                reg.fields,
+                0,
+                reg.resetValue,
+                reg.width,
+                style);
             document.groupRows(firstDetailRow, row - 1, true);
         }
     }
 
-    const int lastRow = std::max(4, row - 1);
-    if (!worksheet->setAutoFilter(
-            QXlsx::CellRange(4, 1, lastRow, worksheetColumnCount)))
-        return false;
     configureColumns(document, {16, 14, 28, 14, 14, 20, 16, 16, 24, 30, 44});
     return true;
 }
@@ -945,34 +1193,52 @@ XlsxExportResult exportReadOnlyWorkbook(const Workspace& workspace)
     QXlsx::Document document;
     const auto style = formats();
     const QString firstSheet = document.sheetNames().value(0);
-    QString firstGeneratedSheet;
-    QStringList generatedSheetNames;
+    const QString overviewSheetName =
+        QStringLiteral("Overview");
+    const bool overviewReady =
+        firstSheet.isEmpty()
+            ? document.addSheet(
+                  overviewSheetName)
+            : document.renameSheet(
+                  firstSheet,
+                  overviewSheetName);
+    if (!overviewReady ||
+        !document.selectSheet(
+            overviewSheetName) ||
+        !writeOverviewSheet(
+            document,
+            workspace,
+            style)) {
+        addDiagnostic(
+            result.diagnostics,
+            "Cannot initialize the generated workbook overview.");
+        return result;
+    }
 
+    QStringList generatedSheetNames{
+        overviewSheetName};
     if (workspace.addressSpaces.empty()) {
-        const QString emptySheetName = QStringLiteral("Register Map");
-        const bool ready = firstSheet.isEmpty() ? document.addSheet(emptySheetName)
-                                                : document.renameSheet(firstSheet, emptySheetName);
-        if (!ready || !document.selectSheet(emptySheetName)) {
-            addDiagnostic(result.diagnostics, "Cannot initialize the generated workbook.");
+        const QString emptySheetName =
+            QStringLiteral("Register Map");
+        if (!document.addSheet(
+                emptySheetName) ||
+            !document.selectSheet(
+                emptySheetName)) {
+            addDiagnostic(
+                result.diagnostics,
+                "Cannot initialize the empty register-map worksheet.");
             return result;
         }
-        firstGeneratedSheet = emptySheetName;
         writeEmptyWorkbook(document, style);
     } else {
         for (std::size_t index = 0; index < workspace.addressSpaces.size(); ++index) {
             const auto& space = workspace.addressSpaces[index];
             const QString sheetName = sanitizedSheetName(text(space.name), generatedSheetNames);
-            const bool ready =
-                index == 0
-                    ? (firstSheet.isEmpty() ? document.addSheet(sheetName)
-                                            : document.renameSheet(firstSheet, sheetName))
-                    : document.addSheet(sheetName);
+            const bool ready = document.addSheet(sheetName);
             if (!ready || !document.selectSheet(sheetName)) {
                 addDiagnostic(result.diagnostics, "Cannot initialize a Page worksheet.");
                 return result;
             }
-            if (index == 0)
-                firstGeneratedSheet = sheetName;
             generatedSheetNames.push_back(sheetName);
             if (!writePageSheet(document, space, style)) {
                 addDiagnostic(result.diagnostics,
@@ -982,7 +1248,7 @@ XlsxExportResult exportReadOnlyWorkbook(const Workspace& workspace)
         }
     }
 
-    document.selectSheet(firstGeneratedSheet);
+    document.selectSheet(overviewSheetName);
     document.setDocumentProperty(QStringLiteral("title"), text(workspace.name + " Register Map"));
     document.setDocumentProperty(
         QStringLiteral("comments"),

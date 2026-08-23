@@ -22,6 +22,9 @@
 #include <QFile>
 #include <QFileDevice>
 #include <QDebug>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QStringList>
 #include <QTemporaryDir>
 #include <QTest>
@@ -52,9 +55,11 @@ private slots:
     void reportsInvalidManifest();
     void rejectsUnsafeManifestPaths();
     void rejectsPlatformOutputPathCollisions();
-    void loadsCheckedInProject();
+    void loadsStableProjectFixture();
     void roundTripsProjectFile();
     void roundTripsExtendedModel();
+    void normalizesFixedRegisterSlotsAndLegacyArrays();
+    void derivesFieldResetsFromRegister();
     void tracksTransactionsAndStableIds();
     void squashesTransactionsIntoSingleUndoStep();
     void boundsTransactionHistory();
@@ -76,11 +81,6 @@ private slots:
 
 namespace {
 
-[[nodiscard]] std::filesystem::path checkedInProject()
-{
-    return std::filesystem::path(REGMAP_SOURCE_DIR) / "examples" / "minimal" / ".regmap.yaml";
-}
-
 void writeTextFile(const QString& path, const QByteArray& text)
 {
     QFile file(path);
@@ -89,9 +89,237 @@ void writeTextFile(const QString& path, const QByteArray& text)
     file.close();
 }
 
-[[nodiscard]] regmap::ProjectOpenResult openCheckedInProject()
+[[nodiscard]] regmap::Workspace stableWorkspace()
 {
-    return regmap::openProject(checkedInProject());
+    regmap::Workspace workspace;
+    workspace.id = "minimal-example";
+    workspace.name = "Minimal Example";
+
+    regmap::AddressSpace page;
+    page.id = "space-main";
+    page.name = "Main";
+    page.baseAddress = 0x43C00000;
+    page.addressWidth = 32;
+
+    regmap::RegisterBlock block;
+    block.id = "block-control";
+    block.name = "Control";
+    block.baseAddress = 0xF000;
+    block.size = 0x1000;
+    block.description = "Control and status registers.";
+
+    regmap::Register control;
+    control.id = "reg-control";
+    control.name = "CONTROL";
+    control.offset = 0;
+    control.width = 32;
+    control.type = regmap::FieldType::structure;
+    control.initialValue = regmap::UnsignedValue(0x221);
+    control.resetValue = regmap::UnsignedValue(0);
+    control.access = regmap::AccessMode::readWrite;
+    control.tags = {"test"};
+    control.description = "Global enable and operating mode.";
+
+    regmap::Field enable;
+    enable.id = "field-enable";
+    enable.name = "ENABLE";
+    enable.msb = 0;
+    enable.lsb = 0;
+    enable.type = regmap::FieldType::boolean;
+    enable.softwareAccess = regmap::AccessMode::readWrite;
+    enable.hardwareAccess = regmap::AccessMode::readOnly;
+    enable.resetValue = regmap::UnsignedValue(0);
+    enable.description = "Enables the block.";
+
+    regmap::Field mode;
+    mode.id = "field-mode";
+    mode.name = "MODE";
+    mode.msb = 2;
+    mode.lsb = 1;
+    mode.type = regmap::FieldType::enumeration;
+    mode.softwareAccess = regmap::AccessMode::readWrite;
+    mode.hardwareAccess = regmap::AccessMode::readOnly;
+    mode.resetValue = regmap::UnsignedValue(0);
+    regmap::EnumValue idle;
+    idle.id = "enum-mode-idle";
+    idle.name = "IDLE";
+    idle.value = regmap::UnsignedValue(0);
+    regmap::EnumValue run;
+    run.id = "enum-mode-run";
+    run.name = "RUN";
+    run.value = regmap::UnsignedValue(1);
+    mode.enumValues = {idle, run};
+    control.fields = {enable, mode};
+
+    regmap::Register status;
+    status.id = "reg-status";
+    status.name = "STATUS";
+    status.offset = 4;
+    status.width = 32;
+    status.type = regmap::FieldType::structure;
+    status.initialValue = regmap::UnsignedValue(1);
+    status.resetValue = regmap::UnsignedValue(1);
+    status.access = regmap::AccessMode::readOnly;
+    status.tags = {"status"};
+    status.description = "Current hardware status.";
+
+    regmap::Field ready;
+    ready.id = "field-ready";
+    ready.name = "READY";
+    ready.msb = 0;
+    ready.lsb = 0;
+    ready.type = regmap::FieldType::boolean;
+    ready.softwareAccess = regmap::AccessMode::readOnly;
+    ready.hardwareAccess = regmap::AccessMode::writeOnly;
+    ready.resetValue = regmap::UnsignedValue(1);
+    ready.writeSideEffect = regmap::WriteSideEffect::none;
+    ready.description = "Hardware is ready.";
+
+    regmap::Field error;
+    error.id = "field-error";
+    error.name = "ERROR";
+    error.msb = 1;
+    error.lsb = 1;
+    error.type = regmap::FieldType::boolean;
+    error.softwareAccess = regmap::AccessMode::readOnly;
+    error.hardwareAccess = regmap::AccessMode::writeOnly;
+    error.resetValue = regmap::UnsignedValue(0);
+    error.writeSideEffect = regmap::WriteSideEffect::none;
+    error.description = "Hardware error indicator.";
+    status.fields = {ready, error};
+
+    regmap::Register irq;
+    irq.id = "reg-irq-status";
+    irq.name = "IRQ_STATUS";
+    irq.offset = 8;
+    irq.width = 32;
+    irq.type = regmap::FieldType::structure;
+    irq.resetValue = regmap::UnsignedValue(0);
+    irq.access = regmap::AccessMode::readWrite;
+    irq.description = "Pending interrupt bits.";
+
+    regmap::Field pending;
+    pending.id = "field-pending";
+    pending.name = "PENDING";
+    pending.msb = 15;
+    pending.lsb = 12;
+    pending.softwareAccess = regmap::AccessMode::readWrite;
+    pending.hardwareAccess = regmap::AccessMode::writeOnly;
+    pending.resetValue = regmap::UnsignedValue(0);
+    pending.writeSideEffect = regmap::WriteSideEffect::oneToClear;
+    pending.description = "Pending interrupt sources.";
+
+    regmap::Field irqReserved;
+    irqReserved.id = "field-irq-reserved";
+    irqReserved.name = "RESERVED";
+    irqReserved.msb = 31;
+    irqReserved.lsb = 27;
+    irqReserved.type = regmap::FieldType::reserved;
+    irqReserved.softwareAccess = regmap::AccessMode::none;
+    irqReserved.hardwareAccess = regmap::AccessMode::none;
+    irqReserved.resetValue = regmap::UnsignedValue(0);
+    irqReserved.writeSideEffect = regmap::WriteSideEffect::none;
+    irqReserved.description = "Reserved; keep zero.";
+
+    regmap::Field irqFlag;
+    irqFlag.id = "field-irq-flag";
+    irqFlag.name = "IRQ_FLAG";
+    irqFlag.msb = 0;
+    irqFlag.lsb = 0;
+    irqFlag.softwareAccess = regmap::AccessMode::readWrite;
+    irqFlag.resetValue = regmap::UnsignedValue(0);
+    irq.fields = {pending, irqReserved, irqFlag};
+
+    regmap::Register scalar;
+    scalar.id = "reg-scalar";
+    scalar.name = "SCALAR";
+    scalar.offset = 0xC;
+    scalar.width = 32;
+    scalar.type = regmap::FieldType::unsignedInteger;
+    scalar.minimumValue = "1";
+    scalar.maximumValue = "295";
+    scalar.resetValue = regmap::UnsignedValue(0);
+    scalar.description = "Scalar register.";
+
+    regmap::Register threshold;
+    threshold.id = "reg-threshold";
+    threshold.name = "THRESHOLD";
+    threshold.offset = 0x10;
+    threshold.width = 32;
+    threshold.type = regmap::FieldType::unsignedInteger;
+    threshold.minimumValue = "1";
+    threshold.maximumValue = "545";
+    threshold.resetValue = regmap::UnsignedValue(0);
+
+    regmap::Register data;
+    data.id = "reg-data";
+    data.name = "DATA";
+    data.offset = 0x14;
+    data.width = 32;
+    data.type = regmap::FieldType::unsignedInteger;
+    data.resetValue = regmap::UnsignedValue(0);
+
+    regmap::Register extension;
+    extension.id = "reg-extension";
+    extension.name = "EXTENSION";
+    extension.offset = 0x18;
+    extension.width = 32;
+    extension.type = regmap::FieldType::structure;
+    extension.resetValue = regmap::UnsignedValue(0);
+    regmap::Field extensionField;
+    extensionField.id = "field-extension";
+    extensionField.name = "VALUE";
+    extensionField.msb = 0;
+    extensionField.lsb = 0;
+    extensionField.resetValue = regmap::UnsignedValue(0);
+    extension.fields = {extensionField};
+
+    block.registers = {control, status, irq, scalar, threshold, data, extension};
+    page.blocks.push_back(std::move(block));
+    workspace.addressSpaces.push_back(std::move(page));
+    return workspace;
+}
+
+[[nodiscard]] regmap::ProjectManifest stableManifest(const std::filesystem::path& manifestPath)
+{
+    regmap::ProjectManifest manifest;
+    manifest.manifestPath = manifestPath;
+    manifest.workspaceId = "minimal-example";
+    manifest.workspaceName = "Minimal Example";
+    manifest.rtl.path.declared = "rtl/minimal_registers.sv";
+    manifest.rtl.path.resolved = manifestPath.parent_path() / manifest.rtl.path.declared;
+    manifest.rtl.moduleName = "minimal_registers";
+    manifest.outputDirectory.declared = "generated";
+    manifest.outputDirectory.resolved = manifestPath.parent_path() / "generated";
+
+    const auto addTarget = [&](regmap::GenerationTargetKind kind,
+                               std::filesystem::path name) {
+        regmap::GenerationTargetConfig target;
+        target.kind = kind;
+        target.path.declared = std::move(name);
+        target.path.resolved = manifest.outputDirectory.resolved / target.path.declared;
+        manifest.targets.push_back(std::move(target));
+    };
+    addTarget(regmap::GenerationTargetKind::xlsx, "register-map.xlsx");
+    addTarget(regmap::GenerationTargetKind::cHeader, "minimal_regs.h");
+    addTarget(regmap::GenerationTargetKind::markdown, "register-map.md");
+    return manifest;
+}
+
+[[nodiscard]] regmap::ProjectOpenResult openStableProject(QTemporaryDir& directory)
+{
+    const std::filesystem::path manifestPath = std::filesystem::path(
+        directory.filePath(QStringLiteral("project.regmap.yaml")).toStdWString());
+    auto workspace = stableWorkspace();
+    workspace.manifestPath = manifestPath;
+    auto manifest = stableManifest(manifestPath);
+    const auto diagnostics = regmap::saveProjectFile(manifest, workspace);
+    if (!diagnostics.empty()) {
+        regmap::ProjectOpenResult result;
+        result.diagnostics = diagnostics;
+        return result;
+    }
+    return regmap::openProject(manifestPath);
 }
 
 } // namespace
@@ -460,16 +688,20 @@ generation:
     QCOMPARE(unchanged.readAll(), originalBytes);
 }
 
-void CoreTests::loadsCheckedInProject()
+void CoreTests::loadsStableProjectFixture()
 {
-    const auto result = openCheckedInProject();
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto result = openStableProject(directory);
     QVERIFY(!result.hasErrors());
     QVERIFY(result.manifest.has_value());
     QVERIFY(result.workspace.has_value());
     QCOMPARE(result.workspace->addressSpaces.size(), std::size_t{1});
     const auto& blocks = result.workspace->addressSpaces.front().blocks;
-    QCOMPARE(blocks.size(), std::size_t{1});
-    QVERIFY(blocks.front().registers.size() >= std::size_t{3});
+    QVERIFY(!blocks.empty());
+    const auto* controlBlock = regmap::findRegisterBlock(*result.workspace, "block-control");
+    QVERIFY(controlBlock != nullptr);
+    QVERIFY(controlBlock->registers.size() >= std::size_t{3});
     const auto* control = regmap::findRegister(*result.workspace, "reg-control");
     QVERIFY(control != nullptr);
     QVERIFY(!control->fields.empty());
@@ -483,11 +715,13 @@ void CoreTests::loadsCheckedInProject()
                diagnostic.severity == regmap::DiagnosticSeverity::warning &&
                diagnostic.message.find("reset value lies outside") != std::string::npos;
     }));
-    QCOMPARE(blocks.front().registers.front().propertySources.at("offset").cell,
+    QCOMPARE(controlBlock->registers.front().propertySources.at("offset").cell,
              std::string("workspace.address_spaces[0].blocks[0].registers[0].offset"));
 
-    const auto rtl = regmap::parseManagedRtl(std::filesystem::path(REGMAP_SOURCE_DIR) / "examples" /
-                                             "minimal" / "rtl" / "minimal_registers.sv");
+    const auto rtlPath = std::filesystem::path(
+        directory.filePath(QStringLiteral("minimal_registers.sv")).toStdWString());
+    QVERIFY(regmap::writeManagedRtl(rtlPath, "minimal_registers", *result.workspace).empty());
+    const auto rtl = regmap::parseManagedRtl(rtlPath);
     QVERIFY(!rtl.hasErrors());
     QVERIFY(rtl.workspace.has_value());
     QVERIFY(regmap::diffWorkspaces(*result.workspace, *rtl.workspace).empty());
@@ -495,7 +729,9 @@ void CoreTests::loadsCheckedInProject()
 
 void CoreTests::roundTripsProjectFile()
 {
-    auto source = openCheckedInProject();
+    QTemporaryDir sourceDirectory;
+    QVERIFY(sourceDirectory.isValid());
+    auto source = openStableProject(sourceDirectory);
     QVERIFY(source.manifest.has_value());
     QVERIFY(source.workspace.has_value());
 
@@ -620,7 +856,7 @@ void CoreTests::roundTripsExtendedModel()
     regmap::Register mode;
     mode.id = "reg-mode";
     mode.name = "MODE";
-    mode.offset = 10;
+    mode.offset = 12;
     mode.width = 2;
     mode.array.stride = 1;
     mode.type = regmap::FieldType::enumeration;
@@ -735,11 +971,335 @@ void CoreTests::roundTripsExtendedModel()
         }));
 }
 
+void CoreTests::normalizesFixedRegisterSlotsAndLegacyArrays()
+{
+    const std::string legacyProject = R"YAML(
+schema_version: 2
+workspace:
+  id: workspace-fixed-slots
+  name: Fixed Slots
+  address_spaces:
+    - id: page-main
+      name: Main
+      base: 0x1000
+      address_width: 32
+      blocks:
+        - id: block-control
+          name: Control
+          base: 0x0
+          size: 0x8
+          registers:
+            - id: reg-first
+              name: FIRST
+              offset: 0x0
+              width: 8
+              array:
+                count: 7
+                stride: 0x20
+              type: unsigned
+              access: rw
+              enum_values: []
+              fields: []
+            - id: reg-second
+              name: SECOND
+              offset: 0x4
+              width: 8
+              type: unsigned
+              access: rw
+              enum_values: []
+              fields: []
+)YAML";
+
+    const auto loaded = regmap::loadWorkspaceFromProjectText(
+        legacyProject, std::filesystem::path("legacy-array.regmap.yaml"));
+    QVERIFY(!loaded.hasErrors());
+    QVERIFY(loaded.workspace.has_value());
+    const auto* first = regmap::findRegister(*loaded.workspace, "reg-first");
+    QVERIFY(first != nullptr);
+    QCOMPARE(first->array.count, std::uint32_t{1});
+    QCOMPARE(first->array.stride, std::uint64_t{4});
+    QVERIFY(regmap::validateWorkspace(*loaded.workspace).empty());
+
+    auto ignoredArrayChange = *loaded.workspace;
+    auto* changedFirst = regmap::findRegister(ignoredArrayChange, "reg-first");
+    QVERIFY(changedFirst != nullptr);
+    changedFirst->array.count = 99;
+    changedFirst->array.stride = 1;
+    QVERIFY(regmap::diffWorkspaces(*loaded.workspace, ignoredArrayChange).empty());
+
+    regmap::ProjectManifest manifest;
+    manifest.workspaceId = loaded.workspace->id;
+    manifest.workspaceName = loaded.workspace->name;
+    const auto serialized = regmap::serializeProjectText(manifest, ignoredArrayChange);
+    QVERIFY(!serialized.hasErrors());
+    QVERIFY(serialized.text.has_value());
+    QVERIFY(serialized.text->find("array:") == std::string::npos);
+
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    regmap::GenerationTargetConfig headerTarget;
+    headerTarget.kind = regmap::GenerationTargetKind::cHeader;
+    headerTarget.path.declared = "fixed_slots.h";
+    headerTarget.path.resolved = std::filesystem::path(directory.path().toStdWString()) /
+        headerTarget.path.declared;
+    manifest.targets = {headerTarget};
+    const auto header = regmap::generateArtifacts(ignoredArrayChange, manifest);
+    QVERIFY(!header.hasErrors());
+    QCOMPARE(header.artifacts.size(), std::size_t{1});
+    QVERIFY(header.artifacts.front().content.find("_COUNT") == std::string::npos);
+    QVERIFY(header.artifacts.front().content.find("_STRIDE") == std::string::npos);
+
+    auto invalid = *loaded.workspace;
+    auto* second = regmap::findRegister(invalid, "reg-second");
+    QVERIFY(second != nullptr);
+    second->offset = 2;
+    auto diagnostics = regmap::validateWorkspace(invalid);
+    QVERIFY(std::ranges::any_of(diagnostics, [](const regmap::Diagnostic& diagnostic) {
+        return diagnostic.code == "RM3026" && diagnostic.objectId == "reg-second";
+    }));
+    QVERIFY(std::ranges::any_of(diagnostics, [](const regmap::Diagnostic& diagnostic) {
+        return diagnostic.code == "RM3024" && diagnostic.objectId == "reg-second";
+    }));
+
+    second->offset = 4;
+    second->width = 64;
+    diagnostics = regmap::validateWorkspace(invalid);
+    QVERIFY(std::ranges::any_of(diagnostics, [](const regmap::Diagnostic& diagnostic) {
+        return diagnostic.code == "RM3020" && diagnostic.objectId == "reg-second";
+    }));
+}
+
+void CoreTests::derivesFieldResetsFromRegister()
+{
+    const std::string legacyProject = R"YAML(
+schema_version: 2
+workspace:
+  id: workspace-reset-source
+  name: Reset Source
+  address_spaces:
+    - id: page-main
+      name: Main
+      base: 0x0
+      address_width: 32
+      blocks:
+        - id: block-control
+          name: Control
+          base: 0x0
+          size: 0x4
+          registers:
+            - id: reg-control
+              name: CONTROL
+              offset: 0x0
+              width: 8
+              type: field
+              reset: 0xA5
+              access: rw
+              enum_values: []
+              fields:
+                - id: field-low
+                  name: LOW
+                  msb: 3
+                  lsb: 0
+                  type: bits
+                  sw_access: rw
+                  hw_access: none
+                  reset: 0x0
+                  read_side_effect: none
+                  write_side_effect: write
+                  enum_values: []
+                - id: field-high
+                  name: HIGH
+                  msb: 7
+                  lsb: 4
+                  type: field
+                  sw_access: none
+                  hw_access: none
+                  reset: 0x0
+                  read_side_effect: none
+                  write_side_effect: none
+                  enum_values: []
+                  members:
+                    - id: field-high-low
+                      name: HIGH_LOW
+                      msb: 1
+                      lsb: 0
+                      type: bits
+                      sw_access: rw
+                      hw_access: none
+                      reset: 0x0
+                      read_side_effect: none
+                      write_side_effect: write
+                      enum_values: []
+)YAML";
+
+    const auto loaded = regmap::loadWorkspaceFromProjectText(
+        legacyProject, std::filesystem::path("legacy-field-reset.regmap.yaml"));
+    QVERIFY(!loaded.hasErrors());
+    QVERIFY(loaded.workspace.has_value());
+    QVERIFY(std::ranges::any_of(
+        loaded.diagnostics, [](const regmap::Diagnostic& diagnostic) {
+            return diagnostic.code == "RM1105" &&
+                   diagnostic.severity == regmap::DiagnosticSeverity::warning;
+        }));
+    const auto* low = regmap::findField(*loaded.workspace, "field-low");
+    const auto* high = regmap::findField(*loaded.workspace, "field-high");
+    const auto* highLow = regmap::findField(*loaded.workspace, "field-high-low");
+    QVERIFY(low != nullptr);
+    QVERIFY(high != nullptr);
+    QVERIFY(highLow != nullptr);
+    QVERIFY(low->resetValue == std::optional(regmap::UnsignedValue(0x5)));
+    QVERIFY(high->resetValue == std::optional(regmap::UnsignedValue(0xA)));
+    QVERIFY(highLow->resetValue == std::optional(regmap::UnsignedValue(0x2)));
+    QCOMPARE(low->propertySources.at("reset").cell,
+             std::string("workspace.address_spaces[0].blocks[0].registers[0].reset"));
+
+    regmap::ProjectManifest manifest;
+    manifest.workspaceId = loaded.workspace->id;
+    manifest.workspaceName = loaded.workspace->name;
+    const auto serialized = regmap::serializeProjectText(manifest, *loaded.workspace);
+    QVERIFY(!serialized.hasErrors());
+    QVERIFY(serialized.text.has_value());
+    const std::size_t registerReset = serialized.text->find("reset:");
+    QVERIFY(registerReset != std::string::npos);
+    QVERIFY(serialized.text->find("reset:", registerReset + 1) == std::string::npos);
+    const auto reloaded = regmap::loadWorkspaceFromProjectText(
+        *serialized.text, std::filesystem::path("canonical-reset.regmap.yaml"));
+    QVERIFY(!reloaded.hasErrors());
+    QVERIFY(reloaded.workspace.has_value());
+    QVERIFY(regmap::diffWorkspaces(*loaded.workspace, *reloaded.workspace).empty());
+
+    const std::string fieldOnlyReset = R"YAML(
+workspace:
+  id: workspace-field-only-reset
+  name: Field Only Reset
+  address_spaces:
+    - id: page-main
+      name: Main
+      base: 0x0
+      address_width: 32
+      blocks:
+        - id: block-control
+          name: Control
+          base: 0x0
+          size: 0x4
+          registers:
+            - id: reg-control
+              name: CONTROL
+              offset: 0x0
+              width: 8
+              type: field
+              access: rw
+              enum_values: []
+              fields:
+                - id: field-low
+                  name: LOW
+                  msb: 3
+                  lsb: 0
+                  type: bits
+                  sw_access: rw
+                  hw_access: none
+                  reset: 0x3
+                  read_side_effect: none
+                  write_side_effect: write
+                  enum_values: []
+)YAML";
+    const auto fieldOnlyLoaded = regmap::loadWorkspaceFromProjectText(
+        fieldOnlyReset, std::filesystem::path("field-only-reset.regmap.yaml"));
+    QVERIFY(!fieldOnlyLoaded.hasErrors());
+    QVERIFY(fieldOnlyLoaded.workspace.has_value());
+    const auto* migratedRegister =
+        regmap::findRegister(*fieldOnlyLoaded.workspace, "reg-control");
+    QVERIFY(migratedRegister != nullptr);
+    QVERIFY(migratedRegister->resetValue ==
+            std::optional(regmap::UnsignedValue(0x3)));
+    const auto* normalizedField =
+        regmap::findField(*fieldOnlyLoaded.workspace, "field-low");
+    QVERIFY(normalizedField != nullptr);
+    QVERIFY(normalizedField->resetValue ==
+            std::optional(regmap::UnsignedValue(0x3)));
+    QVERIFY(std::ranges::any_of(
+        fieldOnlyLoaded.diagnostics, [](const regmap::Diagnostic& diagnostic) {
+            return diagnostic.code == "RM1104" &&
+                   diagnostic.severity == regmap::DiagnosticSeverity::warning;
+        }));
+
+    auto resetNoise = *fieldOnlyLoaded.workspace;
+    regmap::findField(resetNoise, "field-low")->resetValue = regmap::UnsignedValue(0x10);
+    QVERIFY(regmap::diffWorkspaces(*fieldOnlyLoaded.workspace, resetNoise).empty());
+    const auto resetNoiseDiagnostics = regmap::validateWorkspace(resetNoise);
+    QVERIFY(std::ranges::none_of(
+        resetNoiseDiagnostics, [](const regmap::Diagnostic& diagnostic) {
+            return diagnostic.code == "RM3034" && diagnostic.objectId == "field-low";
+        }));
+    const auto fieldOnlySerialized = regmap::serializeProjectText(manifest, resetNoise);
+    QVERIFY(!fieldOnlySerialized.hasErrors());
+    QVERIFY(fieldOnlySerialized.text.has_value());
+    const std::size_t migratedReset = fieldOnlySerialized.text->find("reset:");
+    QVERIFY(migratedReset != std::string::npos);
+    QVERIFY(fieldOnlySerialized.text->find("reset:", migratedReset + 1) ==
+            std::string::npos);
+
+    const std::string conflictingLegacyResets = R"YAML(
+workspace:
+  id: workspace-conflicting-reset
+  name: Conflicting Reset
+  address_spaces:
+    - id: page-main
+      name: Main
+      base: 0x0
+      address_width: 32
+      blocks:
+        - id: block-control
+          name: Control
+          base: 0x0
+          size: 0x4
+          registers:
+            - id: reg-control
+              name: CONTROL
+              offset: 0x0
+              width: 8
+              type: field
+              access: rw
+              enum_values: []
+              fields:
+                - id: field-first
+                  name: FIRST
+                  msb: 3
+                  lsb: 0
+                  type: bits
+                  sw_access: rw
+                  hw_access: none
+                  reset: 0x0
+                  read_side_effect: none
+                  write_side_effect: write
+                  enum_values: []
+                - id: field-second
+                  name: SECOND
+                  msb: 3
+                  lsb: 0
+                  type: bits
+                  sw_access: rw
+                  hw_access: none
+                  reset: 0xF
+                  read_side_effect: none
+                  write_side_effect: write
+                  enum_values: []
+)YAML";
+    const auto conflictingLoaded = regmap::loadWorkspaceFromProjectText(
+        conflictingLegacyResets,
+        std::filesystem::path("conflicting-field-reset.regmap.yaml"));
+    QVERIFY(conflictingLoaded.hasErrors());
+    QVERIFY(!conflictingLoaded.workspace.has_value());
+    QVERIFY(std::ranges::any_of(
+        conflictingLoaded.diagnostics, [](const regmap::Diagnostic& diagnostic) {
+            return diagnostic.code == "RM1105" &&
+                   diagnostic.severity == regmap::DiagnosticSeverity::error;
+        }));
+}
+
 void CoreTests::tracksTransactionsAndStableIds()
 {
-    auto opened = openCheckedInProject();
-    QVERIFY(opened.workspace.has_value());
-    regmap::WorkspaceStore store(*opened.workspace);
+    regmap::WorkspaceStore store(stableWorkspace());
     QVERIFY(!store.dirty());
     QVERIFY(!store.canUndo());
 
@@ -788,9 +1348,7 @@ void CoreTests::tracksTransactionsAndStableIds()
 
 void CoreTests::squashesTransactionsIntoSingleUndoStep()
 {
-    auto opened = openCheckedInProject();
-    QVERIFY(opened.workspace.has_value());
-    regmap::WorkspaceStore store(*opened.workspace);
+    regmap::WorkspaceStore store(stableWorkspace());
 
     const std::string registerId = "reg-control";
     const auto* original = regmap::findRegister(*store.workspace(), registerId);
@@ -907,21 +1465,20 @@ void CoreTests::boundsTransactionHistory()
 
 void CoreTests::roundTripsManagedRtl()
 {
-    auto opened = openCheckedInProject();
-    QVERIFY(opened.workspace.has_value());
+    const auto workspace = stableWorkspace();
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
     const std::filesystem::path rtlPath =
         std::filesystem::path(directory.filePath(QStringLiteral("registers.sv")).toStdWString());
 
-    QVERIFY(regmap::writeManagedRtl(rtlPath, "test_registers", *opened.workspace).empty());
+    QVERIFY(regmap::writeManagedRtl(rtlPath, "test_registers", workspace).empty());
     auto parsed = regmap::parseManagedRtl(rtlPath);
     for (const auto& diagnostic : parsed.diagnostics) {
         qWarning().noquote() << QString::fromStdString(diagnostic.code + ": " + diagnostic.message);
     }
     QVERIFY(!parsed.hasErrors());
     QVERIFY(parsed.workspace.has_value());
-    QVERIFY(regmap::diffWorkspaces(*opened.workspace, *parsed.workspace).empty());
+    QVERIFY(regmap::diffWorkspaces(workspace, *parsed.workspace).empty());
 
     QFile file(QString::fromStdWString(rtlPath.wstring()));
     QVERIFY(file.open(QIODevice::ReadOnly | QIODevice::Text));
@@ -961,13 +1518,12 @@ void CoreTests::roundTripsManagedRtl()
 
 void CoreTests::rejectsInvalidManagedRtlStructure()
 {
-    auto opened = openCheckedInProject();
-    QVERIFY(opened.workspace.has_value());
+    const auto workspace = stableWorkspace();
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
     const QString path = directory.filePath(QStringLiteral("registers.sv"));
     const std::filesystem::path rtlPath(path.toStdWString());
-    QVERIFY(regmap::writeManagedRtl(rtlPath, "test_registers", *opened.workspace).empty());
+    QVERIFY(regmap::writeManagedRtl(rtlPath, "test_registers", workspace).empty());
 
     QFile file(path);
     QVERIFY(file.open(QIODevice::ReadOnly | QIODevice::Text));
@@ -986,13 +1542,12 @@ void CoreTests::rejectsInvalidManagedRtlStructure()
 
 void CoreTests::preservesUnmanagedRtlText()
 {
-    auto opened = openCheckedInProject();
-    QVERIFY(opened.workspace.has_value());
+    const auto workspace = stableWorkspace();
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
     const std::filesystem::path rtlPath =
         std::filesystem::path(directory.filePath(QStringLiteral("registers.sv")).toStdWString());
-    QVERIFY(regmap::writeManagedRtl(rtlPath, "test_registers", *opened.workspace).empty());
+    QVERIFY(regmap::writeManagedRtl(rtlPath, "test_registers", workspace).empty());
 
     QFile file(QString::fromStdWString(rtlPath.wstring()));
     QVERIFY(file.open(QIODevice::ReadOnly | QIODevice::Text));
@@ -1004,7 +1559,7 @@ void CoreTests::preservesUnmanagedRtlText()
     QCOMPARE(file.write(text.toUtf8()), text.toUtf8().size());
     file.close();
 
-    regmap::Workspace changed = *opened.workspace;
+    regmap::Workspace changed = workspace;
     regmap::findRegister(changed, "reg-control")->offset = 0x10;
     const auto writeDiagnostics = regmap::writeManagedRtl(rtlPath, "test_registers", changed);
     for (const auto& diagnostic : writeDiagnostics) {
@@ -1019,8 +1574,7 @@ void CoreTests::preservesUnmanagedRtlText()
 
 void CoreTests::refusesUnmanagedRtlOverwrite()
 {
-    auto opened = openCheckedInProject();
-    QVERIFY(opened.workspace.has_value());
+    const auto workspace = stableWorkspace();
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
     const QString qtPath = directory.filePath(QStringLiteral("user_owned.sv"));
@@ -1032,7 +1586,7 @@ void CoreTests::refusesUnmanagedRtlOverwrite()
     writeTextFile(qtPath, original);
     const std::filesystem::path path(qtPath.toStdWString());
 
-    const auto diagnostics = regmap::writeManagedRtl(path, "test_registers", *opened.workspace);
+    const auto diagnostics = regmap::writeManagedRtl(path, "test_registers", workspace);
     QVERIFY(std::ranges::any_of(diagnostics, [](const regmap::Diagnostic& diagnostic) {
         return diagnostic.code == "RM5001";
     }));
@@ -1044,9 +1598,7 @@ void CoreTests::refusesUnmanagedRtlOverwrite()
 
 void CoreTests::mergesDisjointChangesAndReportsConflicts()
 {
-    auto opened = openCheckedInProject();
-    QVERIFY(opened.workspace.has_value());
-    const regmap::Workspace base = *opened.workspace;
+    const regmap::Workspace base = stableWorkspace();
     regmap::Workspace workbench = base;
     regmap::Workspace rtl = base;
     regmap::findRegister(workbench, "reg-control")->offset = 4;
@@ -1097,21 +1649,102 @@ void CoreTests::mergesDisjointChangesAndReportsConflicts()
         return conflict.objectId == "reg-status" && conflict.property == "<presence>";
     }));
     QVERIFY(regmap::findRegister(*merged.merged, "reg-status") == nullptr);
+
+    workbench = base;
+    rtl = base;
+    auto* workbenchStatus = regmap::findRegister(workbench, "reg-status");
+    auto* rtlStatus = regmap::findRegister(rtl, "reg-status");
+    QVERIFY(workbenchStatus != nullptr);
+    QVERIFY(rtlStatus != nullptr);
+    workbenchStatus->array.count = 9;
+    workbenchStatus->array.stride = 0x20;
+    rtlStatus->array.count = 3;
+    rtlStatus->array.stride = 0x10;
+    regmap::findField(workbench, "field-ready")->resetValue = regmap::UnsignedValue(0);
+    regmap::findField(rtl, "field-ready")->resetValue = regmap::UnsignedValue(1);
+    merged = regmap::mergeWorkspaces(base, workbench, rtl);
+    QVERIFY(merged.conflicts.empty());
+    QVERIFY(merged.merged.has_value());
+    const auto* normalizedStatus = regmap::findRegister(*merged.merged, "reg-status");
+    const auto* normalizedReady = regmap::findField(*merged.merged, "field-ready");
+    QVERIFY(normalizedStatus != nullptr);
+    QVERIFY(normalizedReady != nullptr);
+    QCOMPARE(normalizedStatus->array.count, std::uint32_t{1});
+    QCOMPARE(normalizedStatus->array.stride, std::uint64_t{4});
+    QVERIFY(normalizedReady->resetValue == std::optional(regmap::UnsignedValue(1)));
 }
 
 void CoreTests::roundTripsSynchronizationBaseline()
 {
-    auto opened = openCheckedInProject();
-    QVERIFY(opened.workspace.has_value());
+    const auto workspace = stableWorkspace();
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
     const std::filesystem::path path = std::filesystem::path(
         directory.filePath(QStringLiteral(".regmap.sync.json")).toStdWString());
-    QVERIFY(regmap::saveSyncBaseline(path, *opened.workspace).empty());
+    QVERIFY(regmap::saveSyncBaseline(path, workspace).empty());
     const auto loaded = regmap::loadSyncBaseline(path);
     QVERIFY(loaded.diagnostics.empty());
     QVERIFY(loaded.workspace.has_value());
-    QVERIFY(regmap::diffWorkspaces(*opened.workspace, *loaded.workspace).empty());
+    QVERIFY(regmap::diffWorkspaces(workspace, *loaded.workspace).empty());
+
+    const std::string canonicalState = regmap::serializeWorkspaceState(workspace, false);
+    QJsonDocument legacyDocument = QJsonDocument::fromJson(
+        QByteArray(canonicalState.data(), static_cast<qsizetype>(canonicalState.size())));
+    QVERIFY(legacyDocument.isObject());
+    QJsonObject legacyRoot = legacyDocument.object();
+    QJsonArray objects = legacyRoot.value(QStringLiteral("objects")).toArray();
+    bool injectedRegister = false;
+    bool injectedField = false;
+    for (qsizetype index = 0; index < objects.size(); ++index) {
+        QJsonObject object = objects.at(index).toObject();
+        QJsonObject properties = object.value(QStringLiteral("properties")).toObject();
+        if (object.value(QStringLiteral("id")).toString() == QStringLiteral("reg-status")) {
+            properties.insert(QStringLiteral("array_count"), QStringLiteral("9"));
+            properties.insert(QStringLiteral("stride"), QStringLiteral("0x20"));
+            injectedRegister = true;
+        } else if (object.value(QStringLiteral("id")).toString() ==
+                   QStringLiteral("field-ready")) {
+            properties.insert(QStringLiteral("reset"), QStringLiteral("0x0"));
+            injectedField = true;
+        }
+        object.insert(QStringLiteral("properties"), properties);
+        objects.replace(index, object);
+    }
+    QVERIFY(injectedRegister);
+    QVERIFY(injectedField);
+    legacyRoot.insert(QStringLiteral("objects"), objects);
+    legacyDocument.setObject(legacyRoot);
+    const QByteArray legacyBytes = legacyDocument.toJson(QJsonDocument::Compact);
+    const auto legacyLoaded = regmap::parseWorkspaceState(
+        std::string_view(legacyBytes.constData(), static_cast<std::size_t>(legacyBytes.size())),
+        path);
+    QVERIFY(legacyLoaded.diagnostics.empty());
+    QVERIFY(legacyLoaded.workspace.has_value());
+    const auto* legacyStatus = regmap::findRegister(*legacyLoaded.workspace, "reg-status");
+    const auto* legacyReady = regmap::findField(*legacyLoaded.workspace, "field-ready");
+    QVERIFY(legacyStatus != nullptr);
+    QVERIFY(legacyReady != nullptr);
+    QCOMPARE(legacyStatus->array.count, std::uint32_t{1});
+    QCOMPARE(legacyStatus->array.stride, std::uint64_t{4});
+    QVERIFY(legacyReady->resetValue == std::optional(regmap::UnsignedValue(1)));
+
+    const std::string normalizedState =
+        regmap::serializeWorkspaceState(*legacyLoaded.workspace, false);
+    const QJsonDocument normalizedDocument = QJsonDocument::fromJson(
+        QByteArray(normalizedState.data(), static_cast<qsizetype>(normalizedState.size())));
+    for (const QJsonValue& value :
+         normalizedDocument.object().value(QStringLiteral("objects")).toArray()) {
+        const QJsonObject object = value.toObject();
+        const QJsonObject properties =
+            object.value(QStringLiteral("properties")).toObject();
+        if (object.value(QStringLiteral("kind")).toString() == QStringLiteral("register")) {
+            QVERIFY(!properties.contains(QStringLiteral("array_count")));
+            QVERIFY(!properties.contains(QStringLiteral("stride")));
+        }
+        if (object.value(QStringLiteral("kind")).toString() == QStringLiteral("field")) {
+            QVERIFY(!properties.contains(QStringLiteral("reset")));
+        }
+    }
 }
 
 void CoreTests::rejectsCorruptSynchronizationBaseline()
@@ -1149,6 +1782,7 @@ void CoreTests::validatesModelConflicts()
     first.name = "FIRST";
     first.offset = 0;
     first.width = 32;
+    first.type = regmap::FieldType::structure;
     first.resetValue = *regmap::UnsignedValue::parse("0x1");
 
     regmap::Field firstField;
@@ -1189,8 +1823,9 @@ void CoreTests::validatesModelConflicts()
         });
     };
     QVERIFY(hasCode("RM3024"));
+    QVERIFY(hasCode("RM3026"));
     QVERIFY(hasCode("RM3031"));
-    QVERIFY(hasCode("RM3035"));
+    QVERIFY(!hasCode("RM3035"));
     QVERIFY(hasCode("RM3043"));
 }
 
@@ -1341,12 +1976,12 @@ void CoreTests::validatesNumericRangeBoundaries()
     QCOMPARE(inheritedResetDiagnostic->source.cell, std::string("register.reset"));
 
     numeric.resetValue = regmap::UnsignedValue(0x30);
-    numeric.fields.front().resetValue = regmap::UnsignedValue(0x3);
+    numeric.fields.front().resetValue = regmap::UnsignedValue(0x0);
     auto explicitResetDiagnostic =
         valueRangeDiagnostic(workspace, "field-value", "reset value lies");
     QVERIFY(explicitResetDiagnostic.has_value());
     QCOMPARE(explicitResetDiagnostic->severity, regmap::DiagnosticSeverity::warning);
-    QCOMPARE(explicitResetDiagnostic->source.cell, std::string("field.reset"));
+    QCOMPARE(explicitResetDiagnostic->source.cell, std::string("register.reset"));
     numeric.resetValue = regmap::UnsignedValue(0xE0);
     numeric.fields.front().resetValue = regmap::UnsignedValue(0xE);
     QVERIFY(!valueRangeDiagnostic(workspace, "field-value", "reset value lies"));
@@ -1432,13 +2067,14 @@ void CoreTests::validatesBlockAllocationRanges()
 
 void CoreTests::generatesReadOnlyArtifacts()
 {
-    auto opened = openCheckedInProject();
-    QVERIFY(opened.manifest.has_value());
-    QVERIFY(opened.workspace.has_value());
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
 
-    auto manifest = *opened.manifest;
+    const std::filesystem::path manifestPath = std::filesystem::path(
+        directory.filePath(QStringLiteral("project.regmap.yaml")).toStdWString());
+    auto workspace = stableWorkspace();
+    workspace.manifestPath = manifestPath;
+    auto manifest = stableManifest(manifestPath);
     manifest.outputDirectory.resolved =
         std::filesystem::path(directory.path().toStdWString()) / "generated";
     for (auto& target : manifest.targets) {
@@ -1457,7 +2093,7 @@ void CoreTests::generatesReadOnlyArtifacts()
     reservedRegister.access = regmap::AccessMode::none;
     reservedRegister.reserved = true;
     reservedRegister.description = "Reserved register style regression.";
-    opened.workspace->addressSpaces.front().blocks.front().registers.push_back(
+    workspace.addressSpaces.front().blocks.front().registers.push_back(
         std::move(reservedRegister));
 
     regmap::RegisterBlock secondaryBlock;
@@ -1466,7 +2102,7 @@ void CoreTests::generatesReadOnlyArtifacts()
     secondaryBlock.baseAddress = 0x2000;
     secondaryBlock.size = 0x100;
     secondaryBlock.description = "Second block used to verify block-band colors.";
-    opened.workspace->addressSpaces.front().blocks.push_back(
+    workspace.addressSpaces.front().blocks.push_back(
         std::move(secondaryBlock));
 
     regmap::AddressSpace secondaryPage;
@@ -1475,15 +2111,15 @@ void CoreTests::generatesReadOnlyArtifacts()
     secondaryPage.baseAddress = 0x50000000;
     secondaryPage.addressWidth = 32;
     secondaryPage.description = "Empty page used to verify one worksheet per page.";
-    opened.workspace->addressSpaces.push_back(std::move(secondaryPage));
+    workspace.addressSpaces.push_back(std::move(secondaryPage));
 
-    const auto generation = regmap::generateArtifacts(*opened.workspace, manifest);
+    const auto generation = regmap::generateArtifacts(workspace, manifest);
     for (const auto& diagnostic : generation.diagnostics) {
         qWarning().noquote() << QString::fromStdString(diagnostic.code + ": " + diagnostic.message);
     }
     QVERIFY(!generation.hasErrors());
     QCOMPARE(generation.artifacts.size(), std::size_t{3});
-    const auto* control = regmap::findRegister(*opened.workspace, "reg-control");
+    const auto* control = regmap::findRegister(workspace, "reg-control");
     QVERIFY(control != nullptr);
     QVERIFY(!control->fields.empty());
     QVERIFY(generation.artifacts[0].isBinary());
@@ -1510,27 +2146,42 @@ void CoreTests::generatesReadOnlyArtifacts()
     QXlsx::Document workbook(QString::fromStdWString(generation.artifacts.front().path.wstring()));
     QVERIFY(workbook.load());
     const QStringList sheetNames = workbook.sheetNames();
-    QCOMPARE(sheetNames.size(), 2);
-    QCOMPARE(sheetNames.at(1), QStringLiteral("Debug_Trace"));
+    QCOMPARE(sheetNames.size(), 3);
+    QCOMPARE(sheetNames.at(0), QStringLiteral("Overview"));
+    QCOMPARE(sheetNames.at(2), QStringLiteral("Debug_Trace"));
+    QVERIFY(workbook.selectSheet(QStringLiteral("Overview")));
+    QVERIFY(!workbook.currentWorksheet()->isGridLinesVisible());
+    QCOMPARE(workbook.currentWorksheet()->frozenRowCount(), 4);
+    QCOMPARE(workbook.currentWorksheet()->frozenColumnCount(), 0);
+    QCOMPARE(workbook.currentWorksheet()->autoFilter().toString(), QStringLiteral("A4:K7"));
+    QVERIFY(workbook.read(1, 1).toString().startsWith(
+        QStringLiteral("Register Map Overview - ")));
+    QCOMPARE(workbook.read(4, 1).toString(), QStringLiteral("Page"));
+    QCOMPARE(workbook.read(4, 6).toString(), QStringLiteral("Block"));
+    QCOMPARE(workbook.read(4, 9).toString(), QStringLiteral("Absolute Start"));
+    QCOMPARE(workbook.read(5, 6).toString(), QStringLiteral("Control"));
+    QCOMPARE(workbook.read(6, 6).toString(), QStringLiteral("Secondary"));
+    QCOMPARE(workbook.read(7, 1).toString(), QStringLiteral("Debug/Trace"));
+    QCOMPARE(workbook.read(7, 6).toString(), QStringLiteral("Empty"));
     QVERIFY(workbook.selectSheet(QStringLiteral("Debug_Trace")));
     QVERIFY(!workbook.currentWorksheet()->isGridLinesVisible());
     QCOMPARE(workbook.currentWorksheet()->frozenRowCount(), 4);
     QCOMPARE(workbook.currentWorksheet()->frozenColumnCount(), 0);
-    QCOMPARE(workbook.currentWorksheet()->autoFilter().toString(), QStringLiteral("A4:K4"));
+    QVERIFY(workbook.currentWorksheet()->autoFilter().toString().isEmpty());
 
-    QVERIFY(workbook.selectSheet(sheetNames.front()));
+    QVERIFY(workbook.selectSheet(sheetNames.at(1)));
     const auto* worksheet = workbook.currentWorksheet();
     QVERIFY(worksheet != nullptr);
     QVERIFY(!worksheet->areSummaryRowsBelow());
     QVERIFY(!worksheet->isGridLinesVisible());
     QCOMPARE(worksheet->frozenRowCount(), 4);
     QCOMPARE(worksheet->frozenColumnCount(), 0);
-    QCOMPARE(worksheet->autoFilter().toString(), QStringLiteral("A4:K26"));
+    QVERIFY(worksheet->autoFilter().toString().isEmpty());
     QCOMPARE(workbook.read(1, 1).toString(),
              QStringLiteral("Page - ") +
-                 QString::fromStdString(opened.workspace->addressSpaces.front().name));
+                 QString::fromStdString(workspace.addressSpaces.front().name));
     uint expectedDiagramCount = 0;
-    for (const auto& space : opened.workspace->addressSpaces) {
+    for (const auto& space : workspace.addressSpaces) {
         for (const auto& block : space.blocks) {
             expectedDiagramCount +=
                 static_cast<uint>(std::ranges::count_if(block.registers, [](const auto& reg) {
@@ -1595,6 +2246,7 @@ void CoreTests::generatesReadOnlyArtifacts()
              QString::fromStdString(control->fields.front().name));
     QCOMPARE(workbook.read(8, 4).toString(), QStringLiteral("bool"));
     QCOMPARE(workbook.read(8, 6).toString(), QStringLiteral("RW"));
+    QCOMPARE(workbook.read(8, 8).toString(), QStringLiteral("0x0"));
     QVERIFY(!workbook.read(8, 3).toString().contains(QChar(0x21B3)));
     const auto firstFieldCell = workbook.cellAt(8, 3);
     const auto alternateFieldCell = workbook.cellAt(12, 3);
@@ -1875,6 +2527,7 @@ void CoreTests::sanitizesXlsxWorksheetNames()
     appendPage("[]:*?/\\");
     appendPage("   ");
     appendPage("''");
+    appendPage("Overview");
 
     const auto exported = regmap::exportReadOnlyWorkbook(workspace);
     for (const auto& diagnostic : exported.diagnostics) {
@@ -1897,14 +2550,16 @@ void CoreTests::sanitizesXlsxWorksheetNames()
     QXlsx::Document workbook(path);
     QVERIFY(workbook.load());
     const QStringList names = workbook.sheetNames();
-    QCOMPARE(names.size(), 8);
-    QCOMPARE(names.at(0), QStringLiteral("Status"));
-    QCOMPARE(names.at(1), QStringLiteral("status (2)"));
-    QCOMPARE(names.at(2), QString::fromStdString(longName).left(31));
-    QCOMPARE(names.at(3), names.at(2).left(27) + QStringLiteral(" (2)"));
-    QCOMPARE(names.at(4), QStringLiteral("ABCDEFGHIJKLMNOPQRSTUVWXYZ1234"));
-    QCOMPARE(names.at(6), QStringLiteral("Page"));
-    QCOMPARE(names.at(7), QStringLiteral("Page (2)"));
+    QCOMPARE(names.size(), 10);
+    QCOMPARE(names.at(0), QStringLiteral("Overview"));
+    QCOMPARE(names.at(1), QStringLiteral("Status"));
+    QCOMPARE(names.at(2), QStringLiteral("status (2)"));
+    QCOMPARE(names.at(3), QString::fromStdString(longName).left(31));
+    QCOMPARE(names.at(4), names.at(3).left(27) + QStringLiteral(" (2)"));
+    QCOMPARE(names.at(5), QStringLiteral("ABCDEFGHIJKLMNOPQRSTUVWXYZ1234"));
+    QCOMPARE(names.at(7), QStringLiteral("Page"));
+    QCOMPARE(names.at(8), QStringLiteral("Page (2)"));
+    QCOMPARE(names.at(9), QStringLiteral("Overview (2)"));
 
     for (qsizetype index = 0; index < names.size(); ++index) {
         QVERIFY(names.at(index).size() <= 31);

@@ -8,32 +8,20 @@ Use `--json` for automation. It may appear anywhere before the optional `--` arg
 terminator. Place `--` immediately before a positional value that itself begins with `--`;
 tokens after it are data rather than global options.
 
+The portable Windows package can be used directly from PowerShell after changing to its folder.
+These commands are copyable without modifying `PATH`:
+
 ```powershell
-regmapc --json schema
-regmapc --json version
-regmapc --json help status
-regmapc --json init device.regmap.yaml --name "Device Register Map"
-regmapc --json summary device.regmap.yaml
-regmapc --json list device.regmap.yaml --kind register --parent block-control --tag control --limit 100
-regmapc --json list device.regmap.yaml --kind register --parent page-main --recursive
-regmapc --json list device.regmap.yaml --kind register --offset 100 --limit 100 --expect sha256:...
-regmapc --json find device.regmap.yaml control --kind register --tag control --limit 20
-regmapc --json find device.regmap.yaml 0x43C00020 --exact --kind register
-regmapc --json find device.regmap.yaml CONTROL --exact --require-one --kind register
-regmapc --json find device.regmap.yaml interrupt --kind field --parent page-main --recursive
-regmapc --json find device.regmap.yaml control --kind register --offset 20 --limit 20 --expect sha256:...
-regmapc --json find device.regmap.yaml -- --option-like-name
-regmapc --json get device.regmap.yaml
-regmapc --json get device.regmap.yaml reg-control --expect sha256:...
-regmapc --json get-many device.regmap.yaml reg-control field-enable reg-status --expect sha256:...
-regmapc --json validate device.regmap.yaml
-regmapc --json diff baseline.regmap.yaml device.regmap.yaml
-regmapc --json diff baseline.regmap.yaml device.regmap.yaml --kind register --limit 100
-regmapc --json diff baseline.regmap.yaml device.regmap.yaml --require-equal
-regmapc --json status device.regmap.yaml
-regmapc --json status device.regmap.yaml --require-current
-regmapc --json generate device.regmap.yaml --dry-run --expect sha256:...
-regmapc --json generate device.regmap.yaml --expect sha256:...
+.\regmapc.exe --json version
+.\regmapc.exe --json schema
+.\regmapc.exe --json init .\device.regmap.yaml --name "Device Register Map"
+.\regmapc.exe --json summary .\device.regmap.yaml
+.\regmapc.exe --json list .\device.regmap.yaml --kind register
+.\regmapc.exe --json find .\device.regmap.yaml CONTROL --exact --require-one --kind register
+.\regmapc.exe --json get .\device.regmap.yaml reg-control
+.\regmapc.exe --json validate .\device.regmap.yaml
+.\regmapc.exe --json status .\device.regmap.yaml --target xlsx --require-current
+.\regmapc.exe --json generate .\device.regmap.yaml --target xlsx --expect sha256:...
 ```
 
 ## Commands
@@ -45,15 +33,15 @@ regmapc --json generate device.regmap.yaml --expect sha256:...
 | `schema` | Discover commands, writable properties, patch shape, and exit codes | No |
 | `init <project> [options]` | Create an empty Workbench project and its read-only outputs | Yes |
 | `summary <project>` | Read project identity, counts, register tags, generation targets, and revision | No |
-| `list <project> [--kind K] [--parent ID [--recursive]] [--tag TAG] [--offset N] [--limit N] [--expect REV]` | List stable IDs and hierarchy paths | No |
-| `find <project> <query> [--exact] [--require-one] [--kind K] [--parent ID [--recursive]] [--tag TAG] [--offset N] [--limit N] [--expect REV]` | Find stable IDs by user-facing clues | No |
+| `list <project> [--kind K] [--parent ID [--recursive]] [--tag TAG] [--offset N] [--limit N\|--all] [--expect REV]` | List stable IDs and hierarchy paths; defaults to 100 results | No |
+| `find <project> <query> [--exact] [--require-one] [--kind K] [--parent ID [--recursive]] [--tag TAG] [--offset N] [--limit N\|--all] [--expect REV]` | Find stable IDs by user-facing clues; defaults to 100 results | No |
 | `get <project> [stable-id] [--expect REV]` | Read the complete Workspace or one object from an optional required revision | No |
 | `get-many <project> <stable-id>... [--expect REV]` | Read multiple objects in request order from one revision | No |
 | `validate <project>` | Validate the complete project | No |
 | `diff <before-project> <after-project> [--kind K] [--offset N] [--limit N] [--expect-before REV] [--expect-after REV] [--require-equal]` | Compare two complete projects by stable ID | No |
-| `status <project> [--require-current]` | Check whether every configured read-only output is synchronized | No |
-| `generate <project> --dry-run [--expect REV]` | Build all configured artifacts in memory | No |
-| `generate <project> [--expect REV]` | Regenerate XLSX, C header, and Markdown | Yes |
+| `status <project> [--target T]... [--require-current]` | Check selected or all configured read-only outputs | No |
+| `generate <project> [--target T]... --dry-run [--expect REV]` | Build selected or all configured artifacts in memory | No |
+| `generate <project> [--target T]... [--expect REV]` | Regenerate selected or all configured outputs | Yes |
 | `apply <project> <patch.json\|-> --dry-run` | Validate a candidate patch and preview outputs | No |
 | `apply <project> <patch.json\|-> [--expect REV]` | Atomically save a guarded patch and regenerate outputs | Yes |
 
@@ -65,22 +53,37 @@ occurs during the command.
 ## Initialize a project
 
 ```powershell
-regmapc --json init device.regmap.yaml `
+.\regmapc.exe --json init .\device.regmap.yaml `
   --name "Device Register Map" `
-  --workspace-id workspace-device
+  --workspace-id workspace-device `
+  --output-dir exports `
+  --xlsx-file device-map.xlsx `
+  --c-header-file device-regs.h `
+  --markdown-file device-map.md
 ```
 
 `init` creates an empty, valid project with the same defaults as **New Project** in Workbench:
 one stable Workspace ID, a `generated` directory, and XLSX, C header, and Markdown targets. It
-generates those three empty derivative views by default. It does not create or modify the
+generates those three empty derivative views by default. `--output-dir` and the three `--*-file`
+options customize the saved target paths; every path must remain inside the project directory.
+It does not create or modify the
 configured RTL file.
 
+Repeat `--target xlsx`, `--target c-header`, or `--target markdown` to restrict only the outputs
+created by this `init` invocation. The saved project still configures all three read-only output
+types, so a later `generate` without `--target` produces the remaining files. This keeps the
+project valid for Workbench while avoiding unnecessary initial generation. `--target` and
+`--no-generate` are mutually exclusive.
+
 The command refuses to overwrite an existing project or an existing target output. Use a new
-directory when those names are already occupied. `--no-generate` creates only the project file
+directory when those names are already occupied. Before creating any file, `init` also verifies
+that all three saved target paths are distinct and that none can overwrite the project manifest
+or the configured RTL path. This preflight covers targets omitted from the current `--target`
+selection. `--no-generate` creates only the project file
 when the caller intends to add the initial hierarchy immediately:
 
 ```powershell
-regmapc --json init device.regmap.yaml --no-generate
+.\regmapc.exe --json init .\device.regmap.yaml --no-generate
 ```
 
 When `--name` is omitted, the Workspace name comes from the project filename. When
@@ -97,7 +100,7 @@ preserved unchanged.
 or any generated file:
 
 ```powershell
-regmapc --json diff baseline.regmap.yaml device.regmap.yaml
+.\regmapc.exe --json diff .\baseline.regmap.yaml .\device.regmap.yaml
 ```
 
 A successful result contains the absolute `before_project` and `after_project` paths, both
@@ -144,7 +147,7 @@ For a continuation call, pass the revisions from the first result as `--expect-b
 `--expect-after`; a mismatch returns exit code `3` before exposing a comparison result:
 
 ```powershell
-regmapc --json diff baseline.regmap.yaml device.regmap.yaml `
+.\regmapc.exe --json diff .\baseline.regmap.yaml .\device.regmap.yaml `
   --kind register --offset 100 --limit 100 `
   --expect-before sha256:... --expect-after sha256:...
 ```
@@ -169,10 +172,13 @@ modified	register	reg-control	CONTROL_NEXT	Properties changed
 current saved project would produce. It does not modify the project or any output:
 
 ```powershell
-regmapc --json status device.regmap.yaml
+.\regmapc.exe --json status .\device.regmap.yaml
 ```
 
 Each artifact reports one of `synchronized`, `missing`, `modified`, `writable`, or `unreadable`.
+It also reports the expected content `sha256`, byte count, existence, read-only state, and content
+comparison result. Repeat `--target xlsx`, `--target c-header`, or `--target markdown` to inspect
+only those outputs. Omitting `--target` checks all configured outputs.
 The result also contains `outputs_current`, `output_count`, `synchronized_count`, and
 `attention_count`. Missing or stale outputs are valid status results, so the command succeeds and
 the caller inspects `outputs_current`; project, validation, generation, or concurrent-revision
@@ -184,7 +190,7 @@ Use the strict form when a shell, CI job, or embedding host should branch on the
 without parsing the result:
 
 ```powershell
-regmapc --json status device.regmap.yaml --require-current
+.\regmapc.exe --json status .\device.regmap.yaml --target xlsx --require-current
 ```
 
 The strict form returns the same artifact details, but missing, modified, writable, or unreadable
@@ -195,8 +201,11 @@ Whenever `attention_count` is nonzero, `result.recovery` contains `command`, the
 `project` path, `expected_revision`, and a ready-to-execute `arguments` array equivalent to:
 
 ```powershell
-regmapc generate device.regmap.yaml --expect sha256:...
+.\regmapc.exe generate .\device.regmap.yaml --expect sha256:...
 ```
+
+When `status` was restricted with `--target`, the returned recovery arguments preserve the same
+target selection.
 
 The revision is the one used for the status result, so an embedding host can regenerate safely
 without constructing or guessing the concurrency guard. Text mode prints the same recovery
@@ -208,10 +217,10 @@ Automation commonly starts with a name, address, tag, or description rather than
 `find` resolves those clues without writing the project:
 
 ```powershell
-regmapc --json find device.regmap.yaml status
-regmapc --json find device.regmap.yaml 0x43C00020 --kind register
-regmapc --json find device.regmap.yaml interrupt --kind field --parent reg-status
-regmapc --json find device.regmap.yaml control --kind register --tag control
+.\regmapc.exe --json find .\device.regmap.yaml status
+.\regmapc.exe --json find .\device.regmap.yaml 0x43C00020 --kind register
+.\regmapc.exe --json find .\device.regmap.yaml interrupt --kind field --parent reg-status
+.\regmapc.exe --json find .\device.regmap.yaml control --kind register --tag control
 ```
 
 The search is case-insensitive and examines `id`, `name`, hierarchy `path`, base/address/offset,
@@ -220,8 +229,8 @@ kinds as `list`; `--parent` restricts results to direct children of one stable I
 `--recursive` to include every descendant below that parent while excluding the parent itself:
 
 ```powershell
-regmapc --json list device.regmap.yaml --parent page-main --recursive --kind register
-regmapc --json find device.regmap.yaml ready --parent block-control --recursive --kind field
+.\regmapc.exe --json list .\device.regmap.yaml --parent page-main --recursive --kind register
+.\regmapc.exe --json find .\device.regmap.yaml ready --parent block-control --recursive --kind field
 ```
 
 `--recursive` requires `--parent`; using it alone is a usage error. Kind, Tag, query, pagination,
@@ -244,7 +253,8 @@ check runs after query matching, `--exact`, kind, parent/recursive scope, and Ta
 match keeps the normal one-item result array. No match returns project error `RMC2001`; multiple
 matches return project error `RMC2002` while preserving every ranked candidate and the normal
 result metadata so the caller can disambiguate. Text mode likewise prints the candidates before
-the ambiguity diagnostic. `--require-one` cannot be combined with `--offset` or `--limit`, because
+the ambiguity diagnostic. `--require-one` cannot be combined with `--offset`, `--limit`, or
+`--all`, because
 uniqueness applies to the complete filtered result. `--expect` remains valid and is checked before
 the search; a stale revision therefore returns `RMC3001` without a uniqueness result.
 
@@ -258,14 +268,16 @@ Register.
 
 Every JSON `list` and `find` response includes `result_metadata` with `total_count`, `offset`,
 `returned_count`, `truncated`, `has_more`, `next_offset`, and `limit`. `--offset` is a
-non-negative integer and `--limit` is a positive integer. Results retain deterministic hierarchy
+non-negative integer and `--limit` is a positive integer. Both commands return at most 100 items
+by default. Use `--limit N` for a different bound or `--all` for an explicit unbounded result;
+`--limit` and `--all` are mutually exclusive. Results retain deterministic hierarchy
 order (`find` first applies its stable match ranking), so a host can pass `next_offset` into the
 next invocation without repeating or skipping an object while the returned project revision is
 unchanged. Pass the first response's `revision` as `--expect` on every continuation call. If the
 project changes between pages, the command returns revision-conflict exit code `3`, includes the
 current revision, and returns no result page; the host can discard the earlier pages and restart
-instead of combining two project snapshots. Omitting both pagination options preserves the
-complete-result behavior. An offset beyond the end
+instead of combining two project snapshots. `get <project>` remains the compatibility command for
+retrieving the complete Workspace hierarchy in one result. An offset beyond the end
 returns an empty successful page with `has_more: false`. Text mode prints the same page position
 and continuation offset after the returned rows.
 
@@ -304,7 +316,7 @@ ambiguously.
 Omit the stable ID from `get` to retrieve the complete Workspace hierarchy in one call:
 
 ```powershell
-regmapc --json get device.regmap.yaml
+.\regmapc.exe --json get .\device.regmap.yaml
 ```
 
 The response envelope already contains the project revision, so an embedding host does not need
@@ -313,7 +325,7 @@ When that ID came from an earlier `list` or `find`, pass that response's `revisi
 second command from silently reading a different project snapshot:
 
 ```powershell
-regmapc --json get device.regmap.yaml reg-control --expect sha256:...
+.\regmapc.exe --json get .\device.regmap.yaml reg-control --expect sha256:...
 ```
 
 A mismatch returns revision-conflict code `3`, `RMC3001`, the expected and current revisions, and
@@ -324,7 +336,7 @@ Use `get-many` when a host already has several stable IDs and needs their comple
 reopening the project for each ID:
 
 ```powershell
-regmapc --json get-many device.regmap.yaml `
+.\regmapc.exe --json get-many .\device.regmap.yaml `
   reg-control field-enable reg-control reg-missing `
   --expect sha256:...
 ```
@@ -348,8 +360,8 @@ Every `--json` response is one compact JSON object, including `--help`, `version
 `--version`. This lets an embedding host negotiate the API before it opens a project:
 
 ```powershell
-regmapc --json version
-regmapc --json --help
+.\regmapc.exe --json version
+.\regmapc.exe --json --help
 ```
 
 Both responses include `project_schema.current_version` and
@@ -368,9 +380,9 @@ human-readable usage text.
 behavior, and typed argument schema. It never opens a project or writes a file:
 
 ```powershell
-regmapc help generate
-regmapc --json help generate
-regmapc generate --help
+.\regmapc.exe help generate
+.\regmapc.exe --json help generate
+.\regmapc.exe generate --help
 ```
 
 An unknown help topic uses the same `result.suggested_command` recovery as an unknown command.
@@ -424,10 +436,11 @@ use it when present. `list`, `find`, and `diff` use it for deterministic paginat
 
 `exit_code` and `exit_status` are present in every JSON response, including help, version,
 unknown-command, project-load, revision-conflict, and write-failure responses. Their stable
-mapping is `0=success`, `1=project_error`, `2=usage_error`, `3=revision_conflict`, and
-`4=write_error`, `5=outputs_out_of_date`, and `6=differences_found`. A nonzero response also contains `error_code`. It is
+mapping is `0=success`, `1=project_error`, `2=usage_error`, `3=revision_conflict`,
+`4=write_error`, `5=outputs_out_of_date`, `6=differences_found`, `7=input_error`, and
+`8=generation_error`. A nonzero response also contains `error_code`. It is
 the first error diagnostic code when one exists; otherwise it is the category code `RMC1000`,
-`RMC2000`, `RMC3000`, `RMC4000`, `RMC5000`, or `RMC6000`. `error` remains the human-readable explanation,
+`RMC2000`, `RMC3000`, `RMC4000`, `RMC5000`, `RMC6000`, `RMC7000`, or `RMC8000`. `error` remains the human-readable explanation,
 but an embedding host does not need to parse it to select its recovery path.
 
 An `exit_status` of `usage_error` also returns `usage`. For a recognized command this is its exact
@@ -449,17 +462,19 @@ Exit codes are stable:
 | --- | --- |
 | 0 | Success |
 | 1 | Project load or model validation failure |
-| 2 | Command, option, patch shape, property, or value error |
+| 2 | Command, option, patch operation, property, or value error |
 | 3 | Revision conflict |
-| 4 | Project/output write or generation failure |
+| 4 | Project or output filesystem write failure |
 | 5 | Outputs are not current under `status --require-current` |
 | 6 | Differences exist under `diff --require-equal` |
+| 7 | Patch input cannot be read or parsed as the required JSON document |
+| 8 | A configured artifact cannot be generated in memory |
 
 Pass `-` instead of a patch path to read one JSON document from standard input. This avoids a
 temporary file when a host application or Codex already has the patch in memory:
 
 ```powershell
-$patch | regmapc --json apply device.regmap.yaml - --dry-run
+$patch | .\regmapc.exe --json apply .\device.regmap.yaml - --dry-run
 ```
 
 ## Atomic model patch
@@ -761,8 +776,14 @@ writing them. `--expect <revision>` additionally requires the project to match a
 from `summary`, `list`, `get`, `get-many`, or `validate`:
 
 ```powershell
-regmapc --json generate device.regmap.yaml --expect sha256:...
+.\regmapc.exe --json generate .\device.regmap.yaml `
+  --target xlsx --target markdown `
+  --expect sha256:...
 ```
+
+`--target` is repeatable and accepts `xlsx`, `c-header`, or `markdown`. Only selected artifacts
+are built, inspected, or written; omitted artifacts are left untouched. Without `--target`, all
+configured outputs are processed.
 
 A mismatch before writing returns exit code 3 and leaves every output untouched. If another
 process saves the project while outputs are being replaced, the command reports the new current
@@ -771,16 +792,27 @@ An output-write failure with a readable current revision returns the same recove
 host can close the locked file or repair the output path and execute the supplied arguments
 without guessing which revision to generate. A successful write reports `written: true`,
 `outputs_current: true`, `generated_from_revision`, and
-`current_revision`. Dry-run reports `outputs_current: null` because it does not inspect or replace
-the existing derivative files.
+`current_revision`. Dry-run reports `outputs_current: null` because it does not replace files or
+claim that the selected output set was synchronized. Each artifact includes its expected `sha256`, `state`, and
+`action`; write responses also expose `written`, `skipped`, and `failed` booleans. A synchronized
+artifact is skipped without changing its timestamp.
 
 Supported writable properties are returned by `regmapc --json schema`. Setting Field `lsb`
 repositions the Field while preserving its current width and deriving the new MSB; setting
 `width` keeps the current LSB and also derives MSB. Workbench still keeps direct LSB cell editing
 disabled and performs this action through Field dragging. JSON `null` clears optional Block size,
-range bounds, Initial Value, or Reset Value. Addresses and values accept strings such as
+range bounds, Initial Value, or Register Reset Value. A Field Reset is read-only and is always
+derived from the corresponding bits of its containing Register Reset. If the Register Reset is
+`null`, every contained Field Reset is also `null`. Set or clear `reset` on the parent Register;
+Field `set`, `add`, and root-copy overrides reject an independent `reset` value with a corrective
+message. Addresses and values accept strings such as
 `"0x43C00000"` or safe JSON integers. Values above `2^53-1` must be strings so JSON number
 rounding cannot change an address or reset value.
+
+Every Register occupies one four-byte slot for CLI placement, move, and gap calculations.
+Register Count and Stride are retired: they are not writable, searchable, or returned by CLI
+object and diff schemas. Legacy project values may be consumed by project migration, but they do
+not change CLI placement.
 
 A Field drag can therefore be expressed without deleting or recreating the Field:
 
@@ -1009,15 +1041,16 @@ is written.
 ## Recommended automation sequence
 
 ```powershell
-regmapc --json summary device.regmap.yaml
-regmapc --json status device.regmap.yaml --require-current
-regmapc --json apply device.regmap.yaml patch.json --dry-run
-regmapc --json apply device.regmap.yaml patch.json
-regmapc --json validate device.regmap.yaml
+.\regmapc.exe --json summary .\device.regmap.yaml
+.\regmapc.exe --json apply .\device.regmap.yaml .\patch.json --dry-run
+.\regmapc.exe --json apply .\device.regmap.yaml .\patch.json
 ```
 
-The second apply uses `expected_revision` stored in `patch.json`. After success, use the returned
-new revision for the next patch.
+Store the `summary` revision as `expected_revision` in `patch.json`. The real apply uses the same
+reviewed patch and revision; after success, use its returned revision for the next patch. A
+successful apply already validates the complete candidate and regenerates outputs, so a second
+`validate` is redundant. Run `status --require-current` only when checking outputs without making
+a model change or when recovering from an earlier output-write failure.
 
 Workbench can remain open while an automation client uses `regmapc`. A clean Workbench session
 automatically reloads a valid external project save. Unsaved Workbench edits are never silently

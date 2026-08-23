@@ -7,7 +7,6 @@
 #include <map>
 #include <optional>
 #include <set>
-#include <sstream>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -24,17 +23,15 @@ constexpr std::string_view duplicateNameCode = "RM3002";
 constexpr std::string_view addressWidthCode = "RM3010";
 constexpr std::string_view addressRangeCode = "RM3011";
 constexpr std::string_view registerWidthCode = "RM3020";
-constexpr std::string_view arrayCountCode = "RM3021";
-constexpr std::string_view strideCode = "RM3022";
 constexpr std::string_view registerRangeCode = "RM3023";
 constexpr std::string_view addressOverlapCode = "RM3024";
 constexpr std::string_view blockOverlapCode = "RM3025";
+constexpr std::string_view registerAlignmentCode = "RM3026";
 constexpr std::string_view fieldRangeCode = "RM3030";
 constexpr std::string_view fieldOverlapCode = "RM3031";
 constexpr std::string_view accessConflictCode = "RM3032";
 constexpr std::string_view sideEffectCode = "RM3033";
 constexpr std::string_view resetWidthCode = "RM3034";
-constexpr std::string_view resetMismatchCode = "RM3035";
 constexpr std::string_view fieldTypeCode = "RM3036";
 constexpr std::string_view enumWidthCode = "RM3040";
 constexpr std::string_view duplicateEnumCode = "RM3041";
@@ -50,8 +47,9 @@ struct AddressInterval {
     std::uint64_t first{0};
     std::uint64_t last{0};
     const Register* reg{nullptr};
-    std::uint32_t instance{0};
 };
+
+constexpr std::uint64_t registerSlotBytes = 4;
 
 struct BlockAddressInterval {
     std::uint64_t first{0};
@@ -66,16 +64,6 @@ struct BlockAddressInterval {
         return true;
     }
     result = left + right;
-    return false;
-}
-
-[[nodiscard]] bool multiplyOverflow(std::uint64_t left, std::uint64_t right,
-                                    std::uint64_t& result) noexcept
-{
-    if (left != 0 && right > std::numeric_limits<std::uint64_t>::max() / left) {
-        return true;
-    }
-    result = left * right;
     return false;
 }
 
@@ -433,49 +421,41 @@ void Validator::validateBlock(const AddressSpace& addressSpace, const RegisterBl
         }
 
         validateRegister(reg);
-        if (reg.width == 0 || reg.array.count == 0 || blockAddressOverflow) {
+        if (blockAddressOverflow) {
             continue;
         }
 
-        const std::uint64_t byteWidth = (static_cast<std::uint64_t>(reg.width) + 7) / 8;
-        for (std::uint32_t instance = 0; instance < reg.array.count; ++instance) {
-            std::uint64_t arrayOffset = 0;
-            std::uint64_t registerOffset = 0;
-            std::uint64_t absoluteStart = 0;
-            std::uint64_t absoluteLast = 0;
-            const bool overflow = multiplyOverflow(reg.array.stride, instance, arrayOffset) ||
-                                  addOverflow(reg.offset, arrayOffset, registerOffset) ||
-                                  addOverflow(blockAbsolute, registerOffset, absoluteStart) ||
-                                  addOverflow(absoluteStart, byteWidth - 1, absoluteLast);
-            if (overflow) {
-                addDiagnostic(diagnostics_, registerRangeCode,
-                              "Register address calculation overflows the 64-bit address range.",
-                              reg.id, propertySource(reg, "offset"));
-                break;
-            }
-
-            if (block.size.has_value()) {
-                std::uint64_t localLast = 0;
-                if (addOverflow(registerOffset, byteWidth - 1, localLast) ||
-                    localLast >= *block.size) {
-                    addDiagnostic(
-                        diagnostics_, registerRangeCode,
-                        "Register instance lies outside the declared register-block size.", reg.id,
-                        propertySource(reg, "offset"));
-                }
-            }
-
-            if (addressSpace.addressWidth > 0 && addressSpace.addressWidth < 64) {
-                const std::uint64_t limit = std::uint64_t{1} << addressSpace.addressWidth;
-                if (absoluteLast >= limit) {
-                    addDiagnostic(diagnostics_, addressRangeCode,
-                                  "Register instance lies outside the Page address width.", reg.id,
-                                  propertySource(reg, "offset"));
-                }
-            }
-
-            intervals.push_back(AddressInterval{absoluteStart, absoluteLast, &reg, instance});
+        std::uint64_t absoluteStart = 0;
+        std::uint64_t absoluteLast = 0;
+        const bool overflow = addOverflow(blockAbsolute, reg.offset, absoluteStart) ||
+                              addOverflow(absoluteStart, registerSlotBytes - 1, absoluteLast);
+        if (overflow) {
+            addDiagnostic(diagnostics_, registerRangeCode,
+                          "Register address calculation overflows the 64-bit address range.",
+                          reg.id, propertySource(reg, "offset"));
+            continue;
         }
+
+        if (block.size.has_value()) {
+            std::uint64_t localLast = 0;
+            if (addOverflow(reg.offset, registerSlotBytes - 1, localLast) ||
+                localLast >= *block.size) {
+                addDiagnostic(diagnostics_, registerRangeCode,
+                              "Register lies outside the declared register-block size.", reg.id,
+                              propertySource(reg, "offset"));
+            }
+        }
+
+        if (addressSpace.addressWidth > 0 && addressSpace.addressWidth < 64) {
+            const std::uint64_t limit = std::uint64_t{1} << addressSpace.addressWidth;
+            if (absoluteLast >= limit) {
+                addDiagnostic(diagnostics_, addressRangeCode,
+                              "Register lies outside the Page address width.", reg.id,
+                              propertySource(reg, "offset"));
+            }
+        }
+
+        intervals.push_back(AddressInterval{absoluteStart, absoluteLast, &reg});
     }
 }
 
@@ -514,8 +494,8 @@ void Validator::validateBlockAddressIntervals(
 void Validator::validateAddressIntervals(std::vector<AddressInterval>& intervals)
 {
     std::sort(intervals.begin(), intervals.end(), [](const auto& left, const auto& right) {
-        return std::tuple{left.first, left.last, left.reg->id, left.instance} <
-               std::tuple{right.first, right.last, right.reg->id, right.instance};
+        return std::tuple{left.first, left.last, left.reg->id} <
+               std::tuple{right.first, right.last, right.reg->id};
     });
     if (intervals.empty()) {
         return;
@@ -525,11 +505,9 @@ void Validator::validateAddressIntervals(std::vector<AddressInterval>& intervals
     for (std::size_t index = 1; index < intervals.size(); ++index) {
         const AddressInterval& current = intervals[index];
         if (current.first <= active->last) {
-            std::ostringstream message;
-            message << "Register '" << current.reg->name << "' instance " << current.instance
-                    << " overlaps register '" << active->reg->name << "' instance "
-                    << active->instance << ".";
-            addDiagnostic(diagnostics_, addressOverlapCode, message.str(), current.reg->id,
+            const std::string message = "Register '" + current.reg->name +
+                "' overlaps register '" + active->reg->name + "'.";
+            addDiagnostic(diagnostics_, addressOverlapCode, message, current.reg->id,
                           propertySource(*current.reg, "offset"));
         }
         if (current.last > active->last) {
@@ -541,21 +519,15 @@ void Validator::validateAddressIntervals(std::vector<AddressInterval>& intervals
 void Validator::validateRegister(const Register& reg)
 {
     validateIdentity(reg.id, reg.name, "register", reg.source);
-    if (reg.width == 0) {
-        addDiagnostic(diagnostics_, registerWidthCode, "Register width must be greater than zero.",
-                      reg.id, propertySource(reg, "width"));
+    if (reg.width == 0 || reg.width > 32) {
+        addDiagnostic(diagnostics_, registerWidthCode,
+                      "Register width must be between 1 and 32 bits.", reg.id,
+                      propertySource(reg, "width"));
     }
-    if (reg.array.count == 0) {
-        addDiagnostic(diagnostics_, arrayCountCode,
-                      "Register array count must be greater than zero.", reg.id,
-                      propertySource(reg, "array_count"));
-    }
-
-    const std::uint64_t byteWidth = (static_cast<std::uint64_t>(reg.width) + 7) / 8;
-    if (reg.array.count > 1 && reg.array.stride < byteWidth) {
-        addDiagnostic(diagnostics_, strideCode,
-                      "Register array stride is smaller than the register byte width.", reg.id,
-                      propertySource(reg, "stride"));
+    if (reg.offset % registerSlotBytes != 0) {
+        addDiagnostic(diagnostics_, registerAlignmentCode,
+                      "Register offset must be aligned to 4 bytes.", reg.id,
+                      propertySource(reg, "offset"));
     }
     if (reg.resetValue.has_value() && !reg.resetValue->fitsInBits(reg.width)) {
         addDiagnostic(diagnostics_, resetWidthCode,
@@ -776,7 +748,9 @@ void Validator::validateField(const Register& reg, const Field& field, std::uint
     validateIdentity(field.id, field.name, "field", field.source);
     const std::uint64_t fieldWidth = field.width();
     const std::uint64_t registerLsb = absoluteLsb + field.lsb;
-    if (fieldWidth == 0 || field.msb >= containerWidth) {
+    const bool registerRangeValid = registerLsb >= absoluteLsb && fieldWidth > 0 &&
+        registerLsb <= reg.width && fieldWidth <= reg.width - registerLsb;
+    if (fieldWidth == 0 || field.msb >= containerWidth || !registerRangeValid) {
         addDiagnostic(diagnostics_, fieldRangeCode,
                       "Field bit range is reversed or lies outside its containing width.", field.id,
                       propertySource(field, "msb"));
@@ -815,16 +789,16 @@ void Validator::validateField(const Register& reg, const Field& field, std::uint
                       propertySource(field, "write_side_effect"));
     }
 
-    if (field.resetValue.has_value() && !field.resetValue->fitsInBits(fieldWidth)) {
+    const bool resetFromRegister = reg.type == FieldType::structure &&
+        reg.resetValue.has_value() && registerRangeValid;
+    const std::optional<UnsignedValue> effectiveReset = resetFromRegister
+        ? std::optional<UnsignedValue>{reg.resetValue->slice(registerLsb, fieldWidth)}
+        : std::nullopt;
+    if (effectiveReset.has_value() && !effectiveReset->fitsInBits(fieldWidth)) {
         addDiagnostic(diagnostics_, resetWidthCode,
                       "Field reset value does not fit the field width.", field.id,
-                      propertySource(field, "reset"));
-    }
-    if (field.resetValue.has_value() && reg.resetValue.has_value() && fieldWidth > 0 &&
-        *field.resetValue != reg.resetValue->slice(registerLsb, fieldWidth)) {
-        addDiagnostic(diagnostics_, resetMismatchCode,
-                      "Field reset value does not match the corresponding register reset bits.",
-                      field.id, propertySource(field, "reset"));
+                      resetFromRegister ? propertySource(reg, "reset")
+                                        : propertySource(field, "reset"));
     }
 
     std::set<std::string, std::less<>> enumNames;
@@ -859,18 +833,14 @@ void Validator::validateField(const Register& reg, const Field& field, std::uint
                       propertySource(field, "type"), DiagnosticSeverity::warning);
     }
 
-    std::optional<UnsignedValue> effectiveReset = field.resetValue;
-    if (!effectiveReset.has_value() && reg.resetValue.has_value() && fieldWidth > 0) {
-        effectiveReset = reg.resetValue->slice(registerLsb, fieldWidth);
-    }
     if (enumerationLike && !field.enumValues.empty() && effectiveReset.has_value() &&
         std::ranges::none_of(field.enumValues, [&](const EnumValue& enumValue) {
             return enumValue.value == *effectiveReset;
         })) {
         addDiagnostic(diagnostics_, enumResetCode,
                       "Field reset value is not represented by an enum value.", field.id,
-                      field.resetValue.has_value() ? propertySource(field, "reset")
-                                                   : propertySource(reg, "reset"));
+                      resetFromRegister ? propertySource(reg, "reset")
+                                        : propertySource(field, "reset"));
     }
 
     const bool numeric =
@@ -919,7 +889,8 @@ void Validator::validateField(const Register& reg, const Field& field, std::uint
         addDiagnostic(
             diagnostics_, numericRangeCode,
             "Field reset value lies outside the configured numeric range.", field.id,
-            field.resetValue ? propertySource(field, "reset") : propertySource(reg, "reset"),
+            resetFromRegister ? propertySource(reg, "reset")
+                              : propertySource(field, "reset"),
             DiagnosticSeverity::warning);
     }
 

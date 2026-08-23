@@ -356,6 +356,11 @@ QLineEdit:focus, QComboBox:focus, QSpinBox:focus,
 QDoubleSpinBox:focus, QTextEdit:focus, QPlainTextEdit:focus {
     border: 1px solid #385D8A;
 }
+QLineEdit[readOnly="true"] {
+    background: #E7ECF2;
+    color: #526579;
+    border-color: #C6D2E1;
+}
 QPushButton {
     background: #E7ECF2;
     color: #0B1F33;
@@ -405,6 +410,32 @@ QLabel#fixedAddressLegend {
 }
 QLabel#registerCountLabel {
     color: #385D8A;
+}
+QLabel#registerSelectionLabel,
+QLabel#fieldSelectionLabel {
+    color: #17365D;
+    background: #DCE6F1;
+    border: 1px solid #9FB0C4;
+    border-radius: 7px;
+    padding: 2px 7px;
+    font-weight: 600;
+}
+QWidget#registerFeedbackBar,
+QWidget#fieldFeedbackBar {
+    background: #FCE8E6;
+    border: 1px solid #C65D57;
+    border-radius: 3px;
+}
+QLabel#registerFeedbackLabel,
+QLabel#fieldFeedbackLabel {
+    color: #7A1F1B;
+}
+QWidget#registerFeedbackBar QToolButton,
+QWidget#fieldFeedbackBar QToolButton {
+    color: #7A1F1B;
+    background: transparent;
+    border: none;
+    padding: 2px 6px;
 }
 QToolButton#clearTagFilterButton {
     color: #385D8A;

@@ -45,8 +45,10 @@ the smallest visual unit. Register and Field geometry remains in the tables and 
 Register base addressing remains normalized as `page base + block base + register offset`.
 Register type, numeric range, initial/reset values, tags, and the reserved-slot flag are
 properties of the single model and therefore take part in YAML persistence, managed-RTL
-synchronization, diff, validation, and generation. Array count and stride remain internal
-compatibility properties and are not presented in Workbench or XLSX.
+synchronization, diff, validation, and generation. Every Register occupies one fixed four-byte
+address slot and starts on a four-byte boundary. Legacy array count/stride properties are accepted
+only while loading older projects, normalized to a scalar Register, and omitted from newly saved
+projects and generated views.
 
 Workbench edits are transactions over a working copy. Each accepted transaction is validated
 and enters the undo history. Save uses atomic replacement for each project-owned file and marks
@@ -104,11 +106,13 @@ overwritten. Details are specified in [rtl-sync.md](rtl-sync.md).
 
 XLSX, C header, and Markdown generation is deterministic for a normalized model. Files are
 written by atomic replacement and then marked read-only. They are not watched as input and are
-never merged. XLSX contains one worksheet per Page, with Page metadata at the top and Block
+never merged. XLSX opens on a flat Overview worksheet with one row per Block and contains one
+additional worksheet per Page, with Page metadata at the top and Block
 metadata in section bands. Register groups alternate background colors; only structure registers
 contain a generated static bitfield diagram and field tree. Diagram and field rows are initially
-collapsed and can be expanded with Excel outline controls. Header rows and key columns are
-frozen, and each Page table is filterable. A later successful save or explicit generation
+collapsed and can be expanded with Excel outline controls. Header rows are frozen. AutoFilter is
+limited to the flat Overview sheet; mixed Page detail layouts are not filterable. A later
+successful save or explicit generation
 replaces any externally modified copy. A byte-identical output with intact read-only permission
 is not replaced, so its timestamp and an existing read handle remain undisturbed. The CLI
 `status` command exposes the same content-and-permission check without writing.

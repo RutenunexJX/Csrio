@@ -11,7 +11,25 @@ execute_process(
 if(_regmap_git_result EQUAL 0 AND NOT _regmap_git_output STREQUAL "")
     set(_regmap_revision "${_regmap_git_output}")
 endif()
+
+set(_regmap_source_suffix "-source-unknown")
+execute_process(
+    COMMAND
+        "@GIT_EXECUTABLE@" -C "@PROJECT_SOURCE_DIR@"
+        status --porcelain --untracked-files=normal
+    RESULT_VARIABLE _regmap_status_result
+    OUTPUT_VARIABLE _regmap_status_output
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(_regmap_status_result EQUAL 0)
+    if(_regmap_status_output STREQUAL "")
+        set(_regmap_source_suffix "")
+    else()
+        set(_regmap_source_suffix "-dirty")
+    endif()
+endif()
 set(
     CPACK_PACKAGE_FILE_NAME
-    "RegMapWorkbench-@PROJECT_VERSION@-@REGMAP_PACKAGE_PLATFORM@-${_regmap_revision}"
+    "RegMapWorkbench-@PROJECT_VERSION@-@REGMAP_PACKAGE_PLATFORM@-${_regmap_revision}${_regmap_source_suffix}"
 )

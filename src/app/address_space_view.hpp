@@ -14,6 +14,7 @@
 class QKeyEvent;
 class QMouseEvent;
 class QPaintEvent;
+class QWheelEvent;
 
 class AddressSpaceView final : public QWidget {
     Q_OBJECT
@@ -25,6 +26,10 @@ public:
     void setSelection(
         const std::string& pageId,
         const std::string& blockId);
+    [[nodiscard]] std::uint32_t zoomLevel() const noexcept
+    {
+        return zoomLevel_;
+    }
     [[nodiscard]] QSize sizeHint() const override;
 
 signals:
@@ -36,6 +41,7 @@ protected:
     void mouseMoveEvent(QMouseEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
+    void wheelEvent(QWheelEvent* event) override;
     void leaveEvent(QEvent* event) override;
 
 private:
@@ -71,8 +77,11 @@ private:
     std::string selectedBlockId_;
     int hoveredPage_{-1};
     int hoveredBlock_{-1};
+    std::uint32_t zoomLevel_{1};
+    std::uint64_t viewStart_{0};
 
     [[nodiscard]] int labelWidth() const;
+    [[nodiscard]] std::uint64_t visibleSpan() const;
     [[nodiscard]] QRect laneRect(std::size_t pageIndex) const;
     [[nodiscard]] QRect trackRect(std::size_t pageIndex) const;
     [[nodiscard]] QRect pageSpanRect(std::size_t pageIndex) const;
@@ -83,6 +92,8 @@ private:
     [[nodiscard]] std::optional<std::pair<int, int>>
     blockAt(const QPoint& position) const;
     void updateHover(int pageIndex, int blockIndex);
+    void setZoomLevel(std::uint32_t level);
+    void focusSelectedBlock();
     void activatePage(std::size_t pageIndex);
     void activateBlock(
         std::size_t pageIndex,

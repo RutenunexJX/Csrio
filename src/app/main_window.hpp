@@ -30,6 +30,7 @@ class QPoint;
 class QModelIndex;
 class QPushButton;
 class QSplitter;
+class QScrollArea;
 class QStandardItem;
 class QStandardItemModel;
 class QTabWidget;
@@ -61,6 +62,7 @@ private:
         fieldsOpenRole,
         fixedAddressRole,
         resultKeyRole,
+        fieldDepthRole,
     };
 
     ProjectController controller_;
@@ -72,6 +74,7 @@ private:
     QTableView* registerView_{nullptr};
     QLabel* pageContextLabel_{nullptr};
     AddressSpaceView* addressSpaceView_{nullptr};
+    QScrollArea* addressSpaceScroll_{nullptr};
     QLabel* blockContextLabel_{nullptr};
     QLineEdit* pageBaseEdit_{nullptr};
     QLineEdit* pageWidthEdit_{nullptr};
@@ -83,6 +86,9 @@ private:
     QCompleter* tagFilterCompleter_{nullptr};
     QToolButton* clearTagFilterButton_{nullptr};
     QLabel* registerCountLabel_{nullptr};
+    QLabel* registerSelectionLabel_{nullptr};
+    QWidget* registerFeedbackBar_{nullptr};
+    QLabel* registerFeedbackLabel_{nullptr};
     QToolButton* registerBatchEditButton_{nullptr};
     QWidget* registerEmptyState_{nullptr};
     QLabel* registerEmptyTitleLabel_{nullptr};
@@ -95,6 +101,9 @@ private:
     QWidget* fieldPanel_{nullptr};
     QWidget* fieldHeaderBar_{nullptr};
     QLabel* fieldContextLabel_{nullptr};
+    QLabel* fieldSelectionLabel_{nullptr};
+    QWidget* fieldFeedbackBar_{nullptr};
+    QLabel* fieldFeedbackLabel_{nullptr};
     QToolButton* fieldBatchEditButton_{nullptr};
     QPushButton* closeFieldsButton_{nullptr};
     QWidget* enumPanel_{nullptr};
@@ -283,6 +292,9 @@ private:
     void applyRegisterColumnVisibility();
     void applyFieldColumnVisibility();
     void updateRegisterEmptyState();
+    void updateRowSelectionPresentation();
+    void showInlineFailure(const QString& message);
+    void clearInlineFailure();
     void triggerRegisterEmptyAction(EmptyStateAction action);
     void showTableHeaderContextMenu(
         QTableView* view, const QPoint& position, bool registerTable);
@@ -316,7 +328,8 @@ private:
                                          const std::string& property,
                                          const QString& value,
                                          bool reportFeedback = true,
-                                         bool applyChanges = true);
+                                         bool applyChanges = true,
+                                         regmap::Workspace* stagedWorkspace = nullptr);
     void addAddressSpace();
     void addBlock(std::string parentId = {});
     void addRegister(

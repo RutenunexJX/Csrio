@@ -3,6 +3,7 @@
 #include "address_space_view.hpp"
 #include "bitfield_view.hpp"
 #include "source_navigation.hpp"
+#include "table_selection_utils.hpp"
 
 #include "regmap/core/model_tokens.hpp"
 #include "regmap/core/serialization.hpp"
@@ -60,6 +61,7 @@
 #include <QRegularExpression>
 #include <QScopedValueRollback>
 #include <QScreen>
+#include <QScrollArea>
 #include <QScrollBar>
 #include <QSignalBlocker>
 #include <QShortcut>
@@ -103,10 +105,10 @@
 
 namespace {
 
-constexpr std::uint32_t maximumEditableWidth = 65536;
+constexpr std::uint32_t maximumRegisterWidth = 32;
+constexpr std::uint32_t maximumFieldWidth = 65536;
 constexpr std::string_view addressWidthDiagnosticCode = "RM3010";
 constexpr std::string_view addressRangeDiagnosticCode = "RM3011";
-constexpr std::string_view strideDiagnosticCode = "RM3022";
 constexpr std::string_view registerRangeDiagnosticCode = "RM3023";
 constexpr std::string_view addressOverlapDiagnosticCode = "RM3024";
 constexpr std::string_view blockOverlapDiagnosticCode = "RM3025";
@@ -198,6 +200,18 @@ enum class HierarchyDropPlacement {
         QStringLiteral("uint64"), QStringLiteral("int8"),
         QStringLiteral("int16"),  QStringLiteral("int32"),
         QStringLiteral("int64"),   QStringLiteral("field"),
+        QStringLiteral("reserved")};
+    return choices;
+}
+
+[[nodiscard]] const QStringList& registerValueTypeChoices()
+{
+    static const QStringList choices{
+        QStringLiteral("bits"),   QStringLiteral("bool"),
+        QStringLiteral("enum"),   QStringLiteral("uint8"),
+        QStringLiteral("uint16"), QStringLiteral("uint32"),
+        QStringLiteral("int8"),   QStringLiteral("int16"),
+        QStringLiteral("int32"),  QStringLiteral("field"),
         QStringLiteral("reserved")};
     return choices;
 }
@@ -393,10 +407,6 @@ parseTabularText(
         return QStringLiteral(
             "Address Width");
     }
-    if (property == "array_count") {
-        return QStringLiteral(
-            "Array Count");
-    }
     if (property == "field_width") {
         return QStringLiteral(
             "Field Width");
@@ -480,10 +490,6 @@ parseTabularText(
     if (property == "msb") {
         return QStringLiteral(
             "MSB");
-    }
-    if (property == "stride") {
-        return QStringLiteral(
-            "Stride");
     }
     return fromUtf8(property);
 }
@@ -857,6 +863,7 @@ struct TableCellReference {
 
 struct TableSelectionSnapshot {
     std::vector<TableCellReference> selected;
+    std::vector<std::string> completeRows;
     std::optional<TableCellReference> current;
     int horizontalScroll{0};
     int verticalScroll{0};
@@ -905,6 +912,24 @@ captureTableSelection(QTableView* view, int objectRole, int propertyRole)
             reference &&
             std::ranges::find(snapshot.selected, *reference) == snapshot.selected.end()) {
             snapshot.selected.push_back(*reference);
+        }
+    }
+    for (const int row :
+         regmap::ui::fullySelectedRows(view)) {
+        const std::string objectId =
+            view->model()
+                ->index(row, 0)
+                .data(objectRole)
+                .toString()
+                .toUtf8()
+                .toStdString();
+        if (!objectId.empty() &&
+            std::ranges::find(
+                snapshot.completeRows,
+                objectId) ==
+                snapshot.completeRows.end()) {
+            snapshot.completeRows.push_back(
+                objectId);
         }
     }
     snapshot.current =
@@ -1062,6 +1087,23 @@ void retargetRemovedSelection(
     }
     snapshot.selected =
         std::move(retained);
+    std::vector<std::string> retainedRows;
+    for (auto rowId : snapshot.completeRows) {
+        if (exists(rowId)) {
+            retainedRows.push_back(
+                std::move(rowId));
+        } else if (rowId == removedId &&
+                   !replacementId.empty() &&
+                   std::ranges::find(
+                       retainedRows,
+                       replacementId) ==
+                       retainedRows.end()) {
+            retainedRows.push_back(
+                replacementId);
+        }
+    }
+    snapshot.completeRows =
+        std::move(retainedRows);
     if (snapshot.current &&
         !exists(
             snapshot.current
@@ -1088,13 +1130,32 @@ void restoreTableSelection(QTableView* view, const TableSelectionSnapshot& snaps
                            int objectRole, int propertyRole)
 {
     if (view == nullptr || view->model() == nullptr || view->selectionModel() == nullptr ||
-        snapshot.selected.empty()) {
+        (snapshot.selected.empty() && snapshot.completeRows.empty())) {
         return;
     }
     QModelIndex first;
     QModelIndex current;
     view->selectionModel()->clearSelection();
     for (int row = 0; row < view->model()->rowCount(); ++row) {
+        const std::string rowObjectId =
+            view->model()
+                ->index(row, 0)
+                .data(objectRole)
+                .toString()
+                .toUtf8()
+                .toStdString();
+        if (std::ranges::find(
+                snapshot.completeRows,
+                rowObjectId) !=
+            snapshot.completeRows.end()) {
+            view->selectionModel()->select(
+                QItemSelection(
+                    view->model()->index(row, 0),
+                    view->model()->index(
+                        row,
+                        view->model()->columnCount() - 1)),
+                QItemSelectionModel::Select);
+        }
         for (int column = 0; column < view->model()->columnCount(); ++column) {
             const QModelIndex index = view->model()->index(row, column);
             const auto reference = tableCellReference(index, objectRole, propertyRole);
@@ -1431,6 +1492,57 @@ public:
     }
 };
 
+class FieldHierarchyDelegate final : public QStyledItemDelegate {
+public:
+    FieldHierarchyDelegate(int depthRole, QObject* parent = nullptr)
+        : QStyledItemDelegate(parent)
+        , depthRole_(depthRole)
+    {
+    }
+
+    void paint(QPainter* painter, const QStyleOptionViewItem& option,
+               const QModelIndex& index) const override
+    {
+        QStyleOptionViewItem decorated(option);
+        initStyleOption(&decorated, index);
+        const int depth = std::max(0, index.data(depthRole_).toInt());
+        if (depth > 0) {
+            decorated.text =
+                QString(depth * 3, QChar::Space) +
+                QStringLiteral("└ ") + decorated.text;
+        }
+        const QWidget* widget = decorated.widget;
+        QStyle* style = widget != nullptr
+                            ? widget->style()
+                            : QApplication::style();
+        style->drawControl(
+            QStyle::CE_ItemViewItem, &decorated,
+            painter, widget);
+    }
+
+    [[nodiscard]] QWidget* createEditor(
+        QWidget* parent, const QStyleOptionViewItem& option,
+        const QModelIndex& index) const override
+    {
+        QWidget* editor = QStyledItemDelegate::createEditor(
+            parent, option, index);
+        installProjectDropRouting(editor);
+        return editor;
+    }
+
+    void updateEditorGeometry(
+        QWidget* editor, const QStyleOptionViewItem& option,
+        const QModelIndex& index) const override
+    {
+        const int depth = std::max(0, index.data(depthRole_).toInt());
+        editor->setGeometry(
+            option.rect.adjusted(depth * 18, 1, -1, -1));
+    }
+
+private:
+    int depthRole_;
+};
+
 class AccessItemDelegate final : public QStyledItemDelegate {
 public:
     explicit AccessItemDelegate(QObject* parent = nullptr)
@@ -1491,8 +1603,11 @@ public:
 
 class TypeItemDelegate final : public QStyledItemDelegate {
 public:
-    explicit TypeItemDelegate(QObject* parent = nullptr)
+    explicit TypeItemDelegate(
+        QStringList choices,
+        QObject* parent = nullptr)
         : QStyledItemDelegate(parent)
+        , choices_(std::move(choices))
     {
     }
 
@@ -1506,7 +1621,7 @@ public:
         editor->setObjectName(QStringLiteral("typeEditor"));
         editor->setEditable(true);
         editor->setInsertPolicy(QComboBox::NoInsert);
-        editor->addItems(valueTypeChoices());
+        editor->addItems(choices_);
         editor->setToolTip(
             QStringLiteral(
                 "Select a common Type or enter a custom intN/uintN width."));
@@ -1556,6 +1671,9 @@ public:
         Q_UNUSED(index)
         editor->setGeometry(option.rect);
     }
+
+private:
+    QStringList choices_;
 };
 
 class FieldsButtonDelegate final : public QStyledItemDelegate {
@@ -2366,11 +2484,11 @@ protected:
             std::set<std::string, std::less<>>
                 selectedFixedIds;
             if (selectionModel() != nullptr) {
-                for (const QModelIndex& selected :
-                     selectionModel()->selectedIndexes()) {
+                for (const int row :
+                     regmap::ui::fullySelectedRows(this)) {
                     const QModelIndex identity =
                         model()->index(
-                            selected.row(),
+                            row,
                             registerNameColumn);
                     const std::string id =
                         identity
@@ -2498,10 +2616,8 @@ private:
 
 [[nodiscard]] std::uint64_t registerExtent(const regmap::Register& reg)
 {
-    const std::uint64_t byteWidth = (static_cast<std::uint64_t>(reg.width) + 7U) / 8U;
-    return reg.array.count > 1
-               ? static_cast<std::uint64_t>(reg.array.count - 1) * reg.array.stride + byteWidth
-               : byteWidth;
+    Q_UNUSED(reg);
+    return 4;
 }
 
 [[nodiscard]] const regmap::Field* findFieldRecursive(const std::vector<regmap::Field>& fields,
@@ -2599,21 +2715,6 @@ enumOwnerContext(const regmap::Workspace& workspace, std::string_view enumValueI
     return resetFits && enumsFit && membersFit;
 }
 
-void configureTable(QTableView* view)
-{
-    view->setSelectionBehavior(QAbstractItemView::SelectItems);
-    view->setSelectionMode(QAbstractItemView::ExtendedSelection);
-    view->setAlternatingRowColors(true);
-    view->setSortingEnabled(false);
-    view->setShowGrid(true);
-    view->setWordWrap(false);
-    view->setCornerButtonEnabled(false);
-    view->verticalHeader()->setVisible(false);
-    view->verticalHeader()->setDefaultSectionSize(28);
-    view->horizontalHeader()->setMinimumSectionSize(72);
-    view->horizontalHeader()->setStretchLastSection(true);
-}
-
 [[nodiscard]] QModelIndex
 prepareContextSelection(
     QTableView* view,
@@ -2624,29 +2725,16 @@ prepareContextSelection(
         view->selectionModel() == nullptr) {
         return {};
     }
-    const QModelIndexList selectedIndexes =
-        view->selectionModel()
-            ->selectedIndexes();
-    const auto selectedInRow =
-        std::ranges::find_if(
-            selectedIndexes,
-            [&index](
-                const QModelIndex& selected) {
-                return selected.row() ==
-                    index.row();
-            });
-    if (selectedInRow ==
-        selectedIndexes.end()) {
+    if (!view->selectionModel()
+             ->isRowSelected(
+                 index.row(), {})) {
         view->selectionModel()->select(
             index,
             QItemSelectionModel::
-                ClearAndSelect);
-        return index;
+                    ClearAndSelect |
+                QItemSelectionModel::Rows);
     }
-    return view->selectionModel()
-                   ->isSelected(index)
-        ? index
-        : *selectedInRow;
+    return index;
 }
 
 [[nodiscard]] bool addOverflow(std::uint64_t left, std::uint64_t right, std::uint64_t& output)
@@ -2666,27 +2754,8 @@ struct BlockAddressInterval {
 [[nodiscard]] std::optional<std::uint64_t>
 checkedRegisterExtent(const regmap::Register& reg)
 {
-    const std::uint64_t byteWidth =
-        (static_cast<std::uint64_t>(reg.width) + 7U) / 8U;
-    if (reg.width == 0 || reg.array.count == 0) {
-        return std::nullopt;
-    }
-    if (reg.array.count == 1) {
-        return byteWidth;
-    }
-    const std::uint64_t instances =
-        static_cast<std::uint64_t>(reg.array.count - 1);
-    if (reg.array.stride != 0 &&
-        instances >
-            std::numeric_limits<std::uint64_t>::max() /
-                reg.array.stride) {
-        return std::nullopt;
-    }
-    const std::uint64_t lastOffset = instances * reg.array.stride;
-    std::uint64_t extent = 0;
-    return addOverflow(lastOffset, byteWidth, extent)
-               ? std::nullopt
-               : std::optional{extent};
+    Q_UNUSED(reg);
+    return std::uint64_t{4};
 }
 
 [[nodiscard]] std::optional<std::uint64_t>
@@ -3159,14 +3228,15 @@ configuredDeletionItems(const RegisterDeletionImpact& impact)
 [[nodiscard]] std::optional<regmap::UnsignedValue>
 effectiveFieldReset(const regmap::Field& field, const regmap::Register* owner)
 {
-    if (field.resetValue) {
-        return field.resetValue;
-    }
     if (owner == nullptr || !owner->resetValue) {
         return std::nullopt;
     }
     const auto absoluteLsb = fieldAbsoluteLsb(owner->fields, field.id);
-    if (!absoluteLsb) {
+    if (!absoluteLsb ||
+        *absoluteLsb > owner->width ||
+        field.width() >
+            static_cast<std::uint64_t>(owner->width) -
+                *absoluteLsb) {
         return std::nullopt;
     }
     return owner->resetValue->slice(
@@ -3280,6 +3350,25 @@ fieldSiblings(const std::vector<regmap::Field>& fields, std::string_view fieldId
     }
     for (const auto& field : fields) {
         if (const auto* siblings = fieldSiblings(field.members, fieldId)) {
+            return siblings;
+        }
+    }
+    return nullptr;
+}
+
+[[nodiscard]] std::vector<regmap::Field>*
+fieldSiblings(std::vector<regmap::Field>& fields, std::string_view fieldId)
+{
+    if (std::ranges::any_of(
+            fields,
+            [&](const regmap::Field& field) {
+                return field.id == fieldId;
+            })) {
+        return &fields;
+    }
+    for (auto& field : fields) {
+        if (auto* siblings =
+                fieldSiblings(field.members, fieldId)) {
             return siblings;
         }
     }
@@ -3454,7 +3543,6 @@ blockSiblings(const regmap::Workspace& workspace, std::string_view blockId)
 {
     return code == addressWidthDiagnosticCode ||
            code == addressRangeDiagnosticCode ||
-           code == strideDiagnosticCode ||
            code == registerRangeDiagnosticCode ||
            code == addressOverlapDiagnosticCode ||
            code == blockOverlapDiagnosticCode;
@@ -3763,16 +3851,26 @@ void refreshFieldResets(regmap::Field& field,
                         const std::optional<regmap::UnsignedValue>& registerReset,
                         std::uint64_t parentLsb)
 {
+    if (!registerReset) {
+        field.resetValue.reset();
+        for (auto& member : field.members) {
+            refreshFieldResets(
+                member, std::nullopt, 0);
+        }
+        return;
+    }
     std::uint64_t absoluteLsb = 0;
     if (field.msb < field.lsb || addOverflow(parentLsb, field.lsb, absoluteLsb)) {
+        field.resetValue.reset();
+        for (auto& member : field.members) {
+            refreshFieldResets(
+                member, std::nullopt, 0);
+        }
         return;
     }
     const std::size_t width = field.width();
-    if (registerReset) {
-        field.resetValue = registerReset->slice(static_cast<std::size_t>(absoluteLsb), width);
-    } else if (field.resetValue && !field.resetValue->fitsInBits(width)) {
-        field.resetValue = field.resetValue->slice(0, width);
-    }
+    field.resetValue = registerReset->slice(
+        static_cast<std::size_t>(absoluteLsb), width);
     for (auto& member : field.members) {
         refreshFieldResets(member, registerReset, absoluteLsb);
     }
@@ -3805,12 +3903,11 @@ mergedRegisterReset(const regmap::Register& reg, std::string_view fieldId,
 void assignFieldReset(regmap::Workspace& workspace, std::string_view fieldId,
                       const std::optional<regmap::UnsignedValue>& value)
 {
-    auto* field = regmap::findField(workspace, fieldId);
-    if (field == nullptr) {
+    auto* reg = findRegisterContainingField(workspace, fieldId);
+    if (reg == nullptr) {
         return;
     }
-    auto* reg = findRegisterContainingField(workspace, fieldId);
-    if (value && reg != nullptr) {
+    if (value && reg->resetValue) {
         const auto merged = mergedRegisterReset(*reg, fieldId, *value);
         if (merged) {
             reg->resetValue = *merged;
@@ -3818,7 +3915,7 @@ void assignFieldReset(regmap::Workspace& workspace, std::string_view fieldId,
             return;
         }
     }
-    field->resetValue = value;
+    refreshRegisterFieldResets(*reg);
 }
 
 [[nodiscard]] bool enumValueIsReferenced(const regmap::Workspace& workspace,
@@ -3836,15 +3933,16 @@ void assignFieldReset(regmap::Workspace& workspace, std::string_view fieldId,
     if (field == nullptr) {
         return false;
     }
-    if (field->resetValue) {
-        return *field->resetValue == value;
-    }
     const auto* reg = findRegisterContainingField(workspace, context.ownerId);
     if (reg == nullptr || !reg->resetValue) {
         return false;
     }
     const auto absoluteLsb = fieldAbsoluteLsb(reg->fields, context.ownerId);
     return absoluteLsb &&
+           *absoluteLsb <= reg->width &&
+           field->width() <=
+               static_cast<std::uint64_t>(reg->width) -
+                   *absoluteLsb &&
            reg->resetValue
                    ->slice(static_cast<std::size_t>(*absoluteLsb),
                            static_cast<std::size_t>(field->width())) ==
@@ -4205,7 +4303,8 @@ void MainWindow::buildUi()
     registerView_ = registerTable;
     registerView_->setObjectName(QStringLiteral("registerView"));
     registerView_->setModel(registerModel_);
-    configureTable(registerView_);
+    regmap::ui::configureDataTable(registerView_);
+    regmap::ui::configureRowSelectionGutter(registerView_);
     registerView_->setItemDelegate(
         new WorkbenchItemDelegate(
             registerView_));
@@ -4226,7 +4325,10 @@ void MainWindow::buildUi()
         registerFieldsColumn,
         new FieldsButtonDelegate(openFieldsRole, fieldsOpenRole, registerView_));
     registerView_->setItemDelegateForColumn(
-        registerTypeColumn, new TypeItemDelegate(registerView_));
+        registerTypeColumn,
+        new TypeItemDelegate(
+            registerValueTypeChoices(),
+            registerView_));
     registerView_->setItemDelegateForColumn(
         registerOffsetColumn,
         new GuidedLineEditDelegate(
@@ -4241,7 +4343,7 @@ void MainWindow::buildUi()
             QStringLiteral("registerWidthEditor"),
             QStringLiteral("32"),
             QStringLiteral(
-                "Physical Register width in bits: enter 1 to 65536."),
+                "Register width in bits: enter 1 to 32. Every Register occupies one 4-byte address slot."),
             registerView_));
     registerView_->setItemDelegateForColumn(
         registerInitialColumn,
@@ -4452,6 +4554,10 @@ void MainWindow::buildUi()
     clearTagFilterButton_->setVisible(false);
     registerCountLabel_ = new QLabel(this);
     registerCountLabel_->setObjectName(QStringLiteral("registerCountLabel"));
+    registerSelectionLabel_ = new QLabel(this);
+    registerSelectionLabel_->setObjectName(
+        QStringLiteral("registerSelectionLabel"));
+    registerSelectionLabel_->setVisible(false);
     registerBatchEditButton_ =
         new QToolButton(this);
     registerBatchEditButton_->setObjectName(
@@ -4509,6 +4615,21 @@ void MainWindow::buildUi()
 
     addressSpaceView_ = new AddressSpaceView(registerPanel);
     addressSpaceView_->setVisible(false);
+    addressSpaceScroll_ =
+        new QScrollArea(registerPanel);
+    addressSpaceScroll_->setObjectName(
+        QStringLiteral("addressSpaceScroll"));
+    addressSpaceScroll_->setWidgetResizable(true);
+    addressSpaceScroll_->setFrameShape(
+        QFrame::NoFrame);
+    addressSpaceScroll_->setHorizontalScrollBarPolicy(
+        Qt::ScrollBarAlwaysOff);
+    addressSpaceScroll_->setVerticalScrollBarPolicy(
+        Qt::ScrollBarAsNeeded);
+    addressSpaceScroll_->setMinimumHeight(80);
+    addressSpaceScroll_->setMaximumHeight(300);
+    addressSpaceScroll_->setWidget(addressSpaceView_);
+    addressSpaceScroll_->setVisible(false);
     auto* registerToolsBar =
         new QWidget(registerPanel);
     registerToolsBar->setObjectName(
@@ -4545,6 +4666,8 @@ void MainWindow::buildUi()
         fixedAddressLegend);
     registerToolsLayout->addWidget(
         registerCountLabel_);
+    registerToolsLayout->addWidget(
+        registerSelectionLabel_);
     registerToolsLayout->addWidget(
         registerBatchEditButton_);
     registerToolsLayout->addStretch(1);
@@ -4602,9 +4725,43 @@ void MainWindow::buildUi()
         registerEmptyPrimaryButton_);
     registerEmptyState_->setVisible(false);
 
+    registerFeedbackBar_ =
+        new QWidget(registerPanel);
+    registerFeedbackBar_->setObjectName(
+        QStringLiteral("registerFeedbackBar"));
+    auto* registerFeedbackLayout =
+        new QHBoxLayout(registerFeedbackBar_);
+    registerFeedbackLayout->setContentsMargins(
+        10, 5, 6, 5);
+    registerFeedbackLayout->setSpacing(8);
+    registerFeedbackLabel_ =
+        new QLabel(registerFeedbackBar_);
+    registerFeedbackLabel_->setObjectName(
+        QStringLiteral("registerFeedbackLabel"));
+    registerFeedbackLabel_->setWordWrap(true);
+    registerFeedbackLabel_->setTextInteractionFlags(
+        Qt::TextSelectableByMouse);
+    auto* dismissRegisterFeedback =
+        new QToolButton(registerFeedbackBar_);
+    dismissRegisterFeedback->setText(
+        QStringLiteral("Close"));
+    dismissRegisterFeedback->setToolTip(
+        QStringLiteral("Dismiss this operation message"));
+    registerFeedbackLayout->addWidget(
+        registerFeedbackLabel_, 1);
+    registerFeedbackLayout->addWidget(
+        dismissRegisterFeedback);
+    connect(
+        dismissRegisterFeedback,
+        &QToolButton::clicked,
+        registerFeedbackBar_,
+        &QWidget::hide);
+    registerFeedbackBar_->setVisible(false);
+
     registerLayout->addWidget(contextBar);
-    registerLayout->addWidget(addressSpaceView_);
+    registerLayout->addWidget(addressSpaceScroll_);
     registerLayout->addWidget(registerToolsBar);
+    registerLayout->addWidget(registerFeedbackBar_);
     registerLayout->addWidget(registerEmptyState_);
     registerLayout->addWidget(registerView_, 1);
 
@@ -4613,10 +4770,15 @@ void MainWindow::buildUi()
     fieldView_ = fieldTable;
     fieldView_->setObjectName(QStringLiteral("fieldView"));
     fieldView_->setModel(fieldModel_);
-    configureTable(fieldView_);
+    regmap::ui::configureDataTable(fieldView_);
+    regmap::ui::configureRowSelectionGutter(fieldView_);
     fieldView_->setItemDelegate(
         new WorkbenchItemDelegate(
             fieldView_));
+    fieldView_->setItemDelegateForColumn(
+        fieldNameColumn,
+        new FieldHierarchyDelegate(
+            fieldDepthRole, fieldView_));
     fieldTable
         ->setSelectionExclusionPredicate(
             [this](
@@ -4629,13 +4791,15 @@ void MainWindow::buildUi()
         QStringLiteral("Field table"));
     fieldView_->setAccessibleDescription(
         QStringLiteral(
-            "Single-click selects cells. Double-click edits editable values. Press Insert to add a Field. Press Alt+Left or Alt+Right to move the current top-level Field one bit toward MSB or LSB."));
+            "Single-click selects cells. Double-click edits editable values. Press Insert to add a Field. Press Alt+Left or Alt+Right to move the current Field one local bit toward MSB or LSB."));
     fieldView_->setItemDelegateForColumn(
         fieldSoftwareAccessColumn, new AccessItemDelegate(fieldView_));
     fieldView_->setItemDelegateForColumn(
         fieldHardwareAccessColumn, new AccessItemDelegate(fieldView_));
     fieldView_->setItemDelegateForColumn(
-        fieldTypeColumn, new TypeItemDelegate(fieldView_));
+        fieldTypeColumn,
+        new TypeItemDelegate(
+            valueTypeChoices(), fieldView_));
     fieldView_->setItemDelegateForColumn(
         fieldMsbColumn,
         new GuidedLineEditDelegate(
@@ -4651,14 +4815,6 @@ void MainWindow::buildUi()
             QStringLiteral("1"),
             QStringLiteral(
                 "Width / Bits: enter a positive bit count. LSB stays fixed and MSB is recalculated."),
-            fieldView_));
-    fieldView_->setItemDelegateForColumn(
-        fieldResetColumn,
-        new GuidedLineEditDelegate(
-            QStringLiteral("fieldResetEditor"),
-            QStringLiteral("0x0 or blank"),
-            QStringLiteral(
-                "Reset Value: enter decimal or 0x-prefixed hexadecimal fitting the Field; clear to unset."),
             fieldView_));
     fieldView_->setEditTriggers(
         QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
@@ -4787,6 +4943,10 @@ void MainWindow::buildUi()
     fieldHeaderLayout->setSpacing(8);
     fieldContextLabel_ = new QLabel(QStringLiteral("Fields"), fieldHeaderBar_);
     fieldContextLabel_->setObjectName(QStringLiteral("fieldContextLabel"));
+    fieldSelectionLabel_ = new QLabel(fieldHeaderBar_);
+    fieldSelectionLabel_->setObjectName(
+        QStringLiteral("fieldSelectionLabel"));
+    fieldSelectionLabel_->setVisible(false);
     fieldBatchEditButton_ =
         new QToolButton(
             fieldHeaderBar_);
@@ -4809,10 +4969,43 @@ void MainWindow::buildUi()
     closeFieldsButton_->setToolTip(QStringLiteral("Close the Register details workspace"));
     closeFieldsButton_->setAutoDefault(false);
     fieldHeaderLayout->addWidget(fieldContextLabel_);
+    fieldHeaderLayout->addWidget(fieldSelectionLabel_);
     fieldHeaderLayout->addStretch(1);
     fieldHeaderLayout->addWidget(
         fieldBatchEditButton_);
     fieldHeaderLayout->addWidget(closeFieldsButton_);
+    fieldFeedbackBar_ =
+        new QWidget(fieldPanel);
+    fieldFeedbackBar_->setObjectName(
+        QStringLiteral("fieldFeedbackBar"));
+    auto* fieldFeedbackLayout =
+        new QHBoxLayout(fieldFeedbackBar_);
+    fieldFeedbackLayout->setContentsMargins(
+        10, 5, 6, 5);
+    fieldFeedbackLayout->setSpacing(8);
+    fieldFeedbackLabel_ =
+        new QLabel(fieldFeedbackBar_);
+    fieldFeedbackLabel_->setObjectName(
+        QStringLiteral("fieldFeedbackLabel"));
+    fieldFeedbackLabel_->setWordWrap(true);
+    fieldFeedbackLabel_->setTextInteractionFlags(
+        Qt::TextSelectableByMouse);
+    auto* dismissFieldFeedback =
+        new QToolButton(fieldFeedbackBar_);
+    dismissFieldFeedback->setText(
+        QStringLiteral("Close"));
+    dismissFieldFeedback->setToolTip(
+        QStringLiteral("Dismiss this operation message"));
+    fieldFeedbackLayout->addWidget(
+        fieldFeedbackLabel_, 1);
+    fieldFeedbackLayout->addWidget(
+        dismissFieldFeedback);
+    connect(
+        dismissFieldFeedback,
+        &QToolButton::clicked,
+        fieldFeedbackBar_,
+        &QWidget::hide);
+    fieldFeedbackBar_->setVisible(false);
     enumPanel_ = new QWidget(fieldPanel);
     enumPanel_->setObjectName(QStringLiteral("enumPanel"));
     enumPanel_->setSizePolicy(
@@ -4857,7 +5050,8 @@ void MainWindow::buildUi()
     enumView_ = enumTable;
     enumView_->setObjectName(QStringLiteral("enumView"));
     enumView_->setModel(enumModel_);
-    configureTable(enumView_);
+    regmap::ui::configureDataTable(enumView_);
+    regmap::ui::configureRowSelectionGutter(enumView_);
     enumView_->setItemDelegate(
         new WorkbenchItemDelegate(
             enumView_));
@@ -4917,6 +5111,7 @@ void MainWindow::buildUi()
     enumLayout->addWidget(enumView_);
 
     fieldLayout->addWidget(fieldHeaderBar_);
+    fieldLayout->addWidget(fieldFeedbackBar_);
     fieldLayout->addWidget(bitfieldView_);
     fieldLayout->addWidget(fieldView_, 1);
     fieldLayout->addWidget(enumPanel_, 0, Qt::AlignTop);
@@ -4945,7 +5140,7 @@ void MainWindow::buildUi()
     problemsView_ = new QTableView(this);
     problemsView_->setObjectName(QStringLiteral("problemsView"));
     problemsView_->setModel(problemsModel_);
-    configureTable(problemsView_);
+    regmap::ui::configureDataTable(problemsView_);
     problemsView_->setContextMenuPolicy(
         Qt::CustomContextMenu);
     problemsView_->setAccessibleName(
@@ -4956,7 +5151,7 @@ void MainWindow::buildUi()
     generatedView_ = new QTableView(this);
     generatedView_->setObjectName(QStringLiteral("generatedView"));
     generatedView_->setModel(generatedModel_);
-    configureTable(generatedView_);
+    regmap::ui::configureDataTable(generatedView_);
     generatedView_->setContextMenuPolicy(Qt::CustomContextMenu);
     generatedView_->setAccessibleName(
         QStringLiteral("Generated outputs"));
@@ -4966,7 +5161,7 @@ void MainWindow::buildUi()
     diffView_ = new QTableView(this);
     diffView_->setObjectName(QStringLiteral("diffView"));
     diffView_->setModel(diffModel_);
-    configureTable(diffView_);
+    regmap::ui::configureDataTable(diffView_);
     diffView_->setContextMenuPolicy(
         Qt::CustomContextMenu);
     diffView_->setAccessibleName(
@@ -5694,7 +5889,7 @@ void MainWindow::buildActions()
     showDetailedRegistersAction_ =
         new QAction(
             QStringLiteral(
-                "Show Detailed Register Columns"),
+                "Show Register Range Column"),
             this);
     showDetailedRegistersAction_->setObjectName(
         QStringLiteral(
@@ -6293,6 +6488,7 @@ void MainWindow::connectSignals()
                 &MainWindow::updateEditActions);
         });
     connect(&controller_, &ProjectController::projectChanged, this, [this] {
+        clearInlineFailure();
         searchRefreshPending_ =
             globalSearchEdit_ != nullptr &&
             !globalSearchEdit_
@@ -6332,6 +6528,30 @@ void MainWindow::connectSignals()
                 statusBar()->showMessage(text);
                 updateSyncPresentation(text);
             });
+    connect(
+        statusBar(),
+        &QStatusBar::messageChanged,
+        this,
+        [this](const QString& message) {
+            const QStringList failurePrefixes{
+                QStringLiteral("Cannot "),
+                QStringLiteral("Paste skipped"),
+                QStringLiteral("Paste cancelled"),
+                QStringLiteral("Edit rejected"),
+                QStringLiteral("Select "),
+                QStringLiteral("Clear the "),
+                QStringLiteral("Field move is "),
+                QStringLiteral("Only top-level "),
+                QStringLiteral("The moving field "),
+                QStringLiteral("Add a page first")};
+            if (std::ranges::any_of(
+                    failurePrefixes,
+                    [&message](const QString& prefix) {
+                        return message.startsWith(prefix);
+                    })) {
+                showInlineFailure(message);
+            }
+        });
     connect(
         &controller_,
         &ProjectController::
@@ -6529,6 +6749,7 @@ void MainWindow::connectSignals()
         this,
         [this] {
             if (!refreshing_) {
+                updateRowSelectionPresentation();
                 updateEditActions();
             }
         });
@@ -6539,9 +6760,9 @@ void MainWindow::connectSignals()
                 }
                 if (current.data(addRowRole).toBool()) {
                     selectedFieldId_.clear();
-                    bitfieldView_->setSelectedField(nullptr);
                     const auto* reg =
                         findRegister(selectedRegisterId_);
+                    bitfieldView_->setRegister(reg);
                     populateEnumValues(reg, nullptr);
                     setCurrentSource(
                         reg == nullptr
@@ -6555,7 +6776,42 @@ void MainWindow::connectSignals()
                 const regmap::Register* reg = findRegister(selectedRegisterId_);
                 const regmap::Field* field =
                     reg == nullptr ? nullptr : findField(*reg, selectedFieldId_);
-                bitfieldView_->setSelectedField(field);
+                const regmap::Field* parent =
+                    reg == nullptr
+                        ? nullptr
+                        : parentFieldOf(
+                              reg->fields,
+                              selectedFieldId_);
+                if (parent != nullptr) {
+                    bitfieldView_->setFieldContainer(
+                        parent, field);
+                    const QString parentPath =
+                        fieldModel_->index(
+                            current.row(),
+                            fieldParentColumn)
+                            .data()
+                            .toString();
+                    fieldContextLabel_->setText(
+                        QStringLiteral(
+                            "Fields — %1 · %2.%3 · member bits are local to %2")
+                            .arg(
+                                reg == nullptr
+                                    ? QString{}
+                                    : fromUtf8(reg->name),
+                                parentPath,
+                                field == nullptr
+                                    ? QString{}
+                                    : fromUtf8(field->name)));
+                } else {
+                    bitfieldView_->setRegister(reg);
+                    bitfieldView_->setSelectedField(field);
+                    if (reg != nullptr) {
+                        fieldContextLabel_->setText(
+                            QStringLiteral(
+                                "Fields — %1 · top-level Register bits")
+                                .arg(fromUtf8(reg->name)));
+                    }
+                }
                 populateEnumValues(reg, field);
                 setCurrentSource(field == nullptr ? regmap::SourceLocation{} : field->source);
                 updateEditActions();
@@ -6566,6 +6822,7 @@ void MainWindow::connectSignals()
         this,
         [this] {
             if (!refreshing_) {
+                updateRowSelectionPresentation();
                 updateEditActions();
             }
         });
@@ -6573,12 +6830,26 @@ void MainWindow::connectSignals()
             &QItemSelectionModel::selectionChanged, this,
             [this] {
                 if (!refreshing_) {
+                    updateRowSelectionPresentation();
                     updateEditActions();
                 }
             });
     connect(fieldView_->selectionModel(),
             &QItemSelectionModel::selectionChanged, this,
-            [this] { if (!refreshing_) { updateEditActions(); } });
+            [this] {
+                if (!refreshing_) {
+                    updateRowSelectionPresentation();
+                    updateEditActions();
+                }
+            });
+    connect(enumView_->selectionModel(),
+            &QItemSelectionModel::selectionChanged, this,
+            [this] {
+                if (!refreshing_) {
+                    updateRowSelectionPresentation();
+                    updateEditActions();
+                }
+            });
     connect(bitfieldView_, &BitfieldView::fieldActivated, this,
             [this](const QString& id) {
                 if (auxiliaryNavigationBlocked_ ||
@@ -7409,7 +7680,13 @@ bool MainWindow::eventFilter(
                 ? copyAction_
                 : pasteAction_;
             statusBar()->showMessage(
-                action->toolTip(),
+                (keyEvent->key() ==
+                         Qt::Key_C
+                     ? QStringLiteral(
+                           "Copy skipped: ")
+                     : QStringLiteral(
+                           "Paste skipped: ")) +
+                    action->toolTip(),
                 5000);
             keyEvent->accept();
             return true;
@@ -8608,6 +8885,11 @@ void MainWindow::updateContextBar()
     }
     const auto* page = findAddressSpace(pageId);
     const auto* block = findBlock(blockId);
+    const bool explicitBlockScope =
+        !selectedBlockId_.empty() &&
+        activeNavigationObjectId_ ==
+            selectedBlockId_ &&
+        findBlock(selectedBlockId_) != nullptr;
     const QSignalBlocker pageBaseBlocker(pageBaseEdit_);
     const QSignalBlocker pageWidthBlocker(pageWidthEdit_);
     const QSignalBlocker pageDescriptionBlocker(pageDescriptionEdit_);
@@ -8619,10 +8901,19 @@ void MainWindow::updateContextBar()
     for (QLineEdit* edit : {pageBaseEdit_, pageWidthEdit_, pageDescriptionEdit_}) {
         edit->setProperty("objectId", pageObjectId);
         edit->setEnabled(page != nullptr);
+        edit->setReadOnly(!explicitBlockScope);
+        edit->setProperty(
+            "aggregateReadOnly",
+            page != nullptr && !explicitBlockScope);
     }
     pageContextLabel_->setText(page == nullptr
                                    ? QStringLiteral("Page: select in tree")
-                                   : QStringLiteral("Page: %1").arg(fromUtf8(page->name)));
+                                   : QStringLiteral("Page: %1%2")
+                                         .arg(
+                                             fromUtf8(page->name),
+                                             explicitBlockScope
+                                                 ? QString{}
+                                                 : QStringLiteral(" · read-only aggregate")));
     pageBaseEdit_->setText(page == nullptr ? QString{} : hex(page->baseAddress));
     pageWidthEdit_->setText(page == nullptr ? QString{} : QString::number(page->addressWidth));
     pageDescriptionEdit_->setText(page == nullptr ? QString{} : fromUtf8(page->description));
@@ -8631,10 +8922,19 @@ void MainWindow::updateContextBar()
     for (QLineEdit* edit : {blockBaseEdit_, blockSizeEdit_, blockDescriptionEdit_}) {
         edit->setProperty("objectId", blockObjectId);
         edit->setEnabled(block != nullptr);
+        edit->setReadOnly(!explicitBlockScope);
+        edit->setProperty(
+            "aggregateReadOnly",
+            block != nullptr && !explicitBlockScope);
     }
     blockContextLabel_->setText(block == nullptr
                                     ? QStringLiteral("Block: select in tree")
-                                    : QStringLiteral("Block: %1").arg(fromUtf8(block->name)));
+                                    : QStringLiteral("Block: %1%2")
+                                          .arg(
+                                              fromUtf8(block->name),
+                                              explicitBlockScope
+                                                  ? QString{}
+                                                  : QStringLiteral(" · open Block to edit")));
     blockBaseEdit_->setText(block == nullptr ? QString{} : hex(block->baseAddress));
     blockSizeEdit_->setText(block == nullptr || !block->size ? QString{} : hex(*block->size));
     blockDescriptionEdit_->setText(block == nullptr ? QString{} : fromUtf8(block->description));
@@ -8884,7 +9184,7 @@ void MainWindow::populateRegisters()
         registerWidthColumn)
         ->setToolTip(
             QStringLiteral(
-                "Physical Register width in bits · enter 1 to 65536"));
+                "Register width in bits · enter 1 to 32; address slots remain 4 bytes"));
     registerModel_->horizontalHeaderItem(
         registerInitialColumn)
         ->setToolTip(
@@ -9130,7 +9430,7 @@ void MainWindow::populateRegisters()
                         objectIdRole, propertyRole);
                 width->setToolTip(
                     QStringLiteral(
-                        "Double-click and enter a physical Register width from 1 to 65536 bits."));
+                        "Double-click and enter a Register width from 1 to 32 bits. Address slots remain 4 bytes."));
                 auto* initial =
                     editableItem(
                         valueText(reg.initialValue), reg.id, "initial",
@@ -9311,6 +9611,7 @@ void MainWindow::populateRegisters()
     }
     updateContextBar();
     updateRegisterEmptyState();
+    updateRowSelectionPresentation();
 }
 
 void MainWindow::populateFields(const regmap::Register* reg)
@@ -9363,7 +9664,7 @@ void MainWindow::populateFields(const regmap::Register* reg)
         fieldResetColumn)
         ->setToolTip(
             QStringLiteral(
-                "Reset Value · enter decimal or 0x-prefixed hexadecimal; clear to unset"));
+                "Derived read-only slice of the containing Register Reset Value"));
     fieldModel_->horizontalHeaderItem(
         fieldTypeColumn)
         ->setToolTip(
@@ -9416,6 +9717,7 @@ void MainWindow::populateFields(const regmap::Register* reg)
             fieldView_, previousSelection, objectIdRole, propertyRole);
         populateEnumValues(reg, nullptr);
         applyFieldColumnVisibility();
+        updateRowSelectionPresentation();
         return;
     }
     fieldContextLabel_->setText(
@@ -9428,12 +9730,22 @@ void MainWindow::populateFields(const regmap::Register* reg)
 
     int preferredRow = -1;
     const auto appendFields = [&](const auto& self, const std::vector<regmap::Field>& fields,
-                                  const std::string& parentPath) -> void {
+                                  const std::string& parentPath,
+                                  const int depth) -> void {
         for (const auto& field : fields) {
             QList<QStandardItem*> row;
             auto* name =
                 editableItem(fromUtf8(field.name), field.id, "name", objectIdRole, propertyRole);
             name->setData(fromUtf8(field.id), objectIdRole);
+            name->setData(depth, fieldDepthRole);
+            name->setToolTip(
+                parentPath.empty()
+                    ? QStringLiteral("Top-level Field %1")
+                          .arg(fromUtf8(field.name))
+                    : QStringLiteral(
+                          "Member Field %1.%2. Bit positions are local to %1.")
+                          .arg(fromUtf8(parentPath),
+                               fromUtf8(field.name)));
             const bool numericRange =
                 isNumericValueType(field.type);
             const bool hasRange =
@@ -9499,14 +9811,38 @@ void MainWindow::populateFields(const regmap::Register* reg)
                 QStringLiteral(
                     "Double-click and enter a positive bit count. LSB %1 stays fixed; MSB is recalculated and the Field must remain non-overlapping.")
                     .arg(field.lsb));
-            auto* reset =
-                editableItem(
-                    valueText(field.resetValue), field.id,
-                    "reset", objectIdRole, propertyRole);
+            const auto absoluteLsb =
+                fieldAbsoluteLsb(reg->fields, field.id);
+            const bool resetSliceInRange =
+                absoluteLsb &&
+                *absoluteLsb <= reg->width &&
+                field.width() <=
+                    static_cast<std::uint64_t>(reg->width) -
+                        *absoluteLsb;
+            const std::optional<regmap::UnsignedValue>
+                derivedReset =
+                    reg->resetValue && resetSliceInRange
+                        ? std::optional<regmap::UnsignedValue>(
+                              reg->resetValue->slice(
+                                  static_cast<std::size_t>(*absoluteLsb),
+                                  static_cast<std::size_t>(field.width())))
+                        : std::nullopt;
+            auto* reset = item(valueText(derivedReset));
+            reset->setForeground(
+                QColor(QStringLiteral("#5F6F82")));
+            reset->setBackground(
+                QColor(QStringLiteral("#F2F5F8")));
             reset->setToolTip(
-                QStringLiteral(
-                    "Double-click and enter decimal or 0x-prefixed hexadecimal fitting this %1-bit Field; clear to unset. Enum/Bool values must already exist.")
-                    .arg(field.width()));
+                reg->resetValue && resetSliceInRange
+                    ? QStringLiteral(
+                          "Read-only: bits [%1:%2] derived from Register Reset Value. Edit Reset in the Register table.")
+                          .arg(*absoluteLsb + field.width() - 1)
+                          .arg(*absoluteLsb)
+                    : (reg->resetValue
+                           ? QStringLiteral(
+                                 "Read-only and blank because this Field is outside the containing Register bit range. Correct its MSB/Width first.")
+                           : QStringLiteral(
+                                 "Read-only and blank because the containing Register has no Reset Value. Edit Reset in the Register table.")));
             auto* parent =
                 item(fromUtf8(parentPath));
             parent->setToolTip(
@@ -9543,10 +9879,10 @@ void MainWindow::populateFields(const regmap::Register* reg)
             }
             const std::string path =
                 parentPath.empty() ? field.name : parentPath + '.' + field.name;
-            self(self, field.members, path);
+            self(self, field.members, path, depth + 1);
         }
     };
-    appendFields(appendFields, reg->fields, {});
+    appendFields(appendFields, reg->fields, {}, 0);
     if (!reg->reserved) {
         QList<QStandardItem*> addRow;
         for (int column = 0; column <= fieldDescriptionColumn; ++column) {
@@ -9582,7 +9918,30 @@ void MainWindow::populateFields(const regmap::Register* reg)
                                .toUtf8()
                                .toStdString();
         const regmap::Field* selectedField = findField(*reg, selectedFieldId_);
-        bitfieldView_->setSelectedField(selectedField);
+        const regmap::Field* selectedParent =
+            parentFieldOf(reg->fields, selectedFieldId_);
+        if (selectedParent != nullptr) {
+            bitfieldView_->setFieldContainer(
+                selectedParent, selectedField);
+            const QString parentPath =
+                fieldModel_->index(
+                    preferredRow,
+                    fieldParentColumn)
+                    .data()
+                    .toString();
+            fieldContextLabel_->setText(
+                QStringLiteral(
+                    "Fields — %1 · %2.%3 · member bits are local to %2")
+                    .arg(
+                        fromUtf8(reg->name),
+                        parentPath,
+                        selectedField == nullptr
+                            ? QString{}
+                            : fromUtf8(selectedField->name)));
+        } else {
+            bitfieldView_->setSelectedField(
+                selectedField);
+        }
         populateEnumValues(reg, selectedField);
         setCurrentSource(selectedField == nullptr ? regmap::SourceLocation{}
                                                   : selectedField->source);
@@ -9597,6 +9956,7 @@ void MainWindow::populateFields(const regmap::Register* reg)
         restoreTableSelection(
             fieldView_, previousSelection, objectIdRole, propertyRole);
     }
+    updateRowSelectionPresentation();
 }
 
 void MainWindow::populateEnumValues(const regmap::Register* reg, const regmap::Field* field)
@@ -10978,15 +11338,15 @@ void MainWindow::updateBottomPanelVisibility()
         }
     }
     if (resultsToggleButton_ != nullptr) {
-        const int total =
+        const int pendingTotal =
             problemsModel_->rowCount() +
-            generatedModel_->rowCount() +
-            diffModel_->rowCount();
+            diffModel_->rowCount() +
+            static_cast<int>(generatedOutputsNeedingRetry_);
         resultsToggleButton_->setText(
-            total > 0
+            pendingTotal > 0
             ? QStringLiteral(
                   "Results (%1)")
-                  .arg(total)
+                  .arg(pendingTotal)
             : QStringLiteral(
                   "Results"));
         resultsToggleButton_->setEnabled(
@@ -11441,12 +11801,10 @@ void MainWindow::applyRegisterColumnVisibility()
             nullptr &&
         showDetailedRegistersAction_
             ->isChecked();
-    for (const int column :
-         {registerRangeColumn,
-          registerInitialColumn}) {
-        registerView_->setColumnHidden(
-            column, !detailed);
-    }
+    registerView_->setColumnHidden(
+        registerRangeColumn, !detailed);
+    registerView_->setColumnHidden(
+        registerInitialColumn, false);
     const bool explicitBlockScope =
         !selectedBlockId_.empty() &&
         findBlock(selectedBlockId_) !=
@@ -11487,7 +11845,7 @@ void MainWindow::showTableHeaderContextMenu(
         menu.addAction(
             registerTable
                 ? QStringLiteral(
-                      "Show Value Range and Initial Value")
+                      "Show Value Range")
                 : QStringLiteral(
                       "Show Parent, HW Access, and Side Effects"));
     toggleOptionalColumns->setObjectName(
@@ -11532,7 +11890,7 @@ void MainWindow::showTableHeaderContextMenu(
             statusBar()->showMessage(
                 registerTable
                     ? QStringLiteral(
-                          "Value Range and Initial Value columns %1")
+                          "Value Range column %1")
                           .arg(
                               preference
                                       ->isChecked()
@@ -11701,9 +12059,13 @@ const regmap::Field* MainWindow::findField(const regmap::Register& reg, const st
 MainWindow::PropertyEditResult
 MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& property,
                               const QString& value, bool reportFeedback,
-                              bool applyChanges)
+                              bool applyChanges,
+                              regmap::Workspace* stagedWorkspace)
 {
-    const regmap::Workspace* workspace = controller_.workspace();
+    const regmap::Workspace* workspace =
+        stagedWorkspace != nullptr
+            ? stagedWorkspace
+            : controller_.workspace();
     if (workspace == nullptr) {
         return {PropertyEditStatus::rejected, QStringLiteral("an open project")};
     }
@@ -11793,7 +12155,11 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
     }
     const auto markRejected =
         [this,
+         stagedWorkspace,
          rejectedEditContext] {
+        if (stagedWorkspace != nullptr) {
+            return;
+        }
         if (committingActiveEditor_) {
             activeEditorCommitRejected_ =
                 true;
@@ -11953,11 +12319,26 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
             });
     };
     const auto commit =
-        [this, &description, applyChanges](
+        [this, &description, applyChanges,
+         stagedWorkspace](
             const regmap::WorkspaceStore::Mutation& mutation) {
             if (!applyChanges) {
                 return PropertyEditResult{
                     PropertyEditStatus::unchanged,
+                    {}};
+            }
+            if (stagedWorkspace != nullptr) {
+                const std::string before =
+                    regmap::serializeWorkspaceState(
+                        *stagedWorkspace, false);
+                mutation(*stagedWorkspace);
+                const std::string after =
+                    regmap::serializeWorkspaceState(
+                        *stagedWorkspace, false);
+                return PropertyEditResult{
+                    before == after
+                        ? PropertyEditStatus::unchanged
+                        : PropertyEditStatus::changed,
                     {}};
             }
             if (controller_.editWorkspace(description, mutation)) {
@@ -11988,9 +12369,12 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                 PropertyEditStatus::rejected, expectation};
         };
     const auto acceptsNumericRange =
-        [workspace](std::string_view targetId,
+        [workspace, stagedWorkspace](std::string_view targetId,
                     const std::optional<std::string>& minimum,
                     const std::optional<std::string>& maximum) {
+            if (stagedWorkspace != nullptr) {
+                return true;
+            }
             regmap::Workspace candidate = *workspace;
             if (auto* field = regmap::findField(candidate, targetId)) {
                 field->minimumValue = minimum;
@@ -12009,23 +12393,32 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                 });
         };
     const auto acceptsAddressEdit =
-        [workspace](std::string_view targetId,
+        [workspace, stagedWorkspace](std::string_view targetId,
                     const regmap::WorkspaceStore::Mutation& mutation) {
+            if (stagedWorkspace != nullptr) {
+                return true;
+            }
             regmap::Workspace candidate = *workspace;
             mutation(candidate);
             return addressEditDoesNotWorsen(*workspace, candidate, targetId);
         };
     const auto acceptsFieldGeometryEdit =
-        [workspace](std::string_view fieldId,
+        [workspace, stagedWorkspace](std::string_view fieldId,
                     const regmap::WorkspaceStore::Mutation& mutation) {
+            if (stagedWorkspace != nullptr) {
+                return true;
+            }
             regmap::Workspace candidate = *workspace;
             mutation(candidate);
             return fieldGeometryEditDoesNotWorsen(
                 *workspace, candidate, fieldId);
         };
     const auto acceptsNumericRangeEdit =
-        [workspace](std::string_view targetId,
+        [workspace, stagedWorkspace](std::string_view targetId,
                     const regmap::WorkspaceStore::Mutation& mutation) {
+            if (stagedWorkspace != nullptr) {
+                return true;
+            }
             regmap::Workspace candidate = *workspace;
             mutation(candidate);
             return numericRangeEditDoesNotWorsen(
@@ -12229,7 +12622,7 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
             const auto parsed = parseUInt32();
             const auto* current = regmap::findField(*workspace, objectId);
             const auto* owner = findRegisterContainingField(*workspace, objectId);
-            if (!parsed || *parsed == 0 || *parsed > maximumEditableWidth || current == nullptr ||
+            if (!parsed || *parsed == 0 || *parsed > maximumFieldWidth || current == nullptr ||
                 owner == nullptr ||
                 static_cast<std::uint64_t>(current->lsb) + *parsed - 1 >= owner->width ||
                 !fieldValuesFitWidth(*current, *owner, static_cast<std::size_t>(*parsed), true)) {
@@ -12258,64 +12651,6 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                         "a Width that preserves the existing numeric Range"));
             }
             return commit(mutation);
-        }
-        if (property == "reset") {
-            std::optional<regmap::UnsignedValue> parsed;
-            const auto* current = regmap::findField(*workspace, objectId);
-            const auto* owner = findRegisterContainingField(*workspace, objectId);
-            if (!textValue.empty()) {
-                parsed = parseUnsigned();
-                if (!parsed || current == nullptr ||
-                    !parsed->fitsInBits(static_cast<std::size_t>(current->width()))) {
-                    return reject(
-                        current == nullptr
-                            ? QStringLiteral("an unsigned integer with a valid Field owner")
-                            : QStringLiteral(
-                                  "an unsigned integer fitting the %1-bit field, or empty")
-                                  .arg(current->width()));
-                }
-            }
-            const bool enumerationLike =
-                current != nullptr &&
-                (current->type == regmap::FieldType::enumeration ||
-                 current->type == regmap::FieldType::boolean);
-            if (parsed && enumerationLike && !current->enumValues.empty() &&
-                std::ranges::none_of(
-                    current->enumValues, [&](const regmap::EnumValue& enumValue) {
-                        return enumValue.value == *parsed;
-                    })) {
-                return reject(
-                    QStringLiteral("an existing Enum value for this field, or empty"));
-            }
-            if (parsed && owner != nullptr && owner->resetValue) {
-                const auto merged =
-                    mergedRegisterReset(*owner, objectId, *parsed);
-                if (!merged ||
-                    !resetMatchesFieldEnums(
-                        owner->fields, *merged,
-                        static_cast<std::uint64_t>(owner->width))) {
-                    return reject(
-                        QStringLiteral(
-                            "a Reset value whose Enum/Bool Field slices match "
-                            "existing Enum values, or empty"));
-                }
-            }
-            const bool updatesRegisterReset =
-                parsed.has_value() && current != nullptr && owner != nullptr &&
-                owner->resetValue.has_value();
-            const PropertyEditResult result =
-                commit([=](regmap::Workspace& candidate) {
-                    assignFieldReset(candidate, objectId, parsed);
-                });
-            if (result.status == PropertyEditStatus::changed &&
-                updatesRegisterReset && reportFeedback) {
-                statusBar()->showMessage(
-                    QStringLiteral(
-                        "Field Reset updated the matching Register Reset bits · "
-                        "Ctrl+Z to restore"),
-                    6000);
-            }
-            return result;
         }
         if (property == "type") {
             const QString normalized = value.trimmed().toLower();
@@ -12349,7 +12684,7 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                 removesMembers ? fieldTreeSize(currentField->members) : 0;
             if (numericWidth &&
                 (currentField == nullptr || owner == nullptr ||
-                 *numericWidth > maximumEditableWidth ||
+                 *numericWidth > maximumFieldWidth ||
                  static_cast<std::uint64_t>(currentField->lsb) + *numericWidth - 1 >=
                      owner->width)) {
                 return reject(
@@ -12413,9 +12748,7 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                 }
                 member.readSideEffect = currentField->readSideEffect;
                 member.writeSideEffect = currentField->writeSideEffect;
-                if (currentField->resetValue) {
-                    member.resetValue = currentField->resetValue->slice(0, 1);
-                } else if (owner->resetValue) {
+                if (owner->resetValue) {
                     const auto absoluteLsb =
                         fieldAbsoluteLsb(owner->fields, objectId);
                     if (absoluteLsb) {
@@ -12493,10 +12826,12 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                     QStringLiteral(
                         "an individually confirmed Type change before removing %1")
                         .arg(memberLabel);
-                if (!reportFeedback) {
+                if (!reportFeedback || stagedWorkspace != nullptr) {
                     return reject(expectation);
                 }
-                const auto answer = QMessageBox::warning(
+                const auto answer = stagedWorkspace != nullptr
+                    ? QMessageBox::Yes
+                    : QMessageBox::warning(
                     this, QStringLiteral("Change Compound Field Type"),
                     QStringLiteral(
                         "Change Field %1 to %2?\n\n"
@@ -12522,10 +12857,12 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                     QStringLiteral(
                         "an individually confirmed Type change before removing %1")
                         .arg(enumLabel);
-                if (!reportFeedback) {
+                if (!reportFeedback || stagedWorkspace != nullptr) {
                     return reject(expectation);
                 }
-                const auto answer = QMessageBox::warning(
+                const auto answer = stagedWorkspace != nullptr
+                    ? QMessageBox::Yes
+                    : QMessageBox::warning(
                     this, QStringLiteral("Change Enum Field Type"),
                     QStringLiteral(
                         "Change Field %1 to %2?\n\n"
@@ -12551,10 +12888,12 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                     QStringLiteral(
                         "an individually confirmed Type change before removing %1")
                         .arg(rangeLabel);
-                if (!reportFeedback) {
+                if (!reportFeedback || stagedWorkspace != nullptr) {
                     return reject(expectation);
                 }
-                const auto answer = QMessageBox::warning(
+                const auto answer = stagedWorkspace != nullptr
+                    ? QMessageBox::Yes
+                    : QMessageBox::warning(
                     this, QStringLiteral("Change Numeric Field Type"),
                     QStringLiteral(
                         "Change Field %1 to %2?\n\n"
@@ -12802,12 +13141,15 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
             if (numericMatch.hasMatch()) {
                 bool ok = false;
                 const qulonglong width = numericMatch.captured(2).toULongLong(&ok);
-                if (ok && width <= maximumEditableWidth) {
-                    numericWidth = static_cast<std::uint32_t>(width);
-                    parsed = numericMatch.captured(1) == QStringLiteral("uint")
-                                 ? regmap::FieldType::unsignedInteger
-                                 : regmap::FieldType::signedInteger;
+                if (!ok || width > maximumRegisterWidth) {
+                    return reject(
+                        QStringLiteral(
+                            "intN or uintN with N from 1 to 32 bits"));
                 }
+                numericWidth = static_cast<std::uint32_t>(width);
+                parsed = numericMatch.captured(1) == QStringLiteral("uint")
+                             ? regmap::FieldType::unsignedInteger
+                             : regmap::FieldType::signedInteger;
             } else {
                 parsed = regmap::parseFieldType(textValue);
             }
@@ -12924,10 +13266,12 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                     QStringLiteral(
                         "an individually confirmed Type change before removing %1")
                         .arg(fieldLabel);
-                if (!reportFeedback) {
+                if (!reportFeedback || stagedWorkspace != nullptr) {
                     return reject(expectation);
                 }
-                const auto answer = QMessageBox::warning(
+                const auto answer = stagedWorkspace != nullptr
+                    ? QMessageBox::Yes
+                    : QMessageBox::warning(
                     this, QStringLiteral("Change Field Register Type"),
                     QStringLiteral(
                         "Change Register %1 to %2?\n\n"
@@ -12952,10 +13296,12 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                     QStringLiteral(
                         "an individually confirmed Type change before removing %1")
                         .arg(enumLabel);
-                if (!reportFeedback) {
+                if (!reportFeedback || stagedWorkspace != nullptr) {
                     return reject(expectation);
                 }
-                const auto answer = QMessageBox::warning(
+                const auto answer = stagedWorkspace != nullptr
+                    ? QMessageBox::Yes
+                    : QMessageBox::warning(
                     this, QStringLiteral("Change Enum Register Type"),
                     QStringLiteral(
                         "Change Register %1 to %2?\n\n"
@@ -12981,10 +13327,12 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                     QStringLiteral(
                         "an individually confirmed Type change before removing %1")
                         .arg(rangeLabel);
-                if (!reportFeedback) {
+                if (!reportFeedback || stagedWorkspace != nullptr) {
                     return reject(expectation);
                 }
-                const auto answer = QMessageBox::warning(
+                const auto answer = stagedWorkspace != nullptr
+                    ? QMessageBox::Yes
+                    : QMessageBox::warning(
                     this, QStringLiteral("Change Numeric Register Type"),
                     QStringLiteral(
                         "Change Register %1 to %2?\n\n"
@@ -13049,17 +13397,43 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
             }
             return result;
         }
-        if (property == "offset" || property == "stride") {
+        if (property == "offset") {
             const auto parsed = parseUInt64();
             if (!parsed) {
                 return reject(QStringLiteral("a 64-bit unsigned integer"));
             }
+            if (property == "offset" &&
+                *parsed % 4U != 0U) {
+                return reject(
+                    QStringLiteral(
+                        "a 4-byte-aligned Register Offset"));
+            }
             const regmap::WorkspaceStore::Mutation mutation =
                 [=](regmap::Workspace& candidate) {
-                if (auto* reg = regmap::findRegister(candidate, objectId)) {
-                    (property == "offset" ? reg->offset : reg->array.stride) = *parsed;
-                }
-            };
+                    if (auto* reg = regmap::findRegister(candidate, objectId)) {
+                        reg->offset = *parsed;
+                    }
+                    if (property == "offset") {
+                        for (auto& page : candidate.addressSpaces) {
+                            for (auto& block : page.blocks) {
+                                if (std::ranges::none_of(
+                                        block.registers,
+                                        [=](const regmap::Register& reg) {
+                                            return reg.id == objectId;
+                                        })) {
+                                    continue;
+                                }
+                                std::ranges::stable_sort(
+                                    block.registers,
+                                    [](const regmap::Register& left,
+                                       const regmap::Register& right) {
+                                        return left.offset < right.offset;
+                                    });
+                                return;
+                            }
+                        }
+                    }
+                };
             if (!acceptsAddressEdit(objectId, mutation)) {
                 return reject(
                     QStringLiteral(
@@ -13068,24 +13442,23 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
             }
             return commit(mutation);
         }
-        if (property == "width" || property == "array_count") {
+        if (property == "width") {
             const auto parsed = parseUInt32();
             if (!parsed || *parsed == 0 ||
-                (property == "width" && *parsed > maximumEditableWidth)) {
+                *parsed > maximumRegisterWidth) {
                 return reject(
-                    property == "width"
-                        ? QStringLiteral("a register width from 1 to 65536 that contains all fields")
-                        : QStringLiteral("a positive array count"));
+                    QStringLiteral(
+                        "a Register width from 1 to 32 bits; every Register occupies one 4-byte address slot"));
             }
             const auto* current = regmap::findRegister(*workspace, objectId);
-            if (property == "width" && current != nullptr &&
+            if (current != nullptr &&
                 !std::ranges::all_of(current->fields, [&](const regmap::Field& field) {
                     return field.msb < *parsed;
                 })) {
                 return reject(
                     QStringLiteral("a register width that contains all existing fields"));
             }
-            if (property == "width" && current != nullptr &&
+            if (current != nullptr &&
                 !registerValuesFitWidth(*current, *parsed, true)) {
                 return reject(
                     QStringLiteral(
@@ -13093,18 +13466,17 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
             }
             const regmap::WorkspaceStore::Mutation mutation =
                 [=](regmap::Workspace& candidate) {
-                if (auto* reg = regmap::findRegister(candidate, objectId)) {
-                    (property == "width" ? reg->width : reg->array.count) = *parsed;
-                }
-            };
+                    if (auto* reg = regmap::findRegister(candidate, objectId)) {
+                        reg->width = *parsed;
+                    }
+                };
             if (!acceptsAddressEdit(objectId, mutation)) {
                 return reject(
                     QStringLiteral(
                         "a Register extent that preserves a non-overlapping "
                         "in-block address layout"));
             }
-            if (property == "width" &&
-                !acceptsNumericRangeEdit(objectId, mutation)) {
+            if (!acceptsNumericRangeEdit(objectId, mutation)) {
                 return reject(
                     QStringLiteral(
                         "a register width that preserves the existing numeric Range"));
@@ -13737,10 +14109,7 @@ void MainWindow::addRegister(
             candidateBlock->registers,
             [](const regmap::Register& left,
                const regmap::Register& right) {
-                return std::tie(
-                           left.offset, left.id) <
-                    std::tie(
-                           right.offset, right.id);
+                return left.offset < right.offset;
             });
     }
     if (!addressEditDoesNotWorsen(*workspace, candidate, parentId)) {
@@ -13767,12 +14136,7 @@ void MainWindow::addRegister(
                                left,
                            const regmap::Register&
                                right) {
-                            return std::tie(
-                                       left.offset,
-                                       left.id) <
-                                std::tie(
-                                       right.offset,
-                                       right.id);
+                            return left.offset < right.offset;
                         });
                 }
             })) {
@@ -14866,6 +15230,95 @@ void MainWindow::updateRegisterEmptyState()
         EmptyStateAction::none);
 }
 
+void MainWindow::updateRowSelectionPresentation()
+{
+    const auto update = [](
+                            QTableView* view,
+                            QLabel* label,
+                            const QString& singular,
+                            const QString& plural) {
+        if (view == nullptr || label == nullptr ||
+            view->model() == nullptr ||
+            view->selectionModel() == nullptr) {
+            return;
+        }
+        int selectedRows = 0;
+        for (const int row :
+             regmap::ui::fullySelectedRows(view)) {
+            const QModelIndex identity =
+                view->model()->index(row, 0);
+            if (identity.data(addRowRole).toBool()) {
+                continue;
+            }
+            ++selectedRows;
+        }
+        label->setVisible(selectedRows > 0);
+        label->setText(
+            selectedRows == 1
+                ? QStringLiteral("1 %1 selected").arg(singular)
+                : QStringLiteral("%1 %2 selected")
+                      .arg(selectedRows)
+                      .arg(plural));
+        label->setToolTip(
+            QStringLiteral(
+                "Complete-row selection. Batch edit, full-object copy, delete, and reorder use these rows. Ordinary copy and paste continue to use selected cells."));
+    };
+    update(
+        registerView_,
+        registerSelectionLabel_,
+        QStringLiteral("Register"),
+        QStringLiteral("Registers"));
+    update(
+        fieldView_,
+        fieldSelectionLabel_,
+        QStringLiteral("Field"),
+        QStringLiteral("Fields"));
+}
+
+void MainWindow::showInlineFailure(
+    const QString& message)
+{
+    if (message.isEmpty()) {
+        return;
+    }
+    QWidget* focus =
+        QApplication::focusWidget();
+    const bool fieldContext =
+        fieldPanel_ != nullptr &&
+        fieldPanel_->isVisible() &&
+        (focusBelongsToWidgetOutsidePopup(
+             focus, fieldPanel_) ||
+         lastCommandView_ == fieldView_ ||
+         focus == bitfieldView_);
+    QWidget* bar =
+        fieldContext
+            ? fieldFeedbackBar_
+            : registerFeedbackBar_;
+    QLabel* label =
+        fieldContext
+            ? fieldFeedbackLabel_
+            : registerFeedbackLabel_;
+    if (bar == nullptr || label == nullptr) {
+        return;
+    }
+    label->setText(message);
+    label->setAccessibleName(
+        QStringLiteral("Operation failed: %1")
+            .arg(message));
+    bar->setVisible(true);
+    bar->raise();
+}
+
+void MainWindow::clearInlineFailure()
+{
+    if (registerFeedbackBar_ != nullptr) {
+        registerFeedbackBar_->setVisible(false);
+    }
+    if (fieldFeedbackBar_ != nullptr) {
+        fieldFeedbackBar_->setVisible(false);
+    }
+}
+
 void MainWindow::triggerRegisterEmptyAction(
     EmptyStateAction action)
 {
@@ -15807,10 +16260,13 @@ void MainWindow::duplicateFocusedObject()
         current.data(objectIdRole).toString().toUtf8().toStdString();
     if (!current.isValid() ||
         current.data(addRowRole).toBool() ||
-        objectId.empty()) {
+        objectId.empty() ||
+        view->selectionModel() == nullptr ||
+        !view->selectionModel()->isRowSelected(
+            current.row(), {})) {
         statusBar()->showMessage(
             QStringLiteral(
-                "Duplicate skipped: select an existing %1 row")
+                "Duplicate skipped: select an existing %1 with its row-number gutter")
                 .arg(fieldFocused
                          ? QStringLiteral("Field")
                          : QStringLiteral("Register")),
@@ -15966,10 +16422,7 @@ void MainWindow::duplicateSelectedRegister()
             candidateBlock->registers,
             [](const regmap::Register& left,
                const regmap::Register& right) {
-                return std::tie(
-                           left.offset, left.id) <
-                    std::tie(
-                           right.offset, right.id);
+                return left.offset < right.offset;
             });
     }
     if (!addressEditDoesNotWorsen(*workspace, candidate, parent->id)) {
@@ -16002,12 +16455,7 @@ void MainWindow::duplicateSelectedRegister()
                                left,
                            const regmap::Register&
                                right) {
-                            return std::tie(
-                                       left.offset,
-                                       left.id) <
-                                std::tie(
-                                       right.offset,
-                                       right.id);
+                            return left.offset < right.offset;
                         });
                 }
             })) {
@@ -16037,10 +16485,11 @@ std::vector<std::string> MainWindow::selectedRegisterIds() const
 {
     std::set<std::string, std::less<>> selected;
     if (registerView_ != nullptr && registerView_->selectionModel() != nullptr) {
-        for (const QModelIndex& index : registerView_->selectionModel()->selectedIndexes()) {
+        for (const int row :
+             regmap::ui::fullySelectedRows(registerView_)) {
             const QModelIndex rowIdentity =
                 registerModel_->index(
-                    index.row(),
+                    row,
                     registerNameColumn);
             const std::string id =
                 rowIdentity.data(objectIdRole)
@@ -16053,17 +16502,6 @@ std::vector<std::string> MainWindow::selectedRegisterIds() const
             }
         }
     }
-    const QModelIndex current =
-        registerView_ == nullptr
-            ? QModelIndex{}
-            : registerView_->currentIndex();
-    if (selected.empty() &&
-        !selectedRegisterId_.empty() &&
-        current.isValid() &&
-        !current.data(addRowRole).toBool()) {
-        selected.insert(selectedRegisterId_);
-    }
-
     std::vector<std::string> result;
     for (int row = 0; row < registerModel_->rowCount(); ++row) {
         const std::string id = registerModel_->index(row, registerNameColumn)
@@ -16079,10 +16517,11 @@ std::vector<std::string> MainWindow::selectedFieldIds() const
 {
     std::set<std::string, std::less<>> selected;
     if (fieldView_ != nullptr && fieldView_->selectionModel() != nullptr) {
-        for (const QModelIndex& index : fieldView_->selectionModel()->selectedIndexes()) {
+        for (const int row :
+             regmap::ui::fullySelectedRows(fieldView_)) {
             const QModelIndex rowIdentity =
                 fieldModel_->index(
-                    index.row(),
+                    row,
                     fieldNameColumn);
             const std::string id =
                 rowIdentity.data(objectIdRole)
@@ -16095,17 +16534,6 @@ std::vector<std::string> MainWindow::selectedFieldIds() const
             }
         }
     }
-    const QModelIndex current =
-        fieldView_ == nullptr
-            ? QModelIndex{}
-            : fieldView_->currentIndex();
-    if (selected.empty() &&
-        !selectedFieldId_.empty() &&
-        current.isValid() &&
-        !current.data(addRowRole).toBool()) {
-        selected.insert(selectedFieldId_);
-    }
-
     std::vector<std::string> result;
     for (int row = 0; row < fieldModel_->rowCount(); ++row) {
         const std::string id = fieldModel_->index(row, fieldNameColumn)
@@ -16124,12 +16552,11 @@ std::vector<std::string> MainWindow::selectedEnumValueIds() const
     if (enumView_ != nullptr &&
         enumView_->selectionModel() !=
             nullptr) {
-        for (const QModelIndex& index :
-             enumView_->selectionModel()
-                 ->selectedIndexes()) {
+        for (const int row :
+             regmap::ui::fullySelectedRows(enumView_)) {
             const QModelIndex identity =
                 enumModel_->index(
-                    index.row(),
+                    row,
                     enumNameColumn);
             const std::string id =
                 identity
@@ -16145,28 +16572,6 @@ std::vector<std::string> MainWindow::selectedEnumValueIds() const
             }
         }
     }
-    const QModelIndex current =
-        enumView_ == nullptr
-        ? QModelIndex{}
-        : enumView_->currentIndex();
-    if (selected.empty() &&
-        current.isValid() &&
-        !current.data(addRowRole)
-             .toBool()) {
-        const std::string id =
-            enumModel_
-                ->index(
-                    current.row(),
-                    enumNameColumn)
-                .data(objectIdRole)
-                .toString()
-                .toUtf8()
-                .toStdString();
-        if (!id.empty()) {
-            selected.insert(id);
-        }
-    }
-
     std::vector<std::string> result;
     for (int row = 0;
          row < enumModel_->rowCount();
@@ -16527,7 +16932,7 @@ void MainWindow::moveRegisters(
     }
     std::ranges::stable_sort(
         reordered, [](const regmap::Register& left, const regmap::Register& right) {
-            return std::tie(left.offset, left.id) < std::tie(right.offset, right.id);
+            return left.offset < right.offset;
         });
     if (std::ranges::equal(
             reordered, sourceBlock->registers,
@@ -16548,7 +16953,7 @@ void MainWindow::moveRegisters(
     if (!addressEditDoesNotWorsen(*workspace, candidate, sourceBlock->id)) {
         statusBar()->showMessage(
             QStringLiteral(
-                "Cannot reorder %1: a destination slot does not fit its width or would overlap a fixed Register. No change was made.")
+                "Cannot reorder %1: a 4-byte destination slot is outside the Block or would overlap a fixed Register. No change was made.")
                 .arg(quantityLabel(
                     orderedIds.size(),
                     QStringLiteral("Register"),
@@ -17467,7 +17872,7 @@ void MainWindow::batchEditSelectedFields()
     auto* layout = new QVBoxLayout(&dialog);
     auto* summary = new QLabel(
         QStringLiteral(
-            "Only checked properties are changed. Mixed choices require an explicit replacement. A blank Range, Reset Value, or Description clears that property. The complete edit is one Undo step."),
+            "Only checked properties are changed. Mixed choices require an explicit replacement. A blank Range or Description clears that property. Field Reset is derived from Register Reset and is not edited here. The complete edit is one Undo step."),
         &dialog);
     summary->setWordWrap(true);
     layout->addWidget(summary);
@@ -17498,20 +17903,6 @@ void MainWindow::batchEditSelectedFields()
         QStringLiteral("minimum .. maximum; blank clears"));
     range->setEnabled(false);
     form->addRow(rangeApply, range);
-
-    auto* resetApply =
-        new QCheckBox(
-            QStringLiteral("Reset Value"),
-            &dialog);
-    resetApply->setObjectName(
-        QStringLiteral("batchFieldResetApply"));
-    auto* reset = new QLineEdit(&dialog);
-    reset->setObjectName(
-        QStringLiteral("batchFieldResetEditor"));
-    reset->setPlaceholderText(
-        QStringLiteral("unsigned value; blank clears"));
-    reset->setEnabled(false);
-    form->addRow(resetApply, reset);
 
     auto* readEffectApply =
         new QCheckBox(QStringLiteral("Read Effect"), &dialog);
@@ -17579,17 +17970,6 @@ void MainWindow::batchEditSelectedFields()
                 "Mixed ranges – enter replacement"));
     }
     if (allSame([](const regmap::Field& field) {
-            return field.resetValue;
-        })) {
-        reset->setText(
-            valueText(
-                selectedFields.front()->resetValue));
-    } else {
-        reset->setPlaceholderText(
-            QStringLiteral(
-                "Mixed values — enter replacement"));
-    }
-    if (allSame([](const regmap::Field& field) {
             return field.readSideEffect;
         })) {
         readEffect->setCurrentText(
@@ -17629,9 +18009,6 @@ void MainWindow::batchEditSelectedFields()
     connect(
         rangeApply, &QCheckBox::toggled,
         range, &QWidget::setEnabled);
-    connect(
-        resetApply, &QCheckBox::toggled,
-        reset, &QWidget::setEnabled);
     connect(
         readEffectApply, &QCheckBox::toggled,
         readEffect, &QWidget::setEnabled);
@@ -17679,7 +18056,7 @@ void MainWindow::batchEditSelectedFields()
             validation->hide();
         };
     for (QLineEdit* editor :
-         {range, reset, description}) {
+         {range, description}) {
         connect(
             editor, &QLineEdit::textChanged,
             &dialog, clearValidation);
@@ -17700,7 +18077,6 @@ void MainWindow::batchEditSelectedFields()
             const bool anyProperty =
                 accessApply->isChecked() ||
                 rangeApply->isChecked() ||
-                resetApply->isChecked() ||
                 readEffectApply->isChecked() ||
                 writeEffectApply->isChecked() ||
                 descriptionApply->isChecked();
@@ -17770,40 +18146,6 @@ void MainWindow::batchEditSelectedFields()
                 return false;
             }
 
-            std::optional<std::optional<
-                regmap::UnsignedValue>>
-                parsedReset{
-                    std::in_place,
-                    std::nullopt};
-            if (resetApply->isChecked()) {
-                const QString text =
-                    reset->text().trimmed();
-                if (text.isEmpty()) {
-                    parsedReset =
-                        std::optional<
-                            std::optional<
-                                regmap::UnsignedValue>>{
-                            std::in_place,
-                            std::nullopt};
-                } else if (
-                    const auto value =
-                        regmap::UnsignedValue::parse(
-                            text.toUtf8()
-                                .toStdString())) {
-                    parsedReset =
-                        std::optional<
-                            std::optional<
-                                regmap::UnsignedValue>>{
-                            std::in_place,
-                            *value};
-                } else {
-                    error = QStringLiteral(
-                        "Reset must be an unsigned integer or blank.");
-                    errorEditor = reset;
-                    return false;
-                }
-            }
-
             regmap::Workspace candidate =
                 *workspace;
             for (const auto& id : ids) {
@@ -17825,18 +18167,6 @@ void MainWindow::batchEditSelectedFields()
                     field->maximumValue =
                         parsedRange->maximum;
                 }
-                if (resetApply->isChecked()) {
-                    assignFieldReset(
-                        candidate, id,
-                        *parsedReset);
-                }
-                field = regmap::findField(
-                    candidate, id);
-                if (field == nullptr) {
-                    error = QStringLiteral(
-                        "The Field selection changed; select the rows again.");
-                    return false;
-                }
                 if (parsedReadEffect) {
                     field->readSideEffect =
                         *parsedReadEffect;
@@ -17857,14 +18187,11 @@ void MainWindow::batchEditSelectedFields()
             if (!workspaceEditDoesNotWorsen(
                     *workspace, candidate)) {
                 error = QStringLiteral(
-                    "These values would create an invalid Reset, Enum, Range, Access, side-effect, or Field state. Adjust the checked values; no Field has been changed.");
+                    "These values would create an invalid Range, Access, side-effect, or Field state. Adjust the checked values; no Field has been changed.");
                 errorEditor =
                     rangeApply->isChecked()
                     ? static_cast<QWidget*>(range)
-                    : (resetApply->isChecked()
-                           ? static_cast<QWidget*>(
-                                 reset)
-                           : (accessApply->isChecked()
+                    : (accessApply->isChecked()
                                   ? static_cast<
                                         QWidget*>(
                                         access)
@@ -17875,7 +18202,7 @@ void MainWindow::batchEditSelectedFields()
                                                readEffect)
                                          : static_cast<
                                                QWidget*>(
-                                               writeEffect))));
+                                               writeEffect)));
                 return false;
             }
             preparedCandidate =
@@ -17901,13 +18228,12 @@ void MainWindow::batchEditSelectedFields()
         buttons->button(QDialogButtonBox::Ok)->setEnabled(
             accessApply->isChecked() ||
             rangeApply->isChecked() ||
-            resetApply->isChecked() ||
             readEffectApply->isChecked() ||
             writeEffectApply->isChecked() ||
             descriptionApply->isChecked());
     };
     for (QCheckBox* apply :
-         {accessApply, rangeApply, resetApply,
+         {accessApply, rangeApply,
           readEffectApply, writeEffectApply,
           descriptionApply}) {
         connect(
@@ -18248,8 +18574,7 @@ void MainWindow::pasteRegisterRange()
             block->registers,
             [](const regmap::Register& left,
                const regmap::Register& right) {
-                return std::tie(left.offset, left.id) <
-                    std::tie(right.offset, right.id);
+                return left.offset < right.offset;
             });
     }
     if (!addressEditDoesNotWorsen(*workspace, candidate, targetBlock->id)) {
@@ -18293,10 +18618,7 @@ void MainWindow::pasteRegisterRange()
                         block->registers,
                         [](const regmap::Register& left,
                            const regmap::Register& right) {
-                            return std::tie(
-                                       left.offset, left.id) <
-                                std::tie(
-                                       right.offset, right.id);
+                            return left.offset < right.offset;
                         });
                 }
             })) {
@@ -19610,25 +19932,19 @@ void MainWindow::deleteSelectedRegisterAndShift()
 {
     std::vector<std::string> selectedIds =
         selectedRegisterIds();
-    if (registerView_ != nullptr &&
-        registerView_->selectionModel() !=
-            nullptr &&
-        registerView_->currentIndex()
-            .isValid() &&
-        !registerView_
-             ->selectionModel()
-             ->isSelected(
-                 registerView_
-                     ->currentIndex()) &&
-        !selectedRegisterId_.empty()) {
-        selectedIds = {
-            selectedRegisterId_};
+    if (selectedIds.empty()) {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Delete skipped: select a Register with its row-number gutter"),
+            5000);
+        return;
     }
     if (selectedIds.size() > 1) {
         deleteSelectedRegisterRangeAndShift(
             selectedIds);
         return;
     }
+    selectedRegisterId_ = selectedIds.front();
     const auto* workspace = controller_.workspace();
     if (workspace == nullptr || selectedRegisterId_.empty()) {
         return;
@@ -20645,13 +20961,35 @@ void MainWindow::moveField(const std::string& fieldId, std::uint32_t lsb, std::u
     const auto* workspace = controller_.workspace();
     const auto* reg =
         workspace == nullptr ? nullptr : findRegister(selectedRegisterId_);
-    if (reg == nullptr || msb < lsb || msb >= reg->width) {
-        statusBar()->showMessage(QStringLiteral("Field move is outside the register width"), 5000);
+    const auto* siblings =
+        reg == nullptr
+            ? nullptr
+            : fieldSiblings(reg->fields, fieldId);
+    const auto* parent =
+        reg == nullptr
+            ? nullptr
+            : parentFieldOf(reg->fields, fieldId);
+    const std::uint64_t containerWidth =
+        parent == nullptr
+            ? (reg == nullptr ? 0 : reg->width)
+            : parent->width();
+    if (reg == nullptr || siblings == nullptr ||
+        msb < lsb || msb >= containerWidth) {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Field move is outside its containing bit range"),
+            5000);
         return;
     }
-    const auto moving = std::ranges::find(reg->fields, fieldId, &regmap::Field::id);
-    if (moving == reg->fields.end()) {
-        statusBar()->showMessage(QStringLiteral("Only top-level fields can be dragged"), 5000);
+    const auto moving =
+        std::ranges::find(
+            *siblings, fieldId,
+            &regmap::Field::id);
+    if (moving == siblings->end()) {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "The selected Field is no longer available"),
+            5000);
         return;
     }
     if (moving->lsb == lsb && moving->msb == msb) {
@@ -20659,7 +20997,7 @@ void MainWindow::moveField(const std::string& fieldId, std::uint32_t lsb, std::u
     }
     std::vector<std::pair<std::uint32_t, std::uint32_t>> obstacles;
     QStringList fullyCoveredFields;
-    for (const auto& field : reg->fields) {
+    for (const auto& field : *siblings) {
         if (field.id != fieldId && field.msb >= field.lsb && lsb <= field.msb && field.lsb <= msb) {
             obstacles.emplace_back(field.lsb, field.msb);
             if (lsb <= field.lsb && msb >= field.msb) {
@@ -20667,51 +21005,10 @@ void MainWindow::moveField(const std::string& fieldId, std::uint32_t lsb, std::u
             }
         }
     }
-
-    enum class Resolution { moveOnly, trimMoving, trimOthers, cancel };
-    Resolution resolution = obstacles.empty() ? Resolution::moveOnly : Resolution::cancel;
-    if (!obstacles.empty()) {
-        QMessageBox dialog(this);
-        dialog.setWindowTitle(QStringLiteral("Resolve field overlap"));
-        dialog.setIcon(QMessageBox::Warning);
-        dialog.setText(QStringLiteral("The moved field overlaps one or more fields. Choose "
-                                      "which side may adapt its width."));
-        auto* trimMoving =
-            dialog.addButton(QStringLiteral("Trim moving field"), QMessageBox::AcceptRole);
-        auto* trimOthers = dialog.addButton(
-            fullyCoveredFields.empty()
-                ? QStringLiteral("Trim overlapping fields")
-                : QStringLiteral("Trim/delete overlapping fields"),
-            QMessageBox::DestructiveRole);
-        if (!fullyCoveredFields.empty()) {
-            dialog.setInformativeText(
-                QStringLiteral(
-                    "Choosing the destructive option will delete %1: %2. "
-                    "Partially covered Fields will be narrowed. "
-                    "Ctrl+Z restores the entire operation.")
-                    .arg(quantityLabel(
-                        fullyCoveredFields.size(),
-                        QStringLiteral("fully covered Field"),
-                        QStringLiteral("fully covered Fields")))
-                    .arg(fullyCoveredFields.join(QStringLiteral(", "))));
-        }
-        auto* cancel = dialog.addButton(QMessageBox::Cancel);
-        dialog.setDefaultButton(cancel);
-        dialog.setEscapeButton(cancel);
-        dialog.exec();
-        if (dialog.clickedButton() == trimMoving) {
-            resolution = Resolution::trimMoving;
-        } else if (dialog.clickedButton() == trimOthers) {
-            resolution = Resolution::trimOthers;
-        }
-    }
-    if (resolution == Resolution::cancel) {
-        statusBar()->showMessage(QStringLiteral("Field move cancelled"), 3000);
-        return;
-    }
-
-    if (resolution == Resolution::trimMoving) {
-        std::vector<std::pair<std::uint32_t, std::uint32_t>> segments{{lsb, msb}};
+    const auto calculateTrimmedMovingRange = [&]()
+        -> std::optional<std::pair<std::uint32_t, std::uint32_t>> {
+        std::vector<std::pair<std::uint32_t, std::uint32_t>>
+            segments{{lsb, msb}};
         std::ranges::sort(obstacles);
         for (const auto& [obstacleLsb, obstacleMsb] : obstacles) {
             std::vector<std::pair<std::uint32_t, std::uint32_t>> next;
@@ -20730,16 +21027,116 @@ void MainWindow::moveField(const std::string& fieldId, std::uint32_t lsb, std::u
             segments = std::move(next);
         }
         if (segments.empty()) {
+            return std::nullopt;
+        }
+        const auto best = std::ranges::max_element(
+            segments,
+            [](const auto& left, const auto& right) {
+                return (left.second - left.first) <
+                    (right.second - right.first);
+            });
+        return *best;
+    };
+    const auto trimmedMovingRange =
+        calculateTrimmedMovingRange();
+
+    enum class Resolution { moveOnly, trimMoving, trimOthers, cancel };
+    Resolution resolution = obstacles.empty() ? Resolution::moveOnly : Resolution::cancel;
+    if (!obstacles.empty()) {
+        QMessageBox dialog(this);
+        dialog.setWindowTitle(QStringLiteral("Resolve field overlap"));
+        dialog.setIcon(QMessageBox::Warning);
+        dialog.setText(QStringLiteral("The moved field overlaps one or more fields. Choose "
+                                      "which side may adapt its width."));
+        auto* trimMoving =
+            dialog.addButton(QStringLiteral("Trim moving field"), QMessageBox::AcceptRole);
+        auto* trimOthers = dialog.addButton(
+            fullyCoveredFields.empty()
+                ? QStringLiteral("Trim overlapping fields")
+                : QStringLiteral("Trim/delete overlapping fields"),
+            QMessageBox::DestructiveRole);
+        QStringList trimOthersPreview;
+        for (const auto& field : *siblings) {
+            if (field.id == fieldId || field.msb < field.lsb ||
+                msb < field.lsb || lsb > field.msb) {
+                continue;
+            }
+            const bool hasLeft = field.lsb < lsb;
+            const bool hasRight = field.msb > msb;
+            QString outcome = QStringLiteral("deleted");
+            if (hasLeft || hasRight) {
+                const std::uint32_t leftWidth =
+                    hasLeft ? lsb - field.lsb : 0;
+                const std::uint32_t rightWidth =
+                    hasRight ? field.msb - msb : 0;
+                outcome = leftWidth >= rightWidth
+                              ? QStringLiteral("[%1:%2]")
+                                    .arg(lsb - 1)
+                                    .arg(field.lsb)
+                              : QStringLiteral("[%1:%2]")
+                                    .arg(field.msb)
+                                    .arg(msb + 1);
+            }
+            trimOthersPreview.push_back(
+                QStringLiteral("%1 [%2:%3] → %4")
+                    .arg(fromUtf8(field.name))
+                    .arg(field.msb)
+                    .arg(field.lsb)
+                    .arg(outcome));
+        }
+        const QString movingOutcome =
+            trimmedMovingRange
+                ? QStringLiteral("[%1:%2]")
+                      .arg(trimmedMovingRange->second)
+                      .arg(trimmedMovingRange->first)
+                : QStringLiteral("no bits remain");
+        const QString fullyCoveredSummary =
+            fullyCoveredFields.empty()
+                ? QString{}
+                : QStringLiteral(
+                      "This option will delete %1 fully covered %2: %3.\n\n")
+                      .arg(fullyCoveredFields.size())
+                      .arg(fullyCoveredFields.size() == 1
+                               ? QStringLiteral("Field")
+                               : QStringLiteral("Fields"))
+                      .arg(fullyCoveredFields.join(QStringLiteral(", ")));
+        dialog.setInformativeText(
+            QStringLiteral(
+                "Requested move\n%1 [%2:%3] → [%4:%5]\n\n"
+                "Trim moving Field\n%1 [%2:%3] → %6\n\n"
+                "Trim overlapping Fields\n%7\n\n%8"
+                "All listed changes form one operation. Ctrl+Z restores it.")
+                .arg(fromUtf8(moving->name))
+                .arg(moving->msb)
+                .arg(moving->lsb)
+                .arg(msb)
+                .arg(lsb)
+                .arg(movingOutcome)
+                .arg(trimOthersPreview.join(QStringLiteral("\n")))
+                .arg(fullyCoveredSummary));
+        auto* cancel = dialog.addButton(QMessageBox::Cancel);
+        dialog.setDefaultButton(cancel);
+        dialog.setEscapeButton(cancel);
+        dialog.exec();
+        if (dialog.clickedButton() == trimMoving) {
+            resolution = Resolution::trimMoving;
+        } else if (dialog.clickedButton() == trimOthers) {
+            resolution = Resolution::trimOthers;
+        }
+    }
+    if (resolution == Resolution::cancel) {
+        statusBar()->showMessage(QStringLiteral("Field move cancelled"), 3000);
+        return;
+    }
+
+    if (resolution == Resolution::trimMoving) {
+        if (!trimmedMovingRange) {
             statusBar()->showMessage(QStringLiteral("The moving field has no non-overlapping bits"),
                                      5000);
             return;
         }
-        const auto best =
-            std::ranges::max_element(segments, [](const auto& left, const auto& right) {
-                return (left.second - left.first) < (right.second - right.first);
-            });
-        lsb = best->first;
-        msb = best->second;
+        lsb = trimmedMovingRange->first;
+        msb = trimmedMovingRange->second;
     }
 
     const std::string registerId = reg->id;
@@ -20751,7 +21148,14 @@ void MainWindow::moveField(const std::string& fieldId, std::uint32_t lsb, std::u
             return;
         }
         if (resolution == Resolution::trimOthers) {
-            std::erase_if(target->fields, [&](regmap::Field& field) {
+            auto* targetSiblings =
+                fieldSiblings(
+                    target->fields,
+                    fieldId);
+            if (targetSiblings == nullptr) {
+                return;
+            }
+            std::erase_if(*targetSiblings, [&](regmap::Field& field) {
                 if (field.id == fieldId || field.msb < field.lsb || msb < field.lsb ||
                     lsb > field.msb) {
                         return false;
@@ -21248,31 +21652,12 @@ void MainWindow::deleteSelection()
         std::vector<std::string>
             selectedValues =
                 selectedEnumValueIds();
-        if (enumView_ != nullptr &&
-            enumView_
-                    ->selectionModel() !=
-                nullptr &&
-            enumView_->currentIndex()
-                .isValid() &&
-            !enumView_
-                 ->selectionModel()
-                 ->isSelected(
-                     enumView_
-                         ->currentIndex())) {
-            const std::string currentId =
-                enumView_
-                    ->currentIndex()
-                    .data(objectIdRole)
-                    .toString()
-                    .toUtf8()
-                    .toStdString();
-            selectedValues =
-                currentId.empty()
-                ? std::vector<
-                      std::string>{}
-                : std::vector<
-                      std::string>{
-                      currentId};
+        if (selectedValues.empty()) {
+            statusBar()->showMessage(
+                QStringLiteral(
+                    "Delete skipped: select an Enum value with its row-number gutter"),
+                5000);
+            return;
         }
         if (selectedValues.size() >
             1) {
@@ -21280,33 +21665,19 @@ void MainWindow::deleteSelection()
                 selectedValues);
             return;
         }
-        id = enumView_->currentIndex().data(objectIdRole).toString().toUtf8().toStdString();
-        if (id.empty()) {
-            statusBar()->showMessage(
-                QStringLiteral("Delete skipped: select an Enum value"),
-                4000);
-            return;
-        }
-        deleteEnumValue(id);
+        deleteEnumValue(
+            selectedValues.front());
         return;
     } else if (commandView == fieldView_) {
         std::vector<std::string>
             selectedFields =
                 selectedFieldIds();
-        if (fieldView_ != nullptr &&
-            fieldView_
-                    ->selectionModel() !=
-                nullptr &&
-            fieldView_->currentIndex()
-                .isValid() &&
-            !fieldView_
-                 ->selectionModel()
-                 ->isSelected(
-                     fieldView_
-                         ->currentIndex()) &&
-            !selectedFieldId_.empty()) {
-            selectedFields = {
-                selectedFieldId_};
+        if (selectedFields.empty()) {
+            statusBar()->showMessage(
+                QStringLiteral(
+                    "Delete skipped: select a Field with its row-number gutter"),
+                5000);
+            return;
         }
         if (selectedFields.size() >
             1) {
@@ -21314,11 +21685,9 @@ void MainWindow::deleteSelection()
                 selectedFields);
             return;
         }
-        id = selectedFieldId_;
+        id = selectedFields.front();
     } else if (commandView == registerView_) {
-        if (!selectedRegisterId_.empty()) {
-            deleteSelectedRegisterAndShift();
-        }
+        deleteSelectedRegisterAndShift();
         return;
     } else if (commandView == hierarchyView_) {
         id = !selectedBlockId_.empty() ? selectedBlockId_ : selectedAddressId_;
@@ -22955,18 +23324,156 @@ void MainWindow::pasteSelection()
         }
     }
 
-    if (targets.empty()) {
+    if (targets.empty() || skipped > 0) {
         QString message =
-            QStringLiteral("Paste skipped: %1")
-                .arg(quantityLabel(
-                    skipped,
-                    QStringLiteral("skipped cell"),
-                    QStringLiteral("skipped cells")));
+            targets.empty()
+                ? QStringLiteral("Paste skipped: no editable target cells")
+                : QStringLiteral(
+                      "Paste cancelled: all cells must have editable targets; %1")
+                      .arg(quantityLabel(
+                          skipped,
+                          QStringLiteral("invalid target"),
+                          QStringLiteral("invalid targets")));
         if (!firstSkipped.isEmpty()) {
-            message += QStringLiteral("; first skipped: ") +
+            message += QStringLiteral("; first invalid target: ") +
                 firstSkipped;
         }
         statusBar()->showMessage(message, 6000);
+        return;
+    }
+
+    const regmap::Workspace* currentWorkspace =
+        controller_.workspace();
+    if (currentWorkspace == nullptr) {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Paste cancelled: open a project first"),
+            5000);
+        return;
+    }
+
+    regmap::Workspace candidate =
+        *currentWorkspace;
+    std::size_t changed = 0;
+    std::size_t unchanged = 0;
+    QString firstRejected;
+    QModelIndex firstRejectedIndex;
+    for (const auto& target : targets) {
+        const PropertyEditResult result =
+            applyPropertyEdit(
+                target.objectId,
+                target.property,
+                target.value,
+                false,
+                true,
+                &candidate);
+        switch (result.status) {
+        case PropertyEditStatus::changed:
+            ++changed;
+            break;
+        case PropertyEditStatus::unchanged:
+            ++unchanged;
+            break;
+        case PropertyEditStatus::rejected:
+            firstRejectedIndex =
+                view->model()->index(
+                    target.row,
+                    target.column);
+            firstRejected =
+                QStringLiteral(
+                    "%1 / %2 = \"%3\" (expected %4)")
+                    .arg(
+                        target.objectName,
+                        target.propertyName,
+                        target.value.isEmpty()
+                            ? QStringLiteral("<empty>")
+                            : target.value,
+                        result.expectation);
+            break;
+        }
+        if (firstRejectedIndex.isValid()) {
+            break;
+        }
+    }
+    if (firstRejectedIndex.isValid()) {
+        view->selectionModel()->setCurrentIndex(
+            firstRejectedIndex,
+            QItemSelectionModel::NoUpdate);
+        view->scrollTo(
+            firstRejectedIndex,
+            QAbstractItemView::PositionAtCenter);
+        QString rejection =
+            QStringLiteral(
+                "Paste cancelled: no cells changed; first invalid value: %1")
+                .arg(firstRejected);
+        if (firstRejected.contains(
+                QStringLiteral(
+                    "individually confirmed Type change"))) {
+            rejection +=
+                QStringLiteral(
+                    "; edit that Type cell individually so the destructive cleanup can be confirmed");
+        }
+        statusBar()->showMessage(
+            rejection,
+            8000);
+        return;
+    }
+    std::set<std::string, std::less<>> addressTargets;
+    std::set<std::string, std::less<>> fieldGeometryTargets;
+    std::set<std::string, std::less<>> numericRangeTargets;
+    for (const auto& target : targets) {
+        if (target.property == "offset" ||
+            target.property == "width" ||
+            target.property == "base" ||
+            target.property == "size" ||
+            target.property == "address_width") {
+            addressTargets.insert(target.objectId);
+        }
+        if ((target.property == "msb" ||
+             target.property == "field_width" ||
+             target.property == "type") &&
+            (regmap::findField(*currentWorkspace, target.objectId) != nullptr ||
+             regmap::findField(candidate, target.objectId) != nullptr)) {
+            fieldGeometryTargets.insert(target.objectId);
+        }
+        if (target.property == "minimum" ||
+            target.property == "maximum" ||
+            target.property == "range" ||
+            target.property == "type") {
+            numericRangeTargets.insert(target.objectId);
+        }
+    }
+    const bool addressTargetsValid =
+        std::ranges::all_of(
+            addressTargets,
+            [&](const std::string& id) {
+                return addressEditDoesNotWorsen(
+                    *currentWorkspace, candidate, id);
+            });
+    const bool fieldGeometryTargetsValid =
+        std::ranges::all_of(
+            fieldGeometryTargets,
+            [&](const std::string& id) {
+                return fieldGeometryEditDoesNotWorsen(
+                    *currentWorkspace, candidate, id);
+            });
+    const bool numericRangeTargetsValid =
+        std::ranges::all_of(
+            numericRangeTargets,
+            [&](const std::string& id) {
+                return numericRangeEditDoesNotWorsen(
+                    *currentWorkspace, candidate, id);
+            });
+    if (!addressTargetsValid ||
+        !fieldGeometryTargetsValid ||
+        !numericRangeTargetsValid ||
+        !workspaceEditDoesNotWorsen(
+            *currentWorkspace,
+            candidate)) {
+        statusBar()->showMessage(
+            QStringLiteral(
+                "Paste cancelled: the combined values would introduce or replace a validation Problem; no cells changed"),
+            8000);
         return;
     }
 
@@ -22987,53 +23494,25 @@ void MainWindow::pasteSelection()
     view->selectionModel()->setCurrentIndex(
         restoredCurrent, QItemSelectionModel::NoUpdate);
 
-    const std::size_t undoDepth = controller_.undoDepth();
-    std::size_t changed = 0;
-    std::size_t unchanged = 0;
-    std::size_t rejected = 0;
-    QString firstRejected;
-    QModelIndex firstRejectedIndex;
-    {
-        const QScopedValueRollback editGuard(modelEditInProgress_, true);
-        for (const auto& target : targets) {
-            const PropertyEditResult result =
-                applyPropertyEdit(target.objectId, target.property, target.value, false);
-            switch (result.status) {
-            case PropertyEditStatus::changed:
-                ++changed;
-                break;
-            case PropertyEditStatus::unchanged:
-                ++unchanged;
-                break;
-            case PropertyEditStatus::rejected:
-                ++rejected;
-                if (!firstRejectedIndex.isValid()) {
-                    firstRejectedIndex =
-                        view->model()->index(target.row, target.column);
-                    const QString displayValue =
-                        target.value.isEmpty() ? QStringLiteral("<empty>") : target.value;
-                    firstRejected =
-                        QStringLiteral("%1 / %2 = \"%3\" (expected %4)")
-                            .arg(target.objectName, target.propertyName, displayValue,
-                                 result.expectation);
-                }
-                break;
-            }
-        }
-    }
-    if (firstRejectedIndex.isValid()) {
-        view->selectionModel()->setCurrentIndex(
-            firstRejectedIndex, QItemSelectionModel::NoUpdate);
-        view->scrollTo(firstRejectedIndex, QAbstractItemView::PositionAtCenter);
-    }
     if (changed > 0) {
-        static_cast<void>(controller_.squashUndoSince(
-            undoDepth,
-            QStringLiteral("Paste %1")
-                .arg(quantityLabel(
-                    changed,
-                    QStringLiteral("cell"),
-                    QStringLiteral("cells")))));
+        const QScopedValueRollback editGuard(
+            modelEditInProgress_, true);
+        if (!controller_.editWorkspace(
+                QStringLiteral("Paste %1")
+                    .arg(quantityLabel(
+                        changed,
+                        QStringLiteral("cell"),
+                        QStringLiteral("cells"))),
+                [candidate = std::move(candidate)](
+                    regmap::Workspace& workspace) mutable {
+                    workspace = std::move(candidate);
+                })) {
+            statusBar()->showMessage(
+                QStringLiteral(
+                    "Paste cancelled: the combined values did not produce a valid project; no cells changed"),
+                8000);
+            return;
+        }
     }
 
     QString message;
@@ -23049,26 +23528,16 @@ void MainWindow::pasteSelection()
                   .arg(sourceColumnCount);
     if (changed == 0) {
         message = QStringLiteral(
-                      "Paste made no changes (%1): %2 unchanged, %3 rejected, %4 skipped")
+                      "Paste made no changes (%1): %2 unchanged")
                       .arg(pasteShape)
-                      .arg(unchanged)
-                      .arg(rejected)
-                      .arg(skipped);
+                      .arg(unchanged);
     } else {
         message =
             QStringLiteral(
-                "Paste complete (%1): %2 changed, %3 unchanged, %4 rejected, %5 skipped")
+                "Paste complete (%1): %2 changed, %3 unchanged")
                 .arg(pasteShape)
                 .arg(changed)
-                .arg(unchanged)
-                .arg(rejected)
-                .arg(skipped);
-    }
-    if (!firstRejected.isEmpty()) {
-        message += QStringLiteral("; first rejected: ") + firstRejected;
-    }
-    if (!firstSkipped.isEmpty()) {
-        message += QStringLiteral("; first skipped: ") + firstSkipped;
+                .arg(unchanged);
     }
     QStringList excludedTargets;
     if (excludedAddRowTarget) {
@@ -23093,7 +23562,7 @@ void MainWindow::pasteSelection()
     if (changed > 0) {
         message += QStringLiteral("; Ctrl+Z restores this paste");
     }
-    statusBar()->showMessage(message, rejected > 0 ? 7000 : 4000);
+    statusBar()->showMessage(message, 4000);
 }
 
 void MainWindow::copyHierarchySelection()
@@ -23531,6 +24000,12 @@ void MainWindow::updateAddressSpaceView()
     addressSpaceView_->setSelection(
         pageId,
         blockId);
+    addressSpaceView_->setMinimumHeight(
+        addressSpaceView_->sizeHint().height());
+    if (addressSpaceScroll_ != nullptr) {
+        addressSpaceScroll_->setVisible(
+            workspace != nullptr);
+    }
 }
 
 bool MainWindow::isNavigationObject(const std::string& id) const
@@ -24523,19 +24998,16 @@ void MainWindow::updateEditActions()
                           : targetKind))));
     const bool canDeleteTarget =
         fieldContext
-        ? (!selectedFieldId_.empty() &&
+        ? (!fieldIds.empty() &&
            fieldsShareParent &&
            !deletesAllCompoundMembers)
         : (enumContext
-               ? enumView_->currentIndex()
-                     .data(objectIdRole)
-                     .isValid()
+               ? !enumValueIds.empty()
                : (hierarchyContext
                       ? (!selectedAddressId_.empty() ||
                          !selectedBlockId_.empty())
                       : (registerContext &&
-                         !selectedRegisterId_
-                              .empty() &&
+                         !registerIds.empty() &&
                          registersShareParent)));
     deleteAction_->setEnabled(
         hasWorkspace &&

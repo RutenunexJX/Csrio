@@ -1,4 +1,9 @@
 find_package(Qt6 6.5 REQUIRED COMPONENTS Test)
+get_filename_component(
+    REGMAP_TEST_TOOLCHAIN_RUNTIME_DIR
+    "${CMAKE_CXX_COMPILER}"
+    DIRECTORY
+)
 
 qt_add_executable(regmap_core_tests core_tests.cpp)
 set_target_properties(regmap_core_tests PROPERTIES AUTOMOC ON)
@@ -55,6 +60,8 @@ if(TARGET RegMap::Cli)
             regmap_cli_tests
             PRIVATE
                 REGMAP_CLI_EXECUTABLE="$<TARGET_FILE:regmapc>"
+                REGMAP_TEST_QT_RUNTIME_DIR="$<TARGET_FILE_DIR:Qt6::Core>"
+                REGMAP_TEST_TOOLCHAIN_RUNTIME_DIR="${REGMAP_TEST_TOOLCHAIN_RUNTIME_DIR}"
         )
     endif()
     regmap_enable_warnings(
@@ -103,6 +110,7 @@ if(TARGET RegMap::WorkbenchUi)
             regmap_gui_tests
             PRIVATE
                 REGMAP_WORKBENCH_EXECUTABLE="$<TARGET_FILE:regmap_workbench>"
+                REGMAP_TEST_TOOLCHAIN_RUNTIME_DIR="${REGMAP_TEST_TOOLCHAIN_RUNTIME_DIR}"
         )
     endif()
     target_compile_features(regmap_gui_tests PRIVATE cxx_std_20)

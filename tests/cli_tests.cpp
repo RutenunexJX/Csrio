@@ -9,6 +9,8 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcess>
+#include <QProcessEnvironment>
+#include <QSet>
 #include <QTemporaryDir>
 #include <QTextStream>
 #include <QtTest>
@@ -51,7 +53,9 @@ struct Invocation {
 }
 
 [[nodiscard]] Invocation invokeExecutable(
-    const QStringList& arguments)
+    const QStringList& arguments,
+    const QProcessEnvironment& environment =
+        QProcessEnvironment::systemEnvironment())
 {
     Invocation result;
     QProcess process;
@@ -59,6 +63,20 @@ struct Invocation {
         QString::fromUtf8(
             REGMAP_CLI_EXECUTABLE));
     process.setArguments(arguments);
+    QProcessEnvironment processEnvironment = environment;
+    QString inheritedPath = processEnvironment.value(QStringLiteral("PATH"));
+    if (inheritedPath.isEmpty()) {
+        inheritedPath = processEnvironment.value(QStringLiteral("Path"));
+    }
+    processEnvironment.remove(QStringLiteral("PATH"));
+    processEnvironment.remove(QStringLiteral("Path"));
+    processEnvironment.insert(
+        QStringLiteral("PATH"),
+        QString::fromUtf8(REGMAP_TEST_QT_RUNTIME_DIR) + QDir::listSeparator() +
+            QString::fromUtf8(REGMAP_TEST_TOOLCHAIN_RUNTIME_DIR) + QDir::listSeparator() +
+            inheritedPath);
+    process.setProcessEnvironment(
+        processEnvironment);
     process.start();
     if (!process.waitForStarted(30000) ||
         !process.waitForFinished(30000)) {
@@ -314,6 +332,60 @@ createOverlappingProject(
     return path;
 }
 
+[[nodiscard]] QString createLargeQueryProject(
+    const QString& directory)
+{
+    const QString path =
+        createProject(directory);
+    if (path.isEmpty()) {
+        return {};
+    }
+    QByteArray content = readFile(path);
+    content.replace(
+        QByteArrayLiteral("size: 0x100"),
+        QByteArrayLiteral("size: 0x1000"));
+    QByteArray registers;
+    for (int index = 0; index < 105;
+         ++index) {
+        registers.append(
+            QStringLiteral(
+                "            - id: reg-query-%1\n"
+                "              name: QUERY_%2\n"
+                "              offset: 0x%3\n"
+                "              width: 32\n"
+                "              type: unsigned\n"
+                "              initial: 0x0\n"
+                "              reset: 0x0\n"
+                "              access: rw\n"
+                "              tags: []\n"
+                "              description: Query pagination fixture.\n"
+                "              enum_values: []\n"
+                "              fields: []\n")
+                .arg(index)
+                .arg(index, 3, 10,
+                     QLatin1Char('0'))
+                .arg(8 + index * 4,
+                     0, 16)
+                .toUtf8());
+    }
+    const qsizetype markerIndex =
+        content.indexOf(
+            QByteArrayLiteral("rtl:"));
+    if (markerIndex < 0) {
+        return {};
+    }
+    content.insert(markerIndex, registers);
+    QFile file(path);
+    if (!file.open(
+            QIODevice::WriteOnly |
+            QIODevice::Truncate) ||
+        file.write(content) !=
+            content.size()) {
+        return {};
+    }
+    return path;
+}
+
 void makeGeneratedFilesWritable(
     const QString& directory)
 {
@@ -346,16 +418,19 @@ private slots:
     void guardsGetByRevision();
     void getsManyObjectsInOneSnapshot();
     void findsObjectsByHumanFacingClues();
+    void boundsListAndFindByDefault();
     void requiresOneFindResult();
     void queriesRecursiveObjectScopes();
     void previewsAndWritesReadOnlyOutputs();
     void reportsAndRepairsOutputStatusWithoutRewritingCurrentFiles();
     void keepsXlsxStatusStableAcrossProcesses();
+    void runsCoreCommandsWithoutAPlatformPlugin();
     void supportsUnicodeProjectPathsAcrossProcesses();
     void returnsStableUsageAndProjectErrors();
     void previewsAtomicPatchWithoutWriting();
     void appliesRevisionGuardedPatchAndRegenerates();
     void rejectsUnsafePatchesWithoutPartialWrites();
+    void rejectsIndependentFieldResetWrites();
     void reportsStructuredPrewriteFailures();
     void readsPatchFromStandardInput();
     void addsAndRemovesHierarchyAtomically();
@@ -907,6 +982,60 @@ void CliTests::exposesMachineReadableSchema()
                 QStringLiteral("kind"))
             .toString(),
         QStringLiteral("flag"));
+    const QJsonObject initTargetOption =
+        optionByName(
+            initArguments
+                .value(
+                    QStringLiteral("options"))
+                .toArray(),
+            QStringLiteral("--target"));
+    QVERIFY(
+        initTargetOption
+            .value(
+                QStringLiteral("repeatable"))
+            .toBool());
+    QCOMPARE(
+        initTargetOption
+            .value(
+                QStringLiteral(
+                    "allowed_values"))
+            .toArray(),
+        (QJsonArray{
+            QStringLiteral("xlsx"),
+            QStringLiteral("c-header"),
+            QStringLiteral("markdown")}));
+    QCOMPARE(
+        optionByName(
+            initArguments
+                .value(
+                    QStringLiteral("options"))
+                .toArray(),
+            QStringLiteral("--output-dir"))
+            .value(
+                QStringLiteral("value_type"))
+            .toString(),
+        QStringLiteral("relative_path"));
+    for (const QString& commandName :
+         {QStringLiteral("status"),
+          QStringLiteral("generate")}) {
+        const QJsonObject targetOption =
+            optionByName(
+                commandArgumentSchemas
+                    .value(commandName)
+                    .toObject()
+                    .value(
+                        QStringLiteral(
+                            "options"))
+                    .toArray(),
+                QStringLiteral("--target"));
+        QVERIFY2(
+            targetOption
+                .value(
+                    QStringLiteral(
+                        "repeatable"))
+                .toBool(),
+            qPrintable(commandName));
+    }
     const QJsonObject findArguments =
         commandArgumentSchemas
             .value(
@@ -951,6 +1080,18 @@ void CliTests::exposesMachineReadableSchema()
             .toString(),
         QStringLiteral(
             "positive_integer"));
+    QCOMPARE(
+        optionByName(
+            findArguments
+                .value(
+                    QStringLiteral(
+                        "options"))
+                .toArray(),
+            QStringLiteral("--all"))
+            .value(
+                QStringLiteral("kind"))
+            .toString(),
+        QStringLiteral("flag"));
     QCOMPARE(
         optionByName(
             findArguments
@@ -1035,6 +1176,18 @@ void CliTests::exposesMachineReadableSchema()
             .toString(),
         QStringLiteral(
             "positive_integer"));
+    QCOMPARE(
+        optionByName(
+            listArguments
+                .value(
+                    QStringLiteral(
+                        "options"))
+                .toArray(),
+            QStringLiteral("--all"))
+            .value(
+                QStringLiteral("kind"))
+            .toString(),
+        QStringLiteral("flag"));
     QCOMPARE(
         optionByName(
             listArguments
@@ -1648,6 +1801,25 @@ void CliTests::exposesMachineReadableSchema()
         responseEnvelopeContract
             .value(
                 QStringLiteral(
+                    "exit_status_by_code"))
+            .toObject()
+            .value(QStringLiteral("7"))
+            .toString(),
+        QStringLiteral("input_error"));
+    QCOMPARE(
+        responseEnvelopeContract
+            .value(
+                QStringLiteral(
+                    "exit_status_by_code"))
+            .toObject()
+            .value(QStringLiteral("8"))
+            .toString(),
+        QStringLiteral(
+            "generation_error"));
+    QCOMPARE(
+        responseEnvelopeContract
+            .value(
+                QStringLiteral(
                     "usage_recovery_member"))
             .toString(),
         QStringLiteral("usage"));
@@ -1692,6 +1864,28 @@ void CliTests::exposesMachineReadableSchema()
                     "differences_found"))
             .toString(),
         QStringLiteral("RMC6000"));
+    QCOMPARE(
+        responseEnvelopeContract
+            .value(
+                QStringLiteral(
+                    "generic_error_codes"))
+            .toObject()
+            .value(
+                QStringLiteral(
+                    "input_error"))
+            .toString(),
+        QStringLiteral("RMC7000"));
+    QCOMPARE(
+        responseEnvelopeContract
+            .value(
+                QStringLiteral(
+                    "generic_error_codes"))
+            .toObject()
+            .value(
+                QStringLiteral(
+                    "generation_error"))
+            .toString(),
+        QStringLiteral("RMC8000"));
     const QJsonObject
         operationFailureContract =
             result.value(
@@ -1869,6 +2063,37 @@ void CliTests::exposesMachineReadableSchema()
             .contains(
                 QStringLiteral(
                     "writable")));
+    const QJsonObject outputStatusContract =
+        result.value(
+                  QStringLiteral(
+                      "output_status_contract"))
+            .toObject();
+    for (const QString& member :
+         {QStringLiteral("sha256"),
+          QStringLiteral("state"),
+          QStringLiteral("synchronized")}) {
+        QVERIFY2(
+            outputStatusContract
+                .value(
+                    QStringLiteral(
+                        "artifact_members"))
+                .toArray()
+                .contains(member),
+            qPrintable(member));
+    }
+    for (const QString& member :
+         {QStringLiteral("written"),
+          QStringLiteral("skipped"),
+          QStringLiteral("failed")}) {
+        QVERIFY2(
+            outputStatusContract
+                .value(
+                    QStringLiteral(
+                        "write_report_members"))
+                .toArray()
+                .contains(member),
+            qPrintable(member));
+    }
     QCOMPARE(
         result.value(
                   QStringLiteral(
@@ -1991,7 +2216,8 @@ void CliTests::exposesMachineReadableSchema()
             .toArray(),
         (QJsonArray{
             QStringLiteral("--offset"),
-            QStringLiteral("--limit")}));
+            QStringLiteral("--limit"),
+            QStringLiteral("--all")}));
     QCOMPARE(
         findContract
             .value(
@@ -2041,6 +2267,33 @@ void CliTests::exposesMachineReadableSchema()
             .toString(),
         QStringLiteral(
             "result_metadata.next_offset"));
+    const QJsonObject defaultLimits =
+        paginationContract
+            .value(
+                QStringLiteral(
+                    "default_limit"))
+            .toObject();
+    QCOMPARE(
+        defaultLimits
+            .value(QStringLiteral("list"))
+            .toInt(),
+        100);
+    QCOMPARE(
+        defaultLimits
+            .value(QStringLiteral("find"))
+            .toInt(),
+        100);
+    QVERIFY(
+        defaultLimits
+            .value(QStringLiteral("diff"))
+            .isNull());
+    QCOMPARE(
+        paginationContract
+            .value(
+                QStringLiteral(
+                    "unbounded_option"))
+            .toString(),
+        QStringLiteral("--all"));
     QCOMPARE(
         paginationContract
             .value(
@@ -2237,6 +2490,26 @@ void CliTests::exposesMachineReadableSchema()
             .toArray()
             .contains(
                 QStringLiteral("lsb")));
+    QVERIFY(
+        !result.value(
+                   QStringLiteral(
+                       "writable_properties"))
+             .toObject()
+             .value(
+                 QStringLiteral("field"))
+             .toArray()
+             .contains(
+                 QStringLiteral("reset")));
+    QVERIFY(
+        result.value(
+                  QStringLiteral(
+                      "writable_properties"))
+            .toObject()
+            .value(
+                QStringLiteral("register"))
+            .toArray()
+            .contains(
+                QStringLiteral("reset")));
     const QJsonObject operationSchemas =
         result.value(
                   QStringLiteral(
@@ -3343,6 +3616,18 @@ void CliTests::inspectsAndValidatesByStableId()
             .toArray()
             .size(),
         1);
+    QVERIFY(
+        !reg.contains(
+            QStringLiteral(
+                "compatibility")));
+    QVERIFY(
+        !reg.contains(
+            QStringLiteral(
+                "array_count")));
+    QVERIFY(
+        !reg.contains(
+            QStringLiteral(
+                "array_stride")));
     QCOMPARE(
         reg.value(
                QStringLiteral(
@@ -6255,6 +6540,166 @@ void CliTests::findsObjectsByHumanFacingClues()
         directory.path());
 }
 
+void CliTests::boundsListAndFindByDefault()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString project =
+        createLargeQueryProject(
+            directory.path());
+    QVERIFY(!project.isEmpty());
+
+    const Invocation boundedList =
+        invoke(
+            {QStringLiteral("--json"),
+             QStringLiteral("list"),
+             project,
+             QStringLiteral("--kind"),
+             QStringLiteral("register")});
+    QCOMPARE(boundedList.exitCode, 0);
+    const QJsonObject boundedListRoot =
+        json(boundedList);
+    QCOMPARE(
+        boundedListRoot
+            .value(QStringLiteral("result"))
+            .toArray()
+            .size(),
+        100);
+    const QJsonObject boundedListMetadata =
+        boundedListRoot
+            .value(
+                QStringLiteral(
+                    "result_metadata"))
+            .toObject();
+    QCOMPARE(
+        boundedListMetadata
+            .value(
+                QStringLiteral(
+                    "total_count"))
+            .toInt(),
+        106);
+    QCOMPARE(
+        boundedListMetadata
+            .value(QStringLiteral("limit"))
+            .toInt(),
+        100);
+    QVERIFY(
+        boundedListMetadata
+            .value(
+                QStringLiteral("has_more"))
+            .toBool());
+
+    const Invocation allList =
+        invoke(
+            {QStringLiteral("--json"),
+             QStringLiteral("list"),
+             project,
+             QStringLiteral("--kind"),
+             QStringLiteral("register"),
+             QStringLiteral("--all")});
+    QCOMPARE(allList.exitCode, 0);
+    const QJsonObject allListRoot =
+        json(allList);
+    QCOMPARE(
+        allListRoot
+            .value(QStringLiteral("result"))
+            .toArray()
+            .size(),
+        106);
+    QVERIFY(
+        allListRoot
+            .value(
+                QStringLiteral(
+                    "result_metadata"))
+            .toObject()
+            .value(QStringLiteral("limit"))
+            .isNull());
+
+    const Invocation boundedFind =
+        invoke(
+            {QStringLiteral("--json"),
+             QStringLiteral("find"),
+             project,
+             QStringLiteral("QUERY_"),
+             QStringLiteral("--kind"),
+             QStringLiteral("register")});
+    QCOMPARE(boundedFind.exitCode, 0);
+    QCOMPARE(
+        json(boundedFind)
+            .value(QStringLiteral("result"))
+            .toArray()
+            .size(),
+        100);
+    QCOMPARE(
+        json(boundedFind)
+            .value(
+                QStringLiteral(
+                    "result_metadata"))
+            .toObject()
+            .value(
+                QStringLiteral(
+                    "total_count"))
+            .toInt(),
+        105);
+
+    const Invocation allFind =
+        invoke(
+            {QStringLiteral("--json"),
+             QStringLiteral("find"),
+             project,
+             QStringLiteral("QUERY_"),
+             QStringLiteral("--kind"),
+             QStringLiteral("register"),
+             QStringLiteral("--all")});
+    QCOMPARE(allFind.exitCode, 0);
+    QCOMPARE(
+        json(allFind)
+            .value(QStringLiteral("result"))
+            .toArray()
+            .size(),
+        105);
+    QVERIFY(
+        json(allFind)
+            .value(
+                QStringLiteral(
+                    "result_metadata"))
+            .toObject()
+            .value(QStringLiteral("limit"))
+            .isNull());
+
+    for (const QString& command :
+         {QStringLiteral("list"),
+          QStringLiteral("find")}) {
+        QStringList arguments{
+            QStringLiteral("--json"),
+            command,
+            project,
+        };
+        if (command == QStringLiteral("find")) {
+            arguments.append(
+                QStringLiteral("QUERY_"));
+        }
+        arguments
+            << QStringLiteral("--all")
+            << QStringLiteral("--limit")
+            << QStringLiteral("1");
+        const Invocation conflict =
+            invoke(arguments);
+        QCOMPARE(
+            conflict.exitCode,
+            static_cast<int>(
+                regmap::cli::ExitCode::
+                    usageError));
+        QVERIFY(
+            json(conflict)
+                .value(QStringLiteral("error"))
+                .toString()
+                .contains(
+                    QStringLiteral(
+                        "cannot be combined")));
+    }
+}
+
 void CliTests::requiresOneFindResult()
 {
     QTemporaryDir directory;
@@ -7016,7 +7461,119 @@ void CliTests::previewsAndWritesReadOnlyOutputs()
             .toArray()
             .size(),
         3);
+    for (const QJsonValue& value :
+         previewResult
+             .value(
+                 QStringLiteral(
+                     "artifacts"))
+             .toArray()) {
+        const QJsonObject artifact =
+            value.toObject();
+        QVERIFY(
+            artifact
+                .value(
+                    QStringLiteral("sha256"))
+                .toString()
+                .startsWith(
+                    QStringLiteral(
+                        "sha256:")));
+        QCOMPARE(
+            artifact
+                .value(
+                    QStringLiteral("written"))
+                .toBool(),
+            false);
+        QCOMPARE(
+            artifact
+                .value(
+                    QStringLiteral("failed"))
+                .toBool(),
+            false);
+    }
     QVERIFY(!QDir(generated).exists());
+
+    const Invocation targetedGenerate =
+        invoke(
+            {QStringLiteral("--json"),
+             QStringLiteral("generate"),
+             project,
+             QStringLiteral("--target"),
+             QStringLiteral("markdown"),
+             QStringLiteral("--expect"),
+             revision});
+    QCOMPARE(targetedGenerate.exitCode, 0);
+    const QJsonObject targetedResult =
+        json(targetedGenerate)
+            .value(QStringLiteral("result"))
+            .toObject();
+    QCOMPARE(
+        targetedResult
+            .value(
+                QStringLiteral(
+                    "target_count"))
+            .toInt(),
+        1);
+    const QJsonObject targetedArtifact =
+        targetedResult
+            .value(
+                QStringLiteral(
+                    "artifacts"))
+            .toArray()
+            .at(0)
+            .toObject();
+    QCOMPARE(
+        targetedArtifact
+            .value(QStringLiteral("kind"))
+            .toString(),
+        QStringLiteral("markdown"));
+    QVERIFY(
+        targetedArtifact
+            .value(
+                QStringLiteral("written"))
+            .toBool());
+    QVERIFY(
+        QFileInfo::exists(
+            QDir(generated).filePath(
+                QStringLiteral(
+                    "register-map.md"))));
+    QVERIFY(
+        !QFileInfo::exists(
+            QDir(generated).filePath(
+                QStringLiteral(
+                    "register-map.xlsx"))));
+    QVERIFY(
+        !QFileInfo::exists(
+            QDir(generated).filePath(
+                QStringLiteral(
+                    "device_regs.h"))));
+
+    const Invocation targetedStatus =
+        invoke(
+            {QStringLiteral("--json"),
+             QStringLiteral("status"),
+             project,
+             QStringLiteral("--target"),
+             QStringLiteral("markdown"),
+             QStringLiteral(
+                 "--require-current")});
+    QCOMPARE(targetedStatus.exitCode, 0);
+    const QJsonObject targetedStatusResult =
+        json(targetedStatus)
+            .value(QStringLiteral("result"))
+            .toObject();
+    QCOMPARE(
+        targetedStatusResult
+            .value(
+                QStringLiteral(
+                    "output_count"))
+            .toInt(),
+        1);
+    QVERIFY(
+        targetedStatusResult
+            .value(
+                QStringLiteral(
+                    "outputs_current"))
+            .toBool());
 
     const Invocation generate =
         invoke(
@@ -7039,8 +7596,30 @@ void CliTests::previewsAndWritesReadOnlyOutputs()
     QVERIFY(
         generatedResult.value(
                            QStringLiteral(
-                               "outputs_current"))
+                              "outputs_current"))
             .toBool());
+    QCOMPARE(
+        generatedResult
+            .value(
+                QStringLiteral(
+                    "artifacts"))
+            .toArray()
+            .size(),
+        3);
+    QVERIFY(
+        std::ranges::any_of(
+            generatedResult
+                .value(
+                    QStringLiteral(
+                        "artifacts"))
+                .toArray(),
+            [](const QJsonValue& value) {
+                return value.toObject()
+                           .value(
+                               QStringLiteral(
+                                   "skipped"))
+                           .toBool();
+            }));
     QVERIFY(
         QFileInfo::exists(
             QDir(generated).filePath(
@@ -7704,6 +8283,62 @@ void CliTests::keepsXlsxStatusStableAcrossProcesses()
 
     makeGeneratedFilesWritable(
         directory.path());
+}
+
+void CliTests::runsCoreCommandsWithoutAPlatformPlugin()
+{
+    QProcessEnvironment environment =
+        QProcessEnvironment::systemEnvironment();
+    environment.insert(
+        QStringLiteral("QT_QPA_PLATFORM"),
+        QStringLiteral(
+            "regmapc-invalid-platform"));
+
+    const Invocation version =
+        invokeExecutable(
+            {QStringLiteral("--json"),
+             QStringLiteral("version")},
+            environment);
+    QCOMPARE(version.exitCode, 0);
+    QVERIFY(version.standardError.isEmpty());
+
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString project =
+        createProject(
+            directory.path());
+    QVERIFY(!project.isEmpty());
+    const Invocation generate =
+        invokeExecutable(
+            {QStringLiteral("--json"),
+             QStringLiteral("generate"),
+             project,
+             QStringLiteral("--target"),
+             QStringLiteral("markdown"),
+             QStringLiteral("--dry-run")},
+            environment);
+    QCOMPARE(generate.exitCode, 0);
+    QVERIFY(generate.standardError.isEmpty());
+    QCOMPARE(
+        json(generate)
+            .value(QStringLiteral("result"))
+            .toObject()
+            .value(
+                QStringLiteral(
+                    "target_count"))
+            .toInt(),
+        1);
+
+    const Invocation status =
+        invokeExecutable(
+            {QStringLiteral("--json"),
+             QStringLiteral("status"),
+             project,
+             QStringLiteral("--target"),
+             QStringLiteral("markdown")},
+            environment);
+    QCOMPARE(status.exitCode, 0);
+    QVERIFY(status.standardError.isEmpty());
 }
 
 void CliTests::supportsUnicodeProjectPathsAcrossProcesses()
@@ -8401,6 +9036,42 @@ void CliTests::returnsStableUsageAndProjectErrors()
         !QFileInfo::exists(
             missingPatch));
 
+    const Invocation missingPatchInput =
+        invoke(
+            {QStringLiteral("--json"),
+             QStringLiteral("apply"),
+             missing,
+             missingPatch,
+             QStringLiteral("--dry-run")});
+    QCOMPARE(
+        missingPatchInput.exitCode,
+        static_cast<int>(
+            regmap::cli::ExitCode::
+                inputError));
+    const QJsonObject missingPatchRoot =
+        json(missingPatchInput);
+    QCOMPARE(
+        missingPatchRoot
+            .value(
+                QStringLiteral(
+                    "exit_status"))
+            .toString(),
+        QStringLiteral("input_error"));
+    QCOMPARE(
+        missingPatchRoot
+            .value(
+                QStringLiteral(
+                    "error_code"))
+            .toString(),
+        QStringLiteral("RMC7000"));
+    QCOMPARE(
+        missingPatchRoot
+            .value(QStringLiteral("result"))
+            .toObject()
+            .value(QStringLiteral("stage"))
+            .toString(),
+        QStringLiteral("input"));
+
     const Invocation project =
         invoke(
             {QStringLiteral("--json"),
@@ -8981,6 +9652,215 @@ void CliTests::rejectsUnsafePatchesWithoutPartialWrites()
         original);
 }
 
+void CliTests::rejectsIndependentFieldResetWrites()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString project =
+        createProject(
+            directory.path());
+    QVERIFY(!project.isEmpty());
+    const QByteArray original =
+        readFile(project);
+
+    const std::vector<QJsonObject> operations{
+        QJsonObject{
+            {QStringLiteral("op"),
+             QStringLiteral("set")},
+            {QStringLiteral("id"),
+             QStringLiteral("field-enable")},
+            {QStringLiteral("property"),
+             QStringLiteral("reset")},
+            {QStringLiteral("value"),
+             QStringLiteral("0x0")},
+        },
+        QJsonObject{
+            {QStringLiteral("op"),
+             QStringLiteral("add")},
+            {QStringLiteral("kind"),
+             QStringLiteral("field")},
+            {QStringLiteral("id"),
+             QStringLiteral("field-extra")},
+            {QStringLiteral("parent_id"),
+             QStringLiteral("reg-control")},
+            {QStringLiteral("value"),
+             QJsonObject{
+                 {QStringLiteral("name"),
+                  QStringLiteral("EXTRA")},
+                 {QStringLiteral("lsb"), 1},
+                 {QStringLiteral("width"), 1},
+                 {QStringLiteral("reset"),
+                  QStringLiteral("0x0")},
+             }},
+        },
+        QJsonObject{
+            {QStringLiteral("op"),
+             QStringLiteral("copy")},
+            {QStringLiteral("id"),
+             QStringLiteral("field-enable")},
+            {QStringLiteral("new_id"),
+             QStringLiteral(
+                 "field-enable-copy")},
+            {QStringLiteral("parent_id"),
+             QStringLiteral("reg-control")},
+            {QStringLiteral("value"),
+             QJsonObject{
+                 {QStringLiteral("lsb"), 2},
+                 {QStringLiteral("reset"),
+                  QStringLiteral("0x0")},
+             }},
+        },
+    };
+
+    for (const QJsonObject& operation :
+         operations) {
+        const Invocation rejected =
+            invoke(
+                {QStringLiteral("--json"),
+                 QStringLiteral("apply"),
+                 project,
+                 QStringLiteral("-"),
+                 QStringLiteral("--dry-run")},
+                patchText(
+                    QJsonArray{operation}));
+        QCOMPARE(
+            rejected.exitCode,
+            static_cast<int>(
+                regmap::cli::ExitCode::
+                    usageError));
+        QVERIFY(
+            json(rejected)
+                .value(QStringLiteral("error"))
+                .toString()
+                .contains(
+                    QStringLiteral(
+                        "parent Register")));
+        QCOMPARE(
+            readFile(project),
+            original);
+    }
+
+    const QJsonArray copyToResetlessRegister{
+        QJsonObject{
+            {QStringLiteral("op"),
+             QStringLiteral("add")},
+            {QStringLiteral("kind"),
+             QStringLiteral("register")},
+            {QStringLiteral("id"),
+             QStringLiteral("reg-resetless")},
+            {QStringLiteral("parent_id"),
+             QStringLiteral("block-control")},
+            {QStringLiteral("value"),
+             QJsonObject{
+                 {QStringLiteral("name"),
+                  QStringLiteral("RESETLESS")},
+                 {QStringLiteral("offset"),
+                  QStringLiteral("0x8")},
+                 {QStringLiteral("type"),
+                  QStringLiteral("field")},
+                 {QStringLiteral("reset"),
+                  QJsonValue(
+                      QJsonValue::Null)},
+             }},
+        },
+        QJsonObject{
+            {QStringLiteral("op"),
+             QStringLiteral("copy")},
+            {QStringLiteral("id"),
+             QStringLiteral("field-enable")},
+            {QStringLiteral("new_id"),
+             QStringLiteral(
+                 "field-resetless-copy")},
+            {QStringLiteral("parent_id"),
+             QStringLiteral("reg-resetless")},
+            {QStringLiteral("value"),
+             QJsonObject{
+                 {QStringLiteral("lsb"), 0},
+             }},
+        },
+    };
+    const Invocation copied =
+        invoke(
+            {QStringLiteral("--json"),
+             QStringLiteral("apply"),
+             project,
+             QStringLiteral("-")},
+            patchText(
+                copyToResetlessRegister,
+                currentRevision(project)));
+    QCOMPARE(copied.exitCode, 0);
+    const Invocation copiedField =
+        invoke(
+            {QStringLiteral("--json"),
+             QStringLiteral("get"),
+             project,
+             QStringLiteral(
+                 "field-resetless-copy")});
+    QCOMPARE(copiedField.exitCode, 0);
+    QVERIFY(
+        json(copiedField)
+            .value(QStringLiteral("result"))
+            .toObject()
+            .value(QStringLiteral("reset"))
+            .isNull());
+
+    const auto setRegisterReset =
+        [&project](const QJsonValue& value) {
+            const QJsonArray patch{
+                QJsonObject{
+                    {QStringLiteral("op"),
+                     QStringLiteral("set")},
+                    {QStringLiteral("id"),
+                     QStringLiteral("reg-control")},
+                    {QStringLiteral("property"),
+                     QStringLiteral("reset")},
+                    {QStringLiteral("value"),
+                     value},
+                }};
+            return invoke(
+                {QStringLiteral("--json"),
+                 QStringLiteral("apply"),
+                 project,
+                 QStringLiteral("-")},
+                patchText(
+                    patch,
+                    currentRevision(project)));
+        };
+    const auto fieldReset =
+        [&project]() {
+            const Invocation get =
+                invoke(
+                    {QStringLiteral("--json"),
+                     QStringLiteral("get"),
+                     project,
+                     QStringLiteral(
+                         "field-enable")});
+            if (get.exitCode != 0) {
+                return QJsonValue{};
+            }
+            return json(get)
+                .value(QStringLiteral("result"))
+                .toObject()
+                .value(QStringLiteral("reset"));
+        };
+
+    const Invocation cleared =
+        setRegisterReset(
+            QJsonValue(QJsonValue::Null));
+    QCOMPARE(cleared.exitCode, 0);
+    QVERIFY(fieldReset().isNull());
+
+    const Invocation restored =
+        setRegisterReset(
+            QStringLiteral("0x1"));
+    QCOMPARE(restored.exitCode, 0);
+    QCOMPARE(
+        fieldReset().toString(),
+        QStringLiteral("0x1"));
+    makeGeneratedFilesWritable(
+        directory.path());
+}
+
 void CliTests::reportsStructuredPrewriteFailures()
 {
     QTemporaryDir directory;
@@ -9245,7 +10125,7 @@ void CliTests::reportsStructuredPrewriteFailures()
         generation.exitCode,
         static_cast<int>(
             regmap::cli::ExitCode::
-                writeError));
+                generationError));
     const QJsonObject generationRoot =
         json(generation);
     QCOMPARE(
@@ -10031,8 +10911,6 @@ void CliTests::createsHierarchyWithAutomaticIdsAndReferences()
                   QStringLiteral("auto")},
                  {QStringLiteral("type"),
                   QStringLiteral("bool")},
-                 {QStringLiteral("reset"),
-                  QStringLiteral("0x1")},
              }},
         },
         QJsonObject{
@@ -12971,8 +13849,7 @@ void CliTests::copiesHierarchyWithDeterministicIds()
              QJsonObject{
                  {QStringLiteral("name"),
                   QStringLiteral("ENABLE_COPY")},
-                 {QStringLiteral("lsb"), 4},
-                 {QStringLiteral("reset"), 0}}},
+                 {QStringLiteral("lsb"), 4}}},
         },
         QJsonObject{
             {QStringLiteral("op"),
@@ -14836,7 +15713,6 @@ void CliTests::autoPlacesMovedHierarchyRoots()
                 {QStringLiteral("width"), 1},
                 {QStringLiteral("type"),
                  QStringLiteral("bits")},
-                {QStringLiteral("reset"), 0},
             }),
         add(
             QStringLiteral("register"),
@@ -14869,7 +15745,6 @@ void CliTests::autoPlacesMovedHierarchyRoots()
                 {QStringLiteral("width"), 1},
                 {QStringLiteral("type"),
                  QStringLiteral("bits")},
-                {QStringLiteral("reset"), 0},
             }),
         moveAutomatically(
             QStringLiteral("field-enable"),
@@ -17397,6 +18272,181 @@ void CliTests::initializesProjectWithoutOverwritingFiles()
                      QStringLiteral(
                          "generated")))
              .exists());
+
+    const QString configuredProject =
+        QDir(directory.path())
+            .filePath(
+                QStringLiteral(
+                    "configured/configured.regmap.yaml"));
+    const Invocation configured =
+        invoke(
+            {QStringLiteral("--json"),
+             QStringLiteral("init"),
+             configuredProject,
+             QStringLiteral("--output-dir"),
+             QStringLiteral("exports"),
+             QStringLiteral("--xlsx-file"),
+             QStringLiteral("map.xlsx"),
+             QStringLiteral("--c-header-file"),
+             QStringLiteral("registers.h"),
+             QStringLiteral("--markdown-file"),
+             QStringLiteral("map.md"),
+             QStringLiteral("--target"),
+             QStringLiteral("markdown")});
+    QCOMPARE(configured.exitCode, 0);
+    const QJsonObject configuredResult =
+        json(configured)
+            .value(QStringLiteral("result"))
+            .toObject();
+    QCOMPARE(
+        configuredResult
+            .value(
+                QStringLiteral(
+                    "artifacts"))
+            .toArray()
+            .size(),
+        1);
+    QCOMPARE(
+        configuredResult
+            .value(
+                QStringLiteral(
+                    "artifacts"))
+            .toArray()
+            .at(0)
+            .toObject()
+            .value(QStringLiteral("kind"))
+            .toString(),
+        QStringLiteral("markdown"));
+    const QDir exports(
+        QFileInfo(configuredProject)
+            .absoluteDir()
+            .filePath(
+                QStringLiteral("exports")));
+    QVERIFY(
+        QFileInfo::exists(
+            exports.filePath(
+                QStringLiteral("map.md"))));
+    QVERIFY(
+        !QFileInfo::exists(
+            exports.filePath(
+                QStringLiteral("map.xlsx"))));
+    QVERIFY(
+        !QFileInfo::exists(
+            exports.filePath(
+                QStringLiteral("registers.h"))));
+
+    const Invocation configuredSummary =
+        invoke(
+            {QStringLiteral("--json"),
+             QStringLiteral("summary"),
+             configuredProject});
+    QCOMPARE(configuredSummary.exitCode, 0);
+    const QJsonArray configuredTargets =
+        json(configuredSummary)
+            .value(QStringLiteral("result"))
+            .toObject()
+            .value(
+                QStringLiteral(
+                    "generation_targets"))
+            .toArray();
+    QCOMPARE(configuredTargets.size(), 3);
+    QSet<QString> configuredNames;
+    for (const QJsonValue& target :
+         configuredTargets) {
+        configuredNames.insert(
+            QFileInfo(
+                target.toObject()
+                    .value(
+                        QStringLiteral("path"))
+                    .toString())
+                .fileName());
+    }
+    QCOMPARE(
+        configuredNames,
+        (QSet<QString>{
+            QStringLiteral("map.xlsx"),
+            QStringLiteral("registers.h"),
+            QStringLiteral("map.md")}));
+
+    const QString duplicateTargetProject =
+        QDir(directory.path())
+            .filePath(
+                QStringLiteral(
+                    "invalid-duplicate/device.regmap.yaml"));
+    const Invocation duplicateTarget =
+        invokeExecutable(
+            {QStringLiteral("--json"),
+             QStringLiteral("init"),
+             duplicateTargetProject,
+             QStringLiteral("--output-dir"),
+             QStringLiteral("exports"),
+             QStringLiteral("--target"),
+             QStringLiteral("markdown"),
+             QStringLiteral("--xlsx-file"),
+             QStringLiteral("same.out"),
+             QStringLiteral("--c-header-file"),
+             QStringLiteral("same.out")});
+    QCOMPARE(
+        duplicateTarget.exitCode,
+        static_cast<int>(
+            regmap::cli::ExitCode::
+                usageError));
+    QVERIFY(
+        json(duplicateTarget)
+            .value(QStringLiteral("error"))
+            .toString()
+            .contains(
+                QStringLiteral("unique")));
+    QVERIFY(
+        !QFileInfo::exists(
+            duplicateTargetProject));
+    QVERIFY(
+        !QDir(
+             QFileInfo(
+                 duplicateTargetProject)
+                 .absoluteDir()
+                 .filePath(
+                     QStringLiteral("exports")))
+             .exists());
+
+    const QString manifestCollisionProject =
+        QDir(directory.path())
+            .filePath(
+                QStringLiteral(
+                    "invalid-manifest/device.regmap.yaml"));
+    const Invocation manifestCollision =
+        invokeExecutable(
+            {QStringLiteral("--json"),
+             QStringLiteral("init"),
+             manifestCollisionProject,
+             QStringLiteral("--output-dir"),
+             QStringLiteral("."),
+             QStringLiteral("--target"),
+             QStringLiteral("markdown"),
+             QStringLiteral("--xlsx-file"),
+             QStringLiteral("device.regmap.yaml")});
+    QCOMPARE(
+        manifestCollision.exitCode,
+        static_cast<int>(
+            regmap::cli::ExitCode::
+                usageError));
+    QVERIFY(
+        json(manifestCollision)
+            .value(QStringLiteral("error"))
+            .toString()
+            .contains(
+                QStringLiteral("manifest")));
+    QVERIFY(
+        !QFileInfo::exists(
+            manifestCollisionProject));
+    QVERIFY(
+        !QFileInfo::exists(
+            QFileInfo(
+                manifestCollisionProject)
+                .absoluteDir()
+                .filePath(
+                    QStringLiteral(
+                        "register-map.md"))));
 
     const QString collisionDirectory =
         directory.filePath(

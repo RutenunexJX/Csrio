@@ -24,6 +24,8 @@ enum class ExitCode : int {
     writeError = 4,
     outputsOutOfDate = 5,
     differencesFound = 6,
+    inputError = 7,
+    generationError = 8,
 };
 
 [[nodiscard]] int run(

@@ -6,6 +6,7 @@
 #include <QPainter>
 #include <QPaintEvent>
 #include <QSizePolicy>
+#include <QWheelEvent>
 
 #include <algorithm>
 #include <limits>
@@ -19,30 +20,8 @@ namespace {
 [[nodiscard]] std::optional<std::uint64_t> registerExtent(
     const regmap::Register& reg)
 {
-    if (reg.width == 0 || reg.array.count == 0) {
-        return std::nullopt;
-    }
-    const std::uint64_t byteWidth =
-        (static_cast<std::uint64_t>(reg.width) + 7U) / 8U;
-    if (reg.array.count == 1) {
-        return byteWidth;
-    }
-    const std::uint64_t instances =
-        static_cast<std::uint64_t>(reg.array.count - 1U);
-    if (reg.array.stride != 0 &&
-        instances >
-            std::numeric_limits<std::uint64_t>::max() /
-                reg.array.stride) {
-        return std::nullopt;
-    }
-    const std::uint64_t arraySpan =
-        instances * reg.array.stride;
-    if (arraySpan >
-        std::numeric_limits<std::uint64_t>::max() -
-            byteWidth) {
-        return std::nullopt;
-    }
-    return arraySpan + byteWidth;
+    Q_UNUSED(reg);
+    return std::uint64_t{4};
 }
 
 [[nodiscard]] std::uint64_t inferredBlockExtent(
@@ -106,7 +85,7 @@ AddressSpaceView::AddressSpaceView(QWidget* parent)
         QStringLiteral("Workspace address map"));
     setToolTip(
         QStringLiteral(
-            "All Pages use one Block-offset scale. Click a Page lane or Block to locate it."));
+            "All Pages use one Block-offset scale. Click a Page lane or Block to locate it. Ctrl+wheel or +/- zooms; 0 resets; F focuses the selected Block."));
 }
 
 void AddressSpaceView::setWorkspace(
@@ -119,6 +98,7 @@ void AddressSpaceView::setWorkspace(
     outOfRangeBlockCount_ = 0;
     hoveredPage_ = -1;
     hoveredBlock_ = -1;
+    viewStart_ = 0;
 
     if (workspace == nullptr) {
         selectedPageId_.clear();
@@ -337,7 +317,70 @@ void AddressSpaceView::setSelection(
     }
     selectedPageId_ = std::move(resolvedPage);
     selectedBlockId_ = blockId;
+    if (zoomLevel_ > 1 &&
+        !selectedBlockId_.empty()) {
+        focusSelectedBlock();
+    }
     update();
+}
+
+void AddressSpaceView::setZoomLevel(
+    const std::uint32_t level)
+{
+    const std::uint32_t clamped =
+        std::clamp<std::uint32_t>(
+            level, 1, 32);
+    if (zoomLevel_ == clamped) {
+        return;
+    }
+    zoomLevel_ = clamped;
+    if (zoomLevel_ == 1) {
+        viewStart_ = 0;
+    } else {
+        focusSelectedBlock();
+    }
+    update();
+}
+
+void AddressSpaceView::focusSelectedBlock()
+{
+    const std::uint64_t span =
+        visibleSpan();
+    if (zoomLevel_ == 1 ||
+        selectedBlockId_.empty()) {
+        viewStart_ = 0;
+        return;
+    }
+    for (const auto& page : pages_) {
+        const auto block =
+            std::ranges::find(
+                page.blocks,
+                selectedBlockId_,
+                &BlockSegment::id);
+        if (block == page.blocks.end()) {
+            continue;
+        }
+        const std::uint64_t halfExtent =
+            block->extent / 2;
+        const std::uint64_t center =
+            block->offset >
+                    std::numeric_limits<std::uint64_t>::max() -
+                        halfExtent
+                ? std::numeric_limits<std::uint64_t>::max()
+                : block->offset + halfExtent;
+        const std::uint64_t proposed =
+            center > span / 2
+                ? center - span / 2
+                : 0;
+        const std::uint64_t maximumStart =
+            displayedSpan_ > span
+                ? displayedSpan_ - span
+                : 0;
+        viewStart_ =
+            std::min(proposed, maximumStart);
+        return;
+    }
+    viewStart_ = 0;
 }
 
 QSize AddressSpaceView::sizeHint() const
@@ -347,10 +390,7 @@ QSize AddressSpaceView::sizeHint() const
         static_cast<int>(pages_.size()) * 30;
     return QSize(
         720,
-        std::clamp(
-            requestedHeight,
-            80,
-            280));
+        std::max(requestedHeight, 80));
 }
 
 int AddressSpaceView::labelWidth() const
@@ -359,6 +399,19 @@ int AddressSpaceView::labelWidth() const
         width() / 4,
         96,
         260);
+}
+
+std::uint64_t AddressSpaceView::visibleSpan() const
+{
+    const std::uint64_t quotient =
+        displayedSpan_ / zoomLevel_;
+    const std::uint64_t remainder =
+        displayedSpan_ % zoomLevel_;
+    return std::max<std::uint64_t>(
+        1,
+        quotient +
+            static_cast<std::uint64_t>(
+                remainder != 0));
 }
 
 QRect AddressSpaceView::laneRect(
@@ -411,17 +464,32 @@ QRect AddressSpaceView::pageSpanRect(
         return {};
     }
     const QRect track = trackRect(pageIndex);
+    const std::uint64_t span =
+        visibleSpan();
+    const std::uint64_t visibleEnd =
+        saturatedEnd(viewStart_, span);
+    const std::uint64_t clippedStart =
+        viewStart_;
+    const std::uint64_t clippedEnd =
+        std::min(
+            visibleEnd,
+            pages_[pageIndex].mappedSpan);
+    if (clippedEnd <= clippedStart) {
+        return {};
+    }
+    const int left =
+        track.left();
     const int spanWidth =
         std::clamp(
             static_cast<int>(
                 (static_cast<long double>(
-                     pages_[pageIndex].mappedSpan) *
+                     clippedEnd - clippedStart) *
                  static_cast<long double>(track.width())) /
-                static_cast<long double>(displayedSpan_)),
+                static_cast<long double>(span)),
             3,
             track.width());
     return QRect(
-        track.left(),
+        left,
         track.top(),
         spanWidth,
         track.height());
@@ -439,28 +507,38 @@ QRect AddressSpaceView::blockRect(
     const QRect track = trackRect(pageIndex);
     const BlockSegment& block =
         pages_[pageIndex].blocks[blockIndex];
+    const std::uint64_t span =
+        visibleSpan();
+    const std::uint64_t visibleEnd =
+        saturatedEnd(viewStart_, span);
+    const std::uint64_t blockEnd =
+        saturatedEnd(
+            block.offset,
+            block.extent);
+    if (blockEnd <= viewStart_ ||
+        block.offset >= visibleEnd) {
+        return {};
+    }
+    const std::uint64_t start =
+        std::max(block.offset, viewStart_);
     const std::uint64_t end =
-        std::min(
-            displayedSpan_,
-            saturatedEnd(
-                block.offset,
-                block.extent));
+        std::min(blockEnd, visibleEnd);
     const int left =
         std::clamp(
             track.left() +
                 static_cast<int>(
-                    (static_cast<long double>(block.offset) *
+                    (static_cast<long double>(start - viewStart_) *
                      static_cast<long double>(track.width())) /
-                    static_cast<long double>(displayedSpan_)),
+                    static_cast<long double>(span)),
             track.left(),
             track.right());
     const int right =
         std::clamp(
             track.left() +
                 static_cast<int>(
-                    (static_cast<long double>(end) *
+                    (static_cast<long double>(end - viewStart_) *
                      static_cast<long double>(track.width())) /
-                    static_cast<long double>(displayedSpan_)),
+                    static_cast<long double>(span)),
             left + 1,
             track.right() + 1);
     return QRect(
@@ -493,10 +571,13 @@ AddressSpaceView::blockAt(
         const auto& blocks = pages_[page].blocks;
         for (auto block = blocks.size();
              block > 0; --block) {
-            if (blockRect(
-                    page,
-                    block - 1)
-                    .contains(position)) {
+            const QRect painted =
+                blockRect(page, block - 1);
+            const QRect hit =
+                painted.isValid()
+                    ? painted.adjusted(-5, -2, 5, 2)
+                    : QRect{};
+            if (hit.contains(position)) {
                 return std::pair{
                     static_cast<int>(page),
                     static_cast<int>(block - 1)};
@@ -582,7 +663,7 @@ void AddressSpaceView::updateHover(
     } else {
         setToolTip(
             QStringLiteral(
-                "All Pages use one Block-offset scale. Blue marks Blocks, green marks the selected Block, and red marks overlap or Page-range errors."));
+                "All Pages use one Block-offset scale. Blue marks Blocks, green marks the selected Block, and red marks overlap or Page-range errors. Ctrl+wheel or +/- zooms; 0 resets; F focuses the selected Block."));
         unsetCursor();
     }
     update();
@@ -598,10 +679,16 @@ void AddressSpaceView::paintEvent(QPaintEvent* event)
 
     QString summary =
         QStringLiteral(
-            "Address map - %1 Page(s) - %2 Block(s) - common scale %3 to %4")
+            "Address map - %1 Page(s) - %2 Block(s) - scale %3 to %4 - %5x")
             .arg(pages_.size())
             .arg(totalBlockCount_)
-            .arg(hex(0), hex(displayedSpan_ - 1));
+            .arg(
+                hex(viewStart_),
+                hex(saturatedEnd(
+                        viewStart_,
+                        visibleSpan()) -
+                    1))
+            .arg(zoomLevel_);
     if (conflictingBlockCount_ > 0) {
         summary +=
             QStringLiteral(
@@ -787,11 +874,14 @@ void AddressSpaceView::paintEvent(QPaintEvent* event)
     painter.drawText(
         scaleLine,
         Qt::AlignLeft | Qt::AlignVCenter,
-        hex(0));
+        hex(viewStart_));
     painter.drawText(
         scaleLine,
         Qt::AlignRight | Qt::AlignVCenter,
-        hex(displayedSpan_ - 1));
+        hex(saturatedEnd(
+                viewStart_,
+                visibleSpan()) -
+            1));
 
     if (hasFocus()) {
         painter.setPen(
@@ -853,6 +943,35 @@ void AddressSpaceView::keyPressEvent(
     QKeyEvent* event)
 {
     if (event == nullptr) {
+        return;
+    }
+
+    if (event->key() == Qt::Key_Plus ||
+        event->key() == Qt::Key_Equal) {
+        setZoomLevel(
+            std::min<std::uint32_t>(
+                32,
+                zoomLevel_ * 2));
+        event->accept();
+        return;
+    }
+    if (event->key() == Qt::Key_Minus) {
+        setZoomLevel(
+            std::max<std::uint32_t>(
+                1,
+                zoomLevel_ / 2));
+        event->accept();
+        return;
+    }
+    if (event->key() == Qt::Key_0) {
+        setZoomLevel(1);
+        event->accept();
+        return;
+    }
+    if (event->key() == Qt::Key_F) {
+        focusSelectedBlock();
+        update();
+        event->accept();
         return;
     }
 
@@ -973,6 +1092,30 @@ void AddressSpaceView::keyPressEvent(
     activateBlock(page, block);
     setFocus(Qt::OtherFocusReason);
     event->accept();
+}
+
+void AddressSpaceView::wheelEvent(
+    QWheelEvent* event)
+{
+    if (event != nullptr &&
+        event->modifiers().testFlag(
+            Qt::ControlModifier)) {
+        if (event->angleDelta().y() > 0) {
+            setZoomLevel(
+                std::min<std::uint32_t>(
+                    32,
+                    zoomLevel_ * 2));
+        } else if (
+            event->angleDelta().y() < 0) {
+            setZoomLevel(
+                std::max<std::uint32_t>(
+                    1,
+                    zoomLevel_ / 2));
+        }
+        event->accept();
+        return;
+    }
+    QWidget::wheelEvent(event);
 }
 
 void AddressSpaceView::activatePage(

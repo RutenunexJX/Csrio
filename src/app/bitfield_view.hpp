@@ -22,6 +22,9 @@ public:
     explicit BitfieldView(QWidget* parent = nullptr);
 
     void setRegister(const regmap::Register* reg);
+    void setFieldContainer(
+        const regmap::Field* container,
+        const regmap::Field* selectedMember);
     void setSelectedField(const regmap::Field* field);
 
 signals:
@@ -43,13 +46,17 @@ protected:
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
+    void leaveEvent(QEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
 
 private:
     std::optional<regmap::Register> register_;
     regmap::ObjectId selectedFieldId_;
+    QString scopeLabel_;
+    QVector<std::pair<QRect, QString>> exactHitRegions_;
     QVector<std::pair<QRect, QString>> hitRegions_;
     QString draggedFieldId_;
+    QString hoveredFieldId_;
     std::optional<std::uint32_t> previewLsb_;
     std::uint32_t draggedWidth_ {0};
     std::uint32_t anchorFromLsb_ {0};
@@ -58,6 +65,7 @@ private:
     bool dragging_ {false};
 
     [[nodiscard]] const regmap::Field* fieldById(const QString& id) const;
+    [[nodiscard]] QString fieldIdAt(const QPoint& position) const;
     [[nodiscard]] std::uint32_t bitAtX(qreal x) const;
     void cancelDrag();
     void updateDrag(qreal x);

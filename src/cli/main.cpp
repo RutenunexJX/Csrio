@@ -1,8 +1,12 @@
 #include "cli_app.hpp"
+#include "cli_runtime.hpp"
 
+#include <QCoreApplication>
 #include <QGuiApplication>
 #include <QStringConverter>
 #include <QTextStream>
+
+#include <memory>
 
 #ifdef Q_OS_WIN
 #include <fcntl.h>
@@ -25,8 +29,13 @@ int main(int argc, char** argv)
             _fileno(stderr),
             _O_BINARY));
 #endif
-#if !defined(Q_OS_WIN) && !defined(Q_OS_MACOS)
-    if (qEnvironmentVariableIsEmpty(
+    const bool requiresGui =
+        regmap::cli::commandRequiresGuiApplication(
+            argc,
+            argv);
+#if !defined(Q_OS_MACOS)
+    if (requiresGui &&
+        qEnvironmentVariableIsEmpty(
             "QT_QPA_PLATFORM") &&
         qEnvironmentVariableIsEmpty(
             "DISPLAY") &&
@@ -37,10 +46,21 @@ int main(int argc, char** argv)
             QByteArrayLiteral("offscreen"));
     }
 #endif
-    QGuiApplication application(argc, argv);
-    application.setApplicationName(
+    std::unique_ptr<QCoreApplication> application;
+    if (requiresGui) {
+        application =
+            std::make_unique<QGuiApplication>(
+                argc,
+                argv);
+    } else {
+        application =
+            std::make_unique<QCoreApplication>(
+                argc,
+                argv);
+    }
+    application->setApplicationName(
         QStringLiteral("regmapc"));
-    application.setApplicationVersion(
+    application->setApplicationVersion(
         QString::fromLatin1(
             regmap::cli::cliVersion.data(),
             static_cast<qsizetype>(
@@ -57,7 +77,7 @@ int main(int argc, char** argv)
     standardError.setEncoding(
         QStringConverter::Utf8);
     return regmap::cli::run(
-        application.arguments().mid(1),
+        application->arguments().mid(1),
         standardInput,
         standardOutput,
         standardError);

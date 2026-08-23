@@ -4,6 +4,7 @@
 
 #include <QApplication>
 #include <QCoreApplication>
+#include <QIcon>
 #include <QStringConverter>
 #include <QTextStream>
 #include <QTimer>
@@ -14,6 +15,9 @@ int main(int argumentCount, char* arguments[])
     QApplication::setApplicationName(QStringLiteral("Register Map Workbench"));
     QApplication::setApplicationVersion(QStringLiteral("0.1.0"));
     QApplication::setOrganizationName(QStringLiteral("RegMapWorkbench"));
+    QApplication::setWindowIcon(
+        QIcon(QStringLiteral(
+            ":/icons/regmap_workbench_icon.png")));
     WorkbenchTheme::apply(application);
 
     const regmap::workbench::StartupOptions

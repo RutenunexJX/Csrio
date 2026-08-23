@@ -57,6 +57,41 @@ void BitfieldView::setRegister(const regmap::Register* reg)
     cancelDrag();
     register_ = reg == nullptr ? std::nullopt : std::optional<regmap::Register>{*reg};
     selectedFieldId_.clear();
+    hoveredFieldId_.clear();
+    scopeLabel_.clear();
+    update();
+}
+
+void BitfieldView::setFieldContainer(
+    const regmap::Field* container,
+    const regmap::Field* selectedMember)
+{
+    cancelDrag();
+    if (container == nullptr) {
+        register_.reset();
+        selectedFieldId_.clear();
+        hoveredFieldId_.clear();
+        scopeLabel_.clear();
+        update();
+        return;
+    }
+    regmap::Register local;
+    local.id = container->id;
+    local.name = container->name;
+    local.width = static_cast<std::uint32_t>(
+        std::min<std::uint64_t>(container->width(), 32));
+    local.type = regmap::FieldType::structure;
+    local.fields = container->members;
+    register_ = std::move(local);
+    hoveredFieldId_.clear();
+    selectedFieldId_ =
+        selectedMember == nullptr
+            ? regmap::ObjectId{}
+            : selectedMember->id;
+    scopeLabel_ =
+        QStringLiteral("%1 local bits in %2")
+            .arg(container->width())
+            .arg(fromUtf8(container->name));
     update();
 }
 
@@ -93,6 +128,7 @@ void BitfieldView::paintEvent(QPaintEvent* event)
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
     painter.fillRect(rect(), QColor(QStringLiteral("#F4F7FB")));
+    exactHitRegions_.clear();
     hitRegions_.clear();
 
     if (!register_ || register_->width == 0) {
@@ -107,6 +143,7 @@ void BitfieldView::paintEvent(QPaintEvent* event)
     const int barHeight = 54;
     const int available = std::max(1, right - left);
     const double pixelsPerBit = static_cast<double>(available) / register_->width;
+    const bool denseLayout = pixelsPerBit < 9.0;
     const QRect bar(left, top, available, barHeight);
 
     painter.setPen(QColor(QStringLiteral("#C6D2E1")));
@@ -129,6 +166,7 @@ void BitfieldView::paintEvent(QPaintEvent* event)
     }
 
     int fieldIndex = 0;
+    QVector<QRect> endpointLabels;
     for (const auto* fieldPointer : paintOrder) {
         const auto& field = *fieldPointer;
         const bool preview =
@@ -153,7 +191,9 @@ void BitfieldView::paintEvent(QPaintEvent* event)
         if (overlaps) {
             color = QColor(QStringLiteral("#F28B82"));
             painter.setPen(QPen(QColor(QStringLiteral("#B3261E")), 3));
-        } else if (field.id == selectedFieldId_) {
+        } else if (
+            field.id == selectedFieldId_ ||
+            fromUtf8(field.id) == hoveredFieldId_) {
             color = color.lighter(118);
             painter.setPen(QPen(QColor(QStringLiteral("#17365D")), 3));
         } else {
@@ -169,7 +209,9 @@ void BitfieldView::paintEvent(QPaintEvent* event)
             painter.drawText(fieldRect.adjusted(4, 2, -4, -2), Qt::AlignCenter, label);
         }
 
-        const bool emphasized = preview || field.id == selectedFieldId_;
+        const bool emphasized =
+            preview || field.id == selectedFieldId_ ||
+            fromUtf8(field.id) == hoveredFieldId_;
         QFont positionFont = baseFont;
         positionFont.setWeight(emphasized ? QFont::DemiBold : QFont::Normal);
         painter.setFont(positionFont);
@@ -193,20 +235,66 @@ void BitfieldView::paintEvent(QPaintEvent* event)
             painter.setPen(positionColor);
             painter.drawText(endpoint, Qt::AlignCenter, QString::number(value));
         };
-        if (msb == lsb) {
-            drawEndpoint(msb, endpointRectangle(msb, fieldRect.center().x(), labelY));
-        } else {
-            QRect msbRectangle = endpointRectangle(msb, fieldRect.left(), labelY);
-            QRect lsbRectangle = endpointRectangle(lsb, fieldRect.right(), labelY);
-            if (msbRectangle.intersects(lsbRectangle)) {
-                msbRectangle.moveTop(10);
-                lsbRectangle.moveTop(34);
+        const auto placeEndpoint =
+            [&](QRect endpoint) -> std::optional<QRect> {
+                const auto intersectsExisting =
+                    [&](const QRect& candidate) {
+                        return std::ranges::any_of(
+                            endpointLabels,
+                            [&](const QRect& existing) {
+                                return existing.intersects(candidate);
+                            });
+                    };
+                if (intersectsExisting(endpoint)) {
+                    endpoint.moveTop(
+                        endpoint.top() == 10 ? 34 : 10);
+                }
+                if (intersectsExisting(endpoint) && !emphasized) {
+                    return std::nullopt;
+                }
+                endpointLabels.push_back(endpoint);
+                return endpoint;
+            };
+        if (!denseLayout || emphasized) {
+            if (msb == lsb) {
+                if (const auto endpoint = placeEndpoint(
+                        endpointRectangle(
+                            msb, fieldRect.center().x(), labelY))) {
+                    drawEndpoint(msb, *endpoint);
+                }
+            } else {
+                QRect msbRectangle = endpointRectangle(msb, fieldRect.left(), labelY);
+                QRect lsbRectangle = endpointRectangle(lsb, fieldRect.right(), labelY);
+                if (msbRectangle.intersects(lsbRectangle)) {
+                    msbRectangle.moveTop(10);
+                    lsbRectangle.moveTop(34);
+                }
+                if (const auto endpoint = placeEndpoint(msbRectangle)) {
+                    drawEndpoint(msb, *endpoint);
+                }
+                if (const auto endpoint = placeEndpoint(lsbRectangle)) {
+                    drawEndpoint(lsb, *endpoint);
+                }
             }
-            drawEndpoint(msb, msbRectangle);
-            drawEndpoint(lsb, lsbRectangle);
         }
         painter.setFont(baseFont);
-        hitRegions_.push_back({fieldRect, fromUtf8(field.id)});
+        exactHitRegions_.push_back(
+            {fieldRect, fromUtf8(field.id)});
+        QRect hitRect = fieldRect;
+        constexpr int minimumHitWidth = 11;
+        if (hitRect.width() < minimumHitWidth) {
+            const int center = hitRect.center().x();
+            const int hitWidth =
+                std::min(minimumHitWidth, available);
+            const int hitLeft = std::clamp(
+                center - hitWidth / 2,
+                left,
+                std::max(left, right - hitWidth + 1));
+            hitRect = QRect(
+                hitLeft, hitRect.top(),
+                hitWidth, hitRect.height());
+        }
+        hitRegions_.push_back({hitRect, fromUtf8(field.id)});
         ++fieldIndex;
     }
 
@@ -230,7 +318,9 @@ void BitfieldView::paintEvent(QPaintEvent* event)
                      dragging_ && previewLsb_ ? QStringLiteral("Moving field [%1:%2]")
                                                     .arg(*previewLsb_ + draggedWidth_ - 1)
                                                     .arg(*previewLsb_)
-                                              : QStringLiteral("%1 bits").arg(register_->width));
+                                              : (scopeLabel_.isEmpty()
+                                                     ? QStringLiteral("%1 bits").arg(register_->width)
+                                                     : scopeLabel_));
 }
 
 void BitfieldView::mousePressEvent(QMouseEvent* event)
@@ -240,34 +330,31 @@ void BitfieldView::mousePressEvent(QMouseEvent* event)
         setFocus(
             Qt::MouseFocusReason);
     }
-    for (auto iterator = hitRegions_.crbegin(); iterator != hitRegions_.crend(); ++iterator) {
-        const auto& [rectangle, id] = *iterator;
-        if (rectangle.contains(event->position().toPoint())) {
-            if (event->button() == Qt::LeftButton) {
-                if (const auto* field = fieldById(id)) {
-                    const std::uint64_t width = field->width();
-                    if (width > 0 && width <= register_->width) {
-                        draggedFieldId_ = id;
-                        draggedWidth_ = static_cast<std::uint32_t>(width);
-                        const std::uint32_t clickedBit = bitAtX(event->position().x());
-                        anchorFromLsb_ = clickedBit > field->lsb
-                                             ? std::min(clickedBit - field->lsb, draggedWidth_ - 1)
-                                             : 0;
-                        previewLsb_ = field->lsb;
-                        dragStartPosition_ =
-                            event->position()
-                                .toPoint();
-                        dragPending_ = true;
-                        dragging_ = false;
-                    }
+    const QString id =
+        fieldIdAt(event->position().toPoint());
+    if (!id.isEmpty()) {
+        if (event->button() == Qt::LeftButton) {
+            if (const auto* field = fieldById(id)) {
+                const std::uint64_t width = field->width();
+                if (width > 0 && width <= register_->width) {
+                    draggedFieldId_ = id;
+                    draggedWidth_ = static_cast<std::uint32_t>(width);
+                    const std::uint32_t clickedBit = bitAtX(event->position().x());
+                    anchorFromLsb_ = clickedBit > field->lsb
+                                         ? std::min(clickedBit - field->lsb,
+                                                    draggedWidth_ - 1)
+                                         : 0;
+                    previewLsb_ = field->lsb;
+                    dragStartPosition_ = event->position().toPoint();
+                    dragPending_ = true;
+                    dragging_ = false;
                 }
             }
-            emit fieldActivated(id);
-            setFocus(
-                Qt::MouseFocusReason);
-            event->accept();
-            return;
         }
+        emit fieldActivated(id);
+        setFocus(Qt::MouseFocusReason);
+        event->accept();
+        return;
     }
     QWidget::mousePressEvent(event);
 }
@@ -302,6 +389,23 @@ void BitfieldView::mouseMoveEvent(QMouseEvent* event)
         event->accept();
         return;
     }
+    const QString hovered =
+        fieldIdAt(event->position().toPoint());
+    if (hovered != hoveredFieldId_) {
+        hoveredFieldId_ = hovered;
+        if (const auto* field = fieldById(hoveredFieldId_)) {
+            QToolTip::showText(
+                event->globalPosition().toPoint(),
+                QStringLiteral("%1 [%2:%3]")
+                    .arg(fromUtf8(field->name))
+                    .arg(field->msb)
+                    .arg(field->lsb),
+                this);
+        } else {
+            QToolTip::hideText();
+        }
+        update();
+    }
     QWidget::mouseMoveEvent(event);
 }
 
@@ -325,6 +429,16 @@ void BitfieldView::mouseReleaseEvent(QMouseEvent* event)
         return;
     }
     QWidget::mouseReleaseEvent(event);
+}
+
+void BitfieldView::leaveEvent(QEvent* event)
+{
+    if (!hoveredFieldId_.isEmpty()) {
+        hoveredFieldId_.clear();
+        QToolTip::hideText();
+        update();
+    }
+    QWidget::leaveEvent(event);
 }
 
 void BitfieldView::keyPressEvent(
@@ -475,6 +589,27 @@ const regmap::Field* BitfieldView::fieldById(const QString& id) const
     const auto iterator = std::ranges::find_if(
         register_->fields, [&](const regmap::Field& field) { return fromUtf8(field.id) == id; });
     return iterator == register_->fields.end() ? nullptr : &*iterator;
+}
+
+QString BitfieldView::fieldIdAt(
+    const QPoint& position) const
+{
+    const auto findHit =
+        [&position](const auto& regions) {
+            for (auto iterator = regions.crbegin();
+                 iterator != regions.crend(); ++iterator) {
+                if (iterator->first.contains(position)) {
+                    return iterator->second;
+                }
+            }
+            return QString{};
+        };
+
+    // Prefer the visible Field rectangle. Expanded targets make very narrow
+    // Fields usable, but adjacent expanded targets may overlap in dense maps.
+    // An exact hit must therefore win before using the expanded fallback.
+    const QString exact = findHit(exactHitRegions_);
+    return exact.isEmpty() ? findHit(hitRegions_) : exact;
 }
 
 std::uint32_t BitfieldView::bitAtX(qreal x) const

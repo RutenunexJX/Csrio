@@ -5,9 +5,18 @@ never imports it and does not observe Excel save events. The generated file is m
 applications that bypass this protection may change it, but the next generation replaces those
 changes.
 
-The workbook uses the same visual theme as Workbench and contains one worksheet per Page. Page
-names are converted to valid, unique Excel sheet names and limited to 31 characters. The first
-Page is selected when the workbook opens. There is no separate flat `Registers` worksheet.
+The workbook uses the same visual theme as Workbench. Its first worksheet is `Overview`, followed
+by one worksheet per Page. Page names are converted to valid, unique Excel sheet names and limited
+to 31 characters. `Overview` is selected when the workbook opens. There is no separate flat
+`Registers` worksheet.
+
+## Overview worksheet
+
+The overview is the only filterable sheet. It contains one row per Block and exposes Page name,
+Page Base, Address Width, mapped Page span, Block count, Block name, Block Base, Block Size,
+absolute start/end addresses, and Register count. A Page without Blocks still has one summary row.
+This flat layout permits ordinary Excel sorting and filtering without including merged Block bands,
+bitfield diagrams, or collapsed Field rows in the filter range.
 
 ## Page worksheet
 
@@ -16,7 +25,7 @@ Each worksheet has the following fixed layout:
 - row 1: `Page - <Page name>`;
 - row 2: Page Base, Address Width, and Page description;
 - row 3: visual spacer;
-- row 4: filterable column headers;
+- row 4: column headers;
 - row 5 onward: Block bands and register groups.
 
 Each Block starts with a full-width merged band in column A. The band records the Block name, base,
@@ -45,5 +54,6 @@ initially collapsed. Scalar registers remain a single row. Description cells are
 other table cells are centered.
 
 Rows 1 through 4 are frozen so the row-4 table header remains visible; no columns are frozen.
-AutoFilter covers columns A through K. Addresses, offsets, Block bases and sizes, and initial/reset
-values are fixed-width hexadecimal text in a monospaced font, so Excel cannot convert or round them.
+Page detail sheets do not use AutoFilter because their Block bands, diagrams, and Field groups are
+not a flat record set. Addresses, offsets, Block bases and sizes, and initial/reset values are
+fixed-width hexadecimal text in a monospaced font, so Excel cannot convert or round them.

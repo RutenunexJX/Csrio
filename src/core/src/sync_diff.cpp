@@ -61,8 +61,7 @@ template <typename Enum> void appendEnum(std::ostringstream& output, Enum value)
 {
     std::ostringstream output;
     appendString(output, value.name);
-    output << value.offset << ';' << value.addressFixed << ';' << value.width << ';'
-           << value.array.count << ';' << value.array.stride << ';';
+    output << value.offset << ';' << value.addressFixed << ';' << value.width << ';';
     appendEnum(output, value.type);
     appendString(output, value.minimumValue.value_or(std::string{}));
     appendString(output, value.maximumValue.value_or(std::string{}));
@@ -85,7 +84,6 @@ template <typename Enum> void appendEnum(std::ostringstream& output, Enum value)
     appendEnum(output, value.type);
     appendEnum(output, value.softwareAccess);
     appendEnum(output, value.hardwareAccess);
-    appendValue(output, value.resetValue);
     appendEnum(output, value.readSideEffect);
     appendEnum(output, value.writeSideEffect);
     appendString(output, value.description);
@@ -113,8 +111,10 @@ void insertFieldSnapshots(std::map<ObjectId, Snapshot, std::less<>>& values,
 {
     for (std::size_t fieldIndex = 0; fieldIndex < fields.size(); ++fieldIndex) {
         const auto& field = fields[fieldIndex];
-        insertSnapshot(values, Snapshot{ObjectKind::field, field.id, field.name, fingerprint(field),
-                                        parent, fieldIndex, field.source});
+        insertSnapshot(
+            values,
+            Snapshot{ObjectKind::field, field.id, field.name, fingerprint(field), parent,
+                     fieldIndex, field.source});
         for (std::size_t enumIndex = 0; enumIndex < field.enumValues.size(); ++enumIndex) {
             const auto& enumValue = field.enumValues[enumIndex];
             insertSnapshot(values, Snapshot{ObjectKind::enumValue, enumValue.id, enumValue.name,

@@ -164,7 +164,6 @@ void insert(FlatWorkspace& workspace, FlatObject object)
             {"type", std::string(toString(field.type))},
             {"sw_access", std::string(toString(field.softwareAccess))},
             {"hw_access", std::string(toString(field.hardwareAccess))},
-            {"reset", optionalText(field.resetValue)},
             {"read_side_effect", std::string(toString(field.readSideEffect))},
             {"write_side_effect", std::string(toString(field.writeSideEffect))},
             {"minimum", optionalText(field.minimumValue)},
@@ -235,8 +234,6 @@ void insert(FlatWorkspace& workspace, FlatObject object)
                                              {"offset", uint64Text(reg.offset)},
                                              {"fixed", reg.addressFixed ? "true" : "false"},
                                              {"width", std::to_string(reg.width)},
-                                             {"array_count", std::to_string(reg.array.count)},
-                                             {"stride", uint64Text(reg.array.stride)},
                                              {"type", std::string(toString(reg.type))},
                                              {"minimum", optionalText(reg.minimumValue)},
                                              {"maximum", optionalText(reg.maximumValue)},
@@ -337,6 +334,32 @@ template <typename Value>
     return result;
 }
 
+void deriveFieldResets(std::vector<Field>& fields,
+                       const std::optional<UnsignedValue>& registerReset,
+                       std::uint64_t registerWidth,
+                       const SourceLocation& resetSource,
+                       std::uint64_t parentLsb = 0)
+{
+    for (auto& field : fields) {
+        const std::uint64_t width = field.width();
+        const bool offsetValid =
+            field.lsb <= std::numeric_limits<std::uint64_t>::max() - parentLsb;
+        const std::uint64_t absoluteLsb = offsetValid
+            ? parentLsb + field.lsb
+            : std::numeric_limits<std::uint64_t>::max();
+        const bool rangeValid = registerReset.has_value() && offsetValid && width > 0 &&
+            absoluteLsb <= registerWidth && width <= registerWidth - absoluteLsb;
+        if (rangeValid) {
+            field.resetValue = registerReset->slice(absoluteLsb, width);
+            field.propertySources["reset"] = resetSource;
+        } else {
+            field.resetValue.reset();
+            field.propertySources.erase("reset");
+        }
+        deriveFieldResets(field.members, registerReset, registerWidth, resetSource, absoluteLsb);
+    }
+}
+
 [[nodiscard]] std::optional<Workspace> rebuild(const FlatWorkspace& values,
                                                const std::filesystem::path& manifestPath)
 {
@@ -376,7 +399,6 @@ template <typename Value>
             parseAccessMode(property(object, "sw_access")).value_or(AccessMode::readWrite);
         value.hardwareAccess =
             parseAccessMode(property(object, "hw_access")).value_or(AccessMode::none);
-        value.resetValue = parseOptionalUnsigned(object, "reset");
         value.readSideEffect = parseReadSideEffect(property(object, "read_side_effect"))
                                    .value_or(ReadSideEffect::none);
         value.writeSideEffect = parseWriteSideEffect(property(object, "write_side_effect"))
@@ -389,6 +411,7 @@ template <typename Value>
         value.enumValues = takeGroup(enums, id);
         value.source = object.source;
         value.propertySources = object.propertySources;
+        value.propertySources.erase("reset");
         fields[property(object, "parent")].emplace_back(order(object), std::move(value));
     }
 
@@ -412,8 +435,8 @@ template <typename Value>
         value.offset = parseUInt64(object, "offset");
         value.addressFixed = parseBoolean(property(object, "fixed"));
         value.width = parseUInt32(object, "width");
-        value.array.count = parseUInt32(object, "array_count");
-        value.array.stride = parseUInt64(object, "stride");
+        value.array.count = 1;
+        value.array.stride = 4;
         const std::string minimum = property(object, "minimum");
         const std::string maximum = property(object, "maximum");
         value.minimumValue = minimum.empty() ? std::nullopt : std::optional{minimum};
@@ -433,6 +456,14 @@ template <typename Value>
                                                                  : FieldType::structure));
         value.source = object.source;
         value.propertySources = object.propertySources;
+        value.propertySources.erase("array_count");
+        value.propertySources.erase("stride");
+        const auto resetSource = value.propertySources.find("reset");
+        deriveFieldResets(
+            value.fields,
+            value.resetValue,
+            value.width,
+            resetSource == value.propertySources.end() ? value.source : resetSource->second);
         registers[property(object, "parent")].emplace_back(order(object), std::move(value));
     }
 
@@ -606,13 +637,13 @@ void appendConflict(std::vector<MergeConflict>& conflicts, const ObjectId& id, O
             missing = require(object, {"parent", "order", "name", "base", "size", "description"});
             break;
         case ObjectKind::reg:
-            missing = require(object, {"parent", "order", "name", "offset", "width", "array_count",
-                                       "stride", "reset", "access", "description"});
+            missing = require(object, {"parent", "order", "name", "offset", "width", "reset",
+                                       "access", "description"});
             break;
         case ObjectKind::field:
             missing = require(object, {"parent", "order", "name", "msb", "lsb", "type", "sw_access",
-                                       "hw_access", "reset", "read_side_effect",
-                                       "write_side_effect", "description"});
+                                       "hw_access", "read_side_effect", "write_side_effect",
+                                       "description"});
             break;
         case ObjectKind::enumValue:
             missing = require(object, {"parent", "order", "name", "value", "description"});
@@ -675,8 +706,10 @@ void appendConflict(std::vector<MergeConflict>& conflicts, const ObjectId& id, O
         case ObjectKind::reg:
             if (!uint64Value(property(object, "offset")) ||
                 !uint32Value(property(object, "width")) ||
-                !uint32Value(property(object, "array_count")) ||
-                !uint64Value(property(object, "stride")) ||
+                (object.properties.contains("array_count") &&
+                 !uint32Value(property(object, "array_count"))) ||
+                (object.properties.contains("stride") &&
+                 !uint64Value(property(object, "stride"))) ||
                 (object.properties.contains("type") && !parseFieldType(property(object, "type"))) ||
                 !unsignedValue(property(object, "initial"), true) ||
                 !unsignedValue(property(object, "reset"), true) ||

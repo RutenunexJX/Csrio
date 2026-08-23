@@ -91,7 +91,7 @@ struct Field {
 
 struct RegisterArray {
     std::uint32_t count{1};
-    std::uint64_t stride{0};
+    std::uint64_t stride{4};
 };
 
 struct Register {

@@ -349,10 +349,6 @@ void validateCHeaderMacros(const Workspace& workspace, std::string_view guard,
                 addCMacro(definitions, regSymbol, "_ADDR", *reg);
                 addCMacro(definitions, regSymbol, "_OFFSET", *reg);
                 addCMacro(definitions, regSymbol, "_WIDTH", *reg);
-                if (reg->array.count > 1) {
-                    addCMacro(definitions, regSymbol, "_COUNT", *reg);
-                    addCMacro(definitions, regSymbol, "_STRIDE", *reg);
-                }
                 if (reg->minimumValue) {
                     addCMacro(definitions, regSymbol, "_MIN", *reg);
                 }
@@ -456,7 +452,9 @@ void generateCField(std::ostringstream& output, const Field& field, std::string_
 }
 
 void generateMarkdownFields(std::ostringstream& output, const std::vector<Field>& fields,
-                            std::string_view parentPath, std::uint64_t parentLsb)
+                            std::string_view parentPath, std::uint64_t parentLsb,
+                            std::uint64_t registerWidth,
+                            const std::optional<UnsignedValue>& registerReset)
 {
     for (const Field* field : orderedFields(fields)) {
         const std::uint64_t absoluteLsb = parentLsb + field->lsb;
@@ -470,8 +468,13 @@ void generateMarkdownFields(std::ostringstream& output, const std::vector<Field>
         output << " | " << escapeMarkdown(path) << " | " << fieldTypeText(*field) << " | "
                << accessText(field->softwareAccess) << " | " << accessText(field->hardwareAccess)
                << " | ";
-        if (field->resetValue.has_value()) {
-            output << '`' << field->resetValue->toHexString() << '`';
+        const bool resetRangeValid = absoluteLsb >= parentLsb && field->width() > 0 &&
+            absoluteLsb <= registerWidth && field->width() <= registerWidth - absoluteLsb;
+        const auto effectiveReset = registerReset.has_value() && resetRangeValid
+            ? std::optional<UnsignedValue>{registerReset->slice(absoluteLsb, field->width())}
+            : std::nullopt;
+        if (effectiveReset.has_value()) {
+            output << '`' << effectiveReset->toHexString() << '`';
         } else {
             output << "—";
         }
@@ -483,7 +486,8 @@ void generateMarkdownFields(std::ostringstream& output, const std::vector<Field>
             output << "—";
         }
         output << " | " << escapeMarkdown(field->description) << " |\n";
-        generateMarkdownFields(output, field->members, path, absoluteLsb);
+        generateMarkdownFields(output, field->members, path, absoluteLsb, registerWidth,
+                               registerReset);
     }
 }
 
@@ -536,11 +540,6 @@ void generateMarkdownEnums(std::ostringstream& output, const std::vector<Field>&
                        << "#define " << regSymbol << "_ADDR " << cUnsignedLiteral(*address)
                        << "\n#define " << regSymbol << "_OFFSET " << cUnsignedLiteral(reg->offset)
                        << "\n#define " << regSymbol << "_WIDTH " << reg->width << "u\n";
-                if (reg->array.count > 1) {
-                    output << "#define " << regSymbol << "_COUNT " << reg->array.count
-                           << "u\n#define " << regSymbol << "_STRIDE "
-                           << cUnsignedLiteral(reg->array.stride) << "\n";
-                }
                 if (reg->minimumValue) {
                     output << "#define " << regSymbol << "_MIN (" << *reg->minimumValue << ")\n";
                 }
@@ -673,7 +672,8 @@ void generateMarkdownEnums(std::ostringstream& output, const std::vector<Field>&
                 if (!reg->fields.empty()) {
                     output << "| Bits | Field | Type | SW | HW | Reset | Range | Description |\n"
                            << "|---:|---|---|---|---|---:|---|---|\n";
-                    generateMarkdownFields(output, reg->fields, {}, 0);
+                    generateMarkdownFields(output, reg->fields, {}, 0, reg->width,
+                                           reg->resetValue);
                     output << '\n';
                     generateMarkdownEnums(output, reg->fields, {});
                 }

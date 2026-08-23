@@ -15,6 +15,8 @@ add_library(
     source_navigation.hpp
     startup_options.cpp
     startup_options.hpp
+    table_selection_utils.cpp
+    table_selection_utils.hpp
     workbench_theme.cpp
     workbench_theme.hpp
 )
@@ -26,6 +28,16 @@ target_compile_features(regmap_workbench_ui PUBLIC cxx_std_20)
 regmap_enable_warnings(regmap_workbench_ui)
 
 qt_add_executable(regmap_workbench WIN32 main.cpp)
+if(WIN32)
+    target_sources(regmap_workbench PRIVATE regmap_workbench.rc)
+endif()
+qt_add_resources(
+    regmap_workbench
+    regmap_workbench_assets
+    PREFIX "/icons"
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets"
+    FILES "${CMAKE_CURRENT_SOURCE_DIR}/assets/regmap_workbench_icon.png"
+)
 set_target_properties(regmap_workbench PROPERTIES AUTOMOC ON)
 set_target_properties(regmap_workbench PROPERTIES OUTPUT_NAME RegMapWorkbench)
 target_link_libraries(regmap_workbench PRIVATE RegMap::WorkbenchUi)

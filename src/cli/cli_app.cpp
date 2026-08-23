@@ -1,4 +1,5 @@
 #include "cli_app.hpp"
+#include "cli_artifacts.hpp"
 
 #include "regmap/core/generation.hpp"
 #include "regmap/core/model_tokens.hpp"
@@ -62,6 +63,13 @@ constexpr std::string_view genericOutputsOutOfDateCode =
     "RMC5000";
 constexpr std::string_view genericDifferencesFoundCode =
     "RMC6000";
+constexpr std::string_view genericInputFailureCode =
+    "RMC7000";
+constexpr std::string_view genericGenerationFailureCode =
+    "RMC8000";
+constexpr std::string_view requestedTargetUnavailableCode =
+    "RMC2003";
+constexpr qsizetype defaultQueryLimit = 100;
 constexpr double largestExactJsonInteger =
     9007199254740991.0;
 
@@ -109,6 +117,7 @@ struct ApplyOptions {
 struct GenerateOptions {
     QString projectPath;
     QString expectedRevision;
+    GenerationTargetSet targets;
     bool dryRun{false};
 };
 
@@ -116,11 +125,16 @@ struct InitOptions {
     QString projectPath;
     QString name;
     QString workspaceId;
+    QString outputDirectory;
+    GenerationTargetSet targets;
+    std::map<GenerationTargetKind, QString>
+        targetFileNames;
     bool generate{true};
 };
 
 struct StatusOptions {
     QString projectPath;
+    GenerationTargetSet targets;
     bool requireCurrent{false};
 };
 
@@ -227,6 +241,11 @@ struct DiffOptions {
     case ExitCode::differencesFound:
         return QStringLiteral(
             "differences_found");
+    case ExitCode::inputError:
+        return QStringLiteral("input_error");
+    case ExitCode::generationError:
+        return QStringLiteral(
+            "generation_error");
     }
     return QStringLiteral("usage_error");
 }
@@ -272,6 +291,12 @@ struct DiffOptions {
     case ExitCode::differencesFound:
         return fromUtf8(
             genericDifferencesFoundCode);
+    case ExitCode::inputError:
+        return fromUtf8(
+            genericInputFailureCode);
+    case ExitCode::generationError:
+        return fromUtf8(
+            genericGenerationFailureCode);
     }
     return fromUtf8(
         genericUsageFailureCode);
@@ -659,17 +684,6 @@ collectDiffObjectStates(
                                  "description"),
                              fromUtf8(
                                  reg.description)},
-                            {QStringLiteral(
-                                 "array_count"),
-                             static_cast<
-                                 qint64>(
-                                 reg.array
-                                     .count)},
-                            {QStringLiteral(
-                                 "array_stride"),
-                             hex(
-                                 reg.array
-                                     .stride)},
                         }));
                 collectEnumDiffStates(
                     states,
@@ -1595,13 +1609,6 @@ absoluteRegisterAddress(
     const auto address =
         absoluteRegisterAddress(
             page, block, reg);
-    QJsonObject compatibility{
-        {QStringLiteral("array_count"),
-         static_cast<qint64>(
-             reg.array.count)},
-        {QStringLiteral("array_stride"),
-         hex(reg.array.stride)},
-    };
     return {
         {QStringLiteral("kind"),
          QStringLiteral("register")},
@@ -1654,8 +1661,6 @@ absoluteRegisterAddress(
          enumValues},
         {QStringLiteral("fields"),
          fields},
-        {QStringLiteral("compatibility"),
-         compatibility},
         {QStringLiteral("source"),
          sourceJson(reg.source)},
     };
@@ -2800,10 +2805,9 @@ matchObject(
     }
     if (property ==
         QStringLiteral("reset")) {
-        return optionalUnsignedValue(
-            value,
-            field.resetValue,
-            error);
+        error = QStringLiteral(
+            "Field Reset is derived from its containing Register Reset and cannot be written independently. Set 'reset' on the parent Register instead.");
+        return false;
     }
     if (property ==
         QStringLiteral(
@@ -2845,7 +2849,7 @@ matchObject(
     }
     error =
         QStringLiteral(
-            "Property '%1' is not writable on a field. Writable properties: name, lsb, msb, width, type, software_access, hardware_access, reset, read_side_effect, write_side_effect, minimum, maximum, description.")
+            "Property '%1' is not writable on a field. Writable properties: name, lsb, msb, width, type, software_access, hardware_access, read_side_effect, write_side_effect, minimum, maximum, description.")
             .arg(property);
     return false;
 }
@@ -2884,6 +2888,9 @@ matchObject(
             .arg(property);
     return false;
 }
+
+void refreshWorkspaceFieldResetValues(
+    Workspace& workspace);
 
 [[nodiscard]] bool setObjectProperty(
     Workspace& workspace,
@@ -2933,22 +2940,34 @@ matchObject(
         kind =
             QStringLiteral(
                 "register");
-        return setRegisterProperty(
+        const bool updated =
+            setRegisterProperty(
             *reg,
             property,
             value,
             error);
+        if (updated) {
+            refreshWorkspaceFieldResetValues(
+                workspace);
+        }
+        return updated;
     }
     if (auto* field =
             findField(
                 workspace, objectId)) {
         kind =
             QStringLiteral("field");
-        return setFieldProperty(
+        const bool updated =
+            setFieldProperty(
             *field,
             property,
             value,
             error);
+        if (updated) {
+            refreshWorkspaceFieldResetValues(
+                workspace);
+        }
+        return updated;
     }
     if (auto* enumValue =
             findEnumValue(
@@ -3003,38 +3022,8 @@ void sortByOffsetAndId(
 registerPlacementExtent(
     const Register& reg)
 {
-    if (reg.width == 0 ||
-        reg.array.count == 0) {
-        return std::nullopt;
-    }
-    const std::uint64_t byteWidth =
-        (static_cast<std::uint64_t>(
-             reg.width) +
-         7U) /
-        8U;
-    if (reg.array.count == 1) {
-        return byteWidth;
-    }
-    const std::uint64_t instanceCount =
-        static_cast<std::uint64_t>(
-            reg.array.count - 1);
-    if (reg.array.stride != 0 &&
-        instanceCount >
-            std::numeric_limits<
-                std::uint64_t>::max() /
-                reg.array.stride) {
-        return std::nullopt;
-    }
-    const std::uint64_t lastInstanceOffset =
-        instanceCount *
-        reg.array.stride;
-    std::uint64_t extent = 0;
-    return placementAdditionOverflows(
-               lastInstanceOffset,
-               byteWidth,
-               extent)
-        ? std::nullopt
-        : std::optional{extent};
+    static_cast<void>(reg);
+    return std::uint64_t{4};
 }
 
 struct BlockPlacementInterval {
@@ -3597,7 +3586,16 @@ fieldAbsoluteLsb(
     return std::nullopt;
 }
 
-void refreshCopiedFieldResets(
+void clearFieldResetValues(
+    Field& field)
+{
+    field.resetValue.reset();
+    for (auto& member : field.members) {
+        clearFieldResetValues(member);
+    }
+}
+
+void refreshFieldResetValues(
     Field& field,
     const std::optional<UnsignedValue>&
         registerReset,
@@ -3608,31 +3606,54 @@ void refreshCopiedFieldResets(
             std::numeric_limits<
                 std::uint64_t>::max() -
                 parentLsb) {
+        clearFieldResetValues(field);
         return;
     }
     const std::uint64_t absoluteLsb =
         parentLsb + field.lsb;
     const std::size_t width =
         field.width();
-    if (registerReset) {
+    const bool rangeValid = width > 0 && absoluteLsb <= 32 && width <= 32 - absoluteLsb;
+    if (registerReset && rangeValid) {
         field.resetValue =
             registerReset->slice(
                 static_cast<std::size_t>(
                     absoluteLsb),
                 width);
-    } else if (
-        field.resetValue &&
-        !field.resetValue->fitsInBits(
-            width)) {
-        field.resetValue =
-            field.resetValue->slice(
-                0, width);
+    } else {
+        field.resetValue.reset();
     }
     for (auto& member : field.members) {
-        refreshCopiedFieldResets(
+        refreshFieldResetValues(
             member,
             registerReset,
             absoluteLsb);
+    }
+}
+
+void refreshRegisterFieldResetValues(
+    Register& reg)
+{
+    for (auto& field : reg.fields) {
+        refreshFieldResetValues(
+            field,
+            reg.resetValue,
+            0);
+    }
+}
+
+void refreshWorkspaceFieldResetValues(
+    Workspace& workspace)
+{
+    for (auto& page :
+         workspace.addressSpaces) {
+        for (auto& block : page.blocks) {
+            for (auto& reg :
+                 block.registers) {
+                refreshRegisterFieldResetValues(
+                    reg);
+            }
+        }
     }
 }
 
@@ -3833,8 +3854,6 @@ void refreshCopiedFieldResets(
     Register reg;
     reg.id =
         id.toUtf8().toStdString();
-    reg.array.count = 1;
-    reg.array.stride = 4;
     reg.initialValue =
         UnsignedValue(0);
     reg.resetValue =
@@ -3932,6 +3951,12 @@ void refreshCopiedFieldResets(
                 "A field parent_id must identify a structure register or compound field.");
         return false;
     }
+    if (value.contains(
+            QStringLiteral("reset"))) {
+        error = QStringLiteral(
+            "Field Reset is derived from its containing Register Reset and cannot be supplied when adding a Field. Set 'reset' on the parent Register instead.");
+        return false;
+    }
     if (!hasOnlyKeys(
             value,
             {QStringLiteral("name"),
@@ -3943,7 +3968,6 @@ void refreshCopiedFieldResets(
                  "software_access"),
              QStringLiteral(
                  "hardware_access"),
-             QStringLiteral("reset"),
              QStringLiteral(
                  "read_side_effect"),
              QStringLiteral(
@@ -4092,6 +4116,23 @@ void refreshCopiedFieldResets(
                     *placement) +
                 width - 1);
     }
+    std::uint64_t parentLsb = 0;
+    if (parentField != nullptr) {
+        const auto absolute =
+            fieldAbsoluteLsb(
+                owner->fields,
+                parentField->id);
+        if (!absolute) {
+            error = QStringLiteral(
+                "The destination compound Field has invalid geometry; repair it before adding a Field.");
+            return false;
+        }
+        parentLsb = *absolute;
+    }
+    refreshFieldResetValues(
+        field,
+        owner->resetValue,
+        parentLsb);
     if (parentField != nullptr) {
         parentField->members.push_back(
             std::move(field));
@@ -4648,6 +4689,8 @@ template <typename Value>
             }
             moved.offset = *placement;
         }
+        refreshRegisterFieldResetValues(
+            moved);
         target->registers.push_back(
             std::move(moved));
         sortByOffsetAndId(
@@ -4761,11 +4804,11 @@ template <typename Value>
                             std::uint64_t>(
                             *placement) +
                         width - 1);
-                refreshCopiedFieldResets(
-                    moved,
-                    target->resetValue,
-                    0);
             }
+            refreshFieldResetValues(
+                moved,
+                target->resetValue,
+                0);
             target->fields.push_back(
                 std::move(moved));
             sortFieldsByBit(
@@ -4784,24 +4827,23 @@ template <typename Value>
                             id);
                 return false;
             }
+            Register* owner =
+                fieldOwnerRegister(
+                    workspace,
+                    targetId);
+            const auto parentLsb =
+                owner != nullptr
+                ? fieldAbsoluteLsb(
+                      owner->fields,
+                      targetId)
+                : std::nullopt;
+            if (owner == nullptr ||
+                !parentLsb) {
+                error = QStringLiteral(
+                    "The destination compound Field has invalid geometry; repair it before moving a Field.");
+                return false;
+            }
             if (automaticPlacement) {
-                Register* owner =
-                    fieldOwnerRegister(
-                        workspace,
-                        targetId);
-                const auto parentLsb =
-                    owner != nullptr
-                    ? fieldAbsoluteLsb(
-                          owner->fields,
-                          targetId)
-                    : std::nullopt;
-                if (owner == nullptr ||
-                    !parentLsb) {
-                    error =
-                        QStringLiteral(
-                            "The destination compound Field has invalid geometry; repair it before automatic move placement.");
-                    return false;
-                }
                 const std::uint64_t width =
                     moved.width();
                 const auto placement =
@@ -4830,11 +4872,11 @@ template <typename Value>
                             std::uint64_t>(
                             *placement) +
                         width - 1);
-                refreshCopiedFieldResets(
-                    moved,
-                    owner->resetValue,
-                    *parentLsb);
             }
+            refreshFieldResetValues(
+                moved,
+                owner->resetValue,
+                *parentLsb);
             target->members.push_back(
                 std::move(moved));
             sortFieldsByBit(
@@ -5329,6 +5371,7 @@ automaticCopiedName(
             return false;
         }
     }
+    refreshRegisterFieldResetValues(reg);
     return true;
 }
 
@@ -5694,6 +5737,8 @@ template <typename Value,
             }
             copied.offset = *placement;
         }
+        refreshRegisterFieldResetValues(
+            copied);
         target->registers.push_back(
             std::move(copied));
         sortByOffsetAndId(
@@ -5837,27 +5882,26 @@ template <typename Value,
                         *placement) +
                     width - 1);
 
-            std::uint64_t parentLsb = 0;
-            if (targetField != nullptr) {
-                const auto absolute =
-                    fieldAbsoluteLsb(
-                        destinationRegister
-                            ->fields,
-                        targetField->id);
-                if (!absolute) {
-                    error =
-                        QStringLiteral(
-                            "The destination compound Field has invalid geometry; repair it before automatic copy placement.");
-                    return false;
-                }
-                parentLsb = *absolute;
-            }
-            refreshCopiedFieldResets(
-                copied,
-                destinationRegister
-                    ->resetValue,
-                parentLsb);
         }
+        std::uint64_t parentLsb = 0;
+        if (targetField != nullptr) {
+            const auto absolute =
+                fieldAbsoluteLsb(
+                    destinationRegister
+                        ->fields,
+                    targetField->id);
+            if (!absolute) {
+                error = QStringLiteral(
+                    "The destination compound Field has invalid geometry; repair it before copying a Field.");
+                return false;
+            }
+            parentLsb = *absolute;
+        }
+        refreshFieldResetValues(
+            copied,
+            destinationRegister
+                ->resetValue,
+            parentLsb);
         if (targetRegister != nullptr) {
             targetRegister->fields
                 .push_back(
@@ -6145,6 +6189,49 @@ descendantCount(
     return diagnostic;
 }
 
+[[nodiscard]] Diagnostic requestedTargetUnavailable(
+    GenerationTargetKind kind,
+    const QString& project)
+{
+    Diagnostic diagnostic;
+    diagnostic.code =
+        std::string(
+            requestedTargetUnavailableCode);
+    diagnostic.severity =
+        DiagnosticSeverity::error;
+    diagnostic.message =
+        QStringLiteral(
+            "Generation target '%1' is not configured in this project.")
+            .arg(
+                generationTargetToken(kind))
+            .toUtf8()
+            .toStdString();
+    diagnostic.source.workbook =
+        toPath(project);
+    return diagnostic;
+}
+
+[[nodiscard]] bool selectGenerationManifest(
+    const ProjectManifest& manifest,
+    const GenerationTargetSet& requested,
+    const QString& project,
+    ProjectManifest& selected,
+    std::vector<Diagnostic>& diagnostics)
+{
+    GenerationTargetSet missing;
+    selected = manifestForTargets(
+        manifest,
+        requested,
+        &missing);
+    for (const GenerationTargetKind kind : missing) {
+        diagnostics.push_back(
+            requestedTargetUnavailable(
+                kind,
+                project));
+    }
+    return missing.empty();
+}
+
 [[nodiscard]] QJsonObject projectSchemaJson()
 {
     return {
@@ -6276,7 +6363,7 @@ descendantCount(
              QStringLiteral("always")},
             {QStringLiteral("usage"),
              QStringLiteral(
-                 "regmapc [--json] init <project.regmap.yaml> [--name <workspace-name>] [--workspace-id <stable-id>] [--no-generate]")},
+                 "regmapc [--json] init <project.regmap.yaml> [--name <workspace-name>] [--workspace-id <stable-id>] [--output-dir <relative-path>] [--target <target>]... [--xlsx-file <relative-path>] [--c-header-file <relative-path>] [--markdown-file <relative-path>] [--no-generate]")},
         },
         QJsonObject{
             {QStringLiteral("name"),
@@ -6302,7 +6389,7 @@ descendantCount(
              QStringLiteral("never")},
             {QStringLiteral("usage"),
              QStringLiteral(
-                 "regmapc [--json] list <project.regmap.yaml> [--kind <kind>] [--parent <stable-id> [--recursive]] [--tag <tag>] [--offset <count>] [--limit <count>] [--expect <sha256:...>]")},
+                 "regmapc [--json] list <project.regmap.yaml> [--kind <kind>] [--parent <stable-id> [--recursive]] [--tag <tag>] [--offset <count>] [--limit <count> | --all] [--expect <sha256:...>]")},
         },
         QJsonObject{
             {QStringLiteral("name"),
@@ -6315,7 +6402,7 @@ descendantCount(
              QStringLiteral("never")},
             {QStringLiteral("usage"),
              QStringLiteral(
-                 "regmapc [--json] find <project.regmap.yaml> <query> [--exact] [--require-one] [--kind <kind>] [--parent <stable-id> [--recursive]] [--tag <tag>] [--offset <count>] [--limit <count>] [--expect <sha256:...>]")},
+                 "regmapc [--json] find <project.regmap.yaml> <query> [--exact] [--require-one] [--kind <kind>] [--parent <stable-id> [--recursive]] [--tag <tag>] [--offset <count>] [--limit <count> | --all] [--expect <sha256:...>]")},
         },
         QJsonObject{
             {QStringLiteral("name"),
@@ -6380,7 +6467,7 @@ descendantCount(
              QStringLiteral("never")},
             {QStringLiteral("usage"),
              QStringLiteral(
-                 "regmapc [--json] status <project.regmap.yaml> [--require-current]")},
+                 "regmapc [--json] status <project.regmap.yaml> [--target <target>]... [--require-current]")},
         },
         QJsonObject{
             {QStringLiteral("name"),
@@ -6394,7 +6481,7 @@ descendantCount(
                  "unless_dry_run")},
             {QStringLiteral("usage"),
              QStringLiteral(
-                 "regmapc [--json] generate <project.regmap.yaml> [--dry-run] [--expect <sha256:...>]")},
+                 "regmapc [--json] generate <project.regmap.yaml> [--target <target>]... [--dry-run] [--expect <sha256:...>]")},
         },
         QJsonObject{
             {QStringLiteral("name"),
@@ -6443,7 +6530,8 @@ descendantCount(
            const QString& valueName,
            const QString& valueType,
            QJsonArray allowedValues =
-               QJsonArray{}) {
+               QJsonArray{},
+           bool repeatable = false) {
             QJsonObject result{
                 {QStringLiteral("name"),
                  name},
@@ -6457,7 +6545,7 @@ descendantCount(
                  valueType},
                 {QStringLiteral(
                      "repeatable"),
-                 false},
+                 repeatable},
             };
             if (!allowedValues.isEmpty()) {
                 result.insert(
@@ -6481,6 +6569,11 @@ descendantCount(
         QStringLiteral("field"),
         QStringLiteral("enum"),
         QStringLiteral("all"),
+    };
+    const QJsonArray generationTargetValues{
+        QStringLiteral("xlsx"),
+        QStringLiteral("c-header"),
+        QStringLiteral("markdown"),
     };
     const QJsonObject
         commandArgumentSchemas{
@@ -6537,9 +6630,54 @@ descendantCount(
                               "stable-id"),
                           QStringLiteral(
                               "stable_id")),
+                      option(
+                          QStringLiteral(
+                              "--output-dir"),
+                          QStringLiteral(
+                              "relative-path"),
+                          QStringLiteral(
+                              "relative_path")),
+                      option(
+                          QStringLiteral(
+                              "--target"),
+                          QStringLiteral(
+                              "target"),
+                          QStringLiteral(
+                              "enum"),
+                          generationTargetValues,
+                          true),
+                      option(
+                          QStringLiteral(
+                              "--xlsx-file"),
+                          QStringLiteral(
+                              "relative-path"),
+                          QStringLiteral(
+                              "relative_path")),
+                      option(
+                          QStringLiteral(
+                              "--c-header-file"),
+                          QStringLiteral(
+                              "relative-path"),
+                          QStringLiteral(
+                              "relative_path")),
+                      option(
+                          QStringLiteral(
+                              "--markdown-file"),
+                          QStringLiteral(
+                              "relative-path"),
+                          QStringLiteral(
+                              "relative_path")),
                       flag(
                           QStringLiteral(
-                              "--no-generate"))}}}},
+                              "--no-generate"))}},
+                 {QStringLiteral(
+                      "mutually_exclusive_options"),
+                  QJsonArray{
+                      QJsonArray{
+                          QStringLiteral(
+                              "--target"),
+                          QStringLiteral(
+                              "--no-generate")}}}}},
             {QStringLiteral("summary"),
              QJsonObject{
                  {QStringLiteral(
@@ -6593,13 +6731,22 @@ descendantCount(
                               "count"),
                           QStringLiteral(
                               "positive_integer")),
+                      flag(
+                          QStringLiteral(
+                              "--all")),
                       option(
                           QStringLiteral(
                               "--expect"),
                           QStringLiteral(
                               "revision"),
                           QStringLiteral(
-                              "revision"))}}}},
+                              "revision"))}},
+                 {QStringLiteral(
+                      "mutually_exclusive_options"),
+                  QJsonArray{
+                      QJsonArray{
+                          QStringLiteral("--limit"),
+                          QStringLiteral("--all")}}}}},
             {QStringLiteral("find"),
              QJsonObject{
                  {QStringLiteral(
@@ -6662,13 +6809,22 @@ descendantCount(
                               "count"),
                           QStringLiteral(
                               "positive_integer")),
+                      flag(
+                          QStringLiteral(
+                              "--all")),
                       option(
                           QStringLiteral(
                               "--expect"),
                           QStringLiteral(
                               "revision"),
                           QStringLiteral(
-                              "revision"))}}}},
+                              "revision"))}},
+                 {QStringLiteral(
+                      "mutually_exclusive_options"),
+                  QJsonArray{
+                      QJsonArray{
+                          QStringLiteral("--limit"),
+                          QStringLiteral("--all")}}}}},
             {QStringLiteral("get"),
              QJsonObject{
                  {QStringLiteral(
@@ -6799,6 +6955,15 @@ descendantCount(
                   projectArgument},
                  {QStringLiteral("options"),
                   QJsonArray{
+                      option(
+                          QStringLiteral(
+                              "--target"),
+                          QStringLiteral(
+                              "target"),
+                          QStringLiteral(
+                              "enum"),
+                          generationTargetValues,
+                          true),
                       flag(
                           QStringLiteral(
                               "--require-current"))}}}},
@@ -6809,6 +6974,15 @@ descendantCount(
                   projectArgument},
                  {QStringLiteral("options"),
                   QJsonArray{
+                      option(
+                          QStringLiteral(
+                              "--target"),
+                          QStringLiteral(
+                              "target"),
+                          QStringLiteral(
+                              "enum"),
+                          generationTargetValues,
+                          true),
                       flag(
                           QStringLiteral(
                               "--dry-run")),
@@ -6954,7 +7128,6 @@ descendantCount(
                  "software_access"),
              QStringLiteral(
                  "hardware_access"),
-             QStringLiteral("reset"),
              QStringLiteral(
                  "read_side_effect"),
              QStringLiteral(
@@ -7300,7 +7473,7 @@ descendantCount(
                        "ordered positional parameters with stable names, value types, required flags, and optional repeatable flags")},
                   {QStringLiteral("options"),
                    QStringLiteral(
-                       "recognized non-repeatable flags or value options; allowed_values is present for closed enums")},
+                       "recognized flags or value options with explicit repeatable metadata; allowed_values is present for closed enums")},
                   {QStringLiteral(
                        "mutually_exclusive_options"),
                    QStringLiteral(
@@ -7700,6 +7873,32 @@ descendantCount(
              "output_status_contract"),
          QJsonObject{
              {QStringLiteral(
+                  "artifact_members"),
+              QJsonArray{
+                  QStringLiteral("kind"),
+                  QStringLiteral("path"),
+                  QStringLiteral("bytes"),
+                  QStringLiteral("sha256"),
+                  QStringLiteral("state"),
+                  QStringLiteral("exists"),
+                  QStringLiteral(
+                      "content_current"),
+                  QStringLiteral(
+                      "read_only"),
+                  QStringLiteral(
+                      "synchronized")}},
+             {QStringLiteral(
+                  "write_report_members"),
+              QJsonArray{
+                  QStringLiteral("action"),
+                  QStringLiteral("written"),
+                  QStringLiteral("skipped"),
+                  QStringLiteral("failed")}},
+             {QStringLiteral(
+                  "hash_meaning"),
+              QStringLiteral(
+                  "sha256 is the expected generated artifact content hash")},
+             {QStringLiteral(
                   "states"),
               QJsonArray{
                   QStringLiteral(
@@ -7802,9 +8001,10 @@ descendantCount(
               true},
              {QStringLiteral(
                   "require_one_conflicts"),
-              QJsonArray{
+             QJsonArray{
                   QStringLiteral("--offset"),
-                  QStringLiteral("--limit")}},
+                  QStringLiteral("--limit"),
+                  QStringLiteral("--all")}},
              {QStringLiteral(
                   "require_one_zero_error_code"),
               QStringLiteral("RMC2001")},
@@ -7818,6 +8018,13 @@ descendantCount(
                   "limit_option"),
               QStringLiteral(
                   "--limit <positive integer>")},
+             {QStringLiteral(
+                  "all_option"),
+              QStringLiteral("--all")},
+             {QStringLiteral(
+                  "default_limit"),
+              static_cast<qint64>(
+                  defaultQueryLimit)},
              {QStringLiteral(
                   "offset_option"),
               QStringLiteral(
@@ -7872,8 +8079,19 @@ descendantCount(
               0},
              {QStringLiteral(
                   "default_limit"),
-              QJsonValue(
-                  QJsonValue::Null)},
+              QJsonObject{
+                  {QStringLiteral("list"),
+                   static_cast<qint64>(
+                       defaultQueryLimit)},
+                  {QStringLiteral("find"),
+                   static_cast<qint64>(
+                       defaultQueryLimit)},
+                  {QStringLiteral("diff"),
+                   QJsonValue(
+                       QJsonValue::Null)}}},
+             {QStringLiteral(
+                  "unbounded_option"),
+              QStringLiteral("--all")},
              {QStringLiteral(
                   "stable_order"),
               true},
@@ -8191,13 +8409,19 @@ descendantCount(
                   "revision conflict")},
              {QStringLiteral("4"),
               QStringLiteral(
-                  "write or generation error")},
+                  "filesystem write error")},
              {QStringLiteral("5"),
               QStringLiteral(
                   "configured outputs are not current when --require-current is used")},
              {QStringLiteral("6"),
               QStringLiteral(
                   "project differences exist when diff --require-equal is used")},
+             {QStringLiteral("7"),
+              QStringLiteral(
+                  "patch input could not be read or parsed")},
+             {QStringLiteral("8"),
+              QStringLiteral(
+                  "artifact generation failed before writing")},
          }},
         {QStringLiteral(
              "no_command_contract"),
@@ -8332,7 +8556,13 @@ descendantCount(
                        "outputs_out_of_date")},
                   {QStringLiteral("6"),
                    QStringLiteral(
-                       "differences_found")}}},
+                       "differences_found")},
+                  {QStringLiteral("7"),
+                   QStringLiteral(
+                       "input_error")},
+                  {QStringLiteral("8"),
+                   QStringLiteral(
+                       "generation_error")}}},
              {QStringLiteral(
                   "failure_member"),
               QStringLiteral(
@@ -8378,7 +8608,15 @@ descendantCount(
                   {QStringLiteral(
                        "differences_found"),
                    fromUtf8(
-                       genericDifferencesFoundCode)}}},
+                       genericDifferencesFoundCode)},
+                  {QStringLiteral(
+                       "input_error"),
+                   fromUtf8(
+                       genericInputFailureCode)},
+                  {QStringLiteral(
+                       "generation_error"),
+                   fromUtf8(
+                       genericGenerationFailureCode)}}},
          }},
     };
 }
@@ -8392,19 +8630,21 @@ descendantCount(
         "  regmapc [--json] help [command]\n"
         "  regmapc [--json] version\n"
         "  regmapc [--json] schema\n"
-        "  regmapc [--json] init <project.regmap.yaml> [--name <workspace-name>] [--workspace-id <stable-id>] [--no-generate]\n"
+        "  regmapc [--json] init <project.regmap.yaml> [--name <workspace-name>] [--workspace-id <stable-id>] [--output-dir <relative-path>] [--target <target>]... [--xlsx-file <relative-path>] [--c-header-file <relative-path>] [--markdown-file <relative-path>] [--no-generate]\n"
         "  regmapc [--json] summary <project.regmap.yaml>\n"
-        "  regmapc [--json] list <project.regmap.yaml> [--kind <kind>] [--parent <stable-id> [--recursive]] [--tag <tag>] [--offset <count>] [--limit <count>] [--expect <sha256:...>]\n"
-        "  regmapc [--json] find <project.regmap.yaml> <query> [--exact] [--require-one] [--kind <kind>] [--parent <stable-id> [--recursive]] [--tag <tag>] [--offset <count>] [--limit <count>] [--expect <sha256:...>]\n"
+        "  regmapc [--json] list <project.regmap.yaml> [--kind <kind>] [--parent <stable-id> [--recursive]] [--tag <tag>] [--offset <count>] [--limit <count> | --all] [--expect <sha256:...>]\n"
+        "  regmapc [--json] find <project.regmap.yaml> <query> [--exact] [--require-one] [--kind <kind>] [--parent <stable-id> [--recursive]] [--tag <tag>] [--offset <count>] [--limit <count> | --all] [--expect <sha256:...>]\n"
         "  regmapc [--json] get <project.regmap.yaml> [stable-id] [--expect <sha256:...>]\n"
         "  regmapc [--json] get-many <project.regmap.yaml> <stable-id>... [--expect <sha256:...>]\n"
         "  regmapc [--json] validate <project.regmap.yaml>\n"
         "  regmapc [--json] diff <before.regmap.yaml> <after.regmap.yaml> [--kind <kind>] [--offset <count>] [--limit <count>] [--expect-before <sha256:...>] [--expect-after <sha256:...>] [--require-equal]\n"
-        "  regmapc [--json] status <project.regmap.yaml> [--require-current]\n"
-        "  regmapc [--json] generate <project.regmap.yaml> [--dry-run] [--expect <sha256:...>]\n"
+        "  regmapc [--json] status <project.regmap.yaml> [--target <target>]... [--require-current]\n"
+        "  regmapc [--json] generate <project.regmap.yaml> [--target <target>]... [--dry-run] [--expect <sha256:...>]\n"
         "  regmapc [--json] apply <project.regmap.yaml> <patch.json|-> [--dry-run] [--expect <sha256:...> | --force]\n"
         "\n"
         "Object kinds: workspace, page, block, register, field, enum, all\n"
+        "Generation targets: xlsx, c-header, markdown\n"
+        "list and find return at most 100 results unless --limit or --all is explicit.\n"
         "Use --json for a stable API-versioned response envelope.\n"
         "Use -- before a positional value that begins with --.\n"
         "Patch operations may define a unique ref; object IDs, parent IDs, and move anchors accept an earlier {\"operation\": N} or {\"ref\": \"name\"}; add id may be \"auto\".\n"
@@ -9867,6 +10107,34 @@ void writeTextResponse(
         const QString& token =
             arguments.at(index);
         if (token ==
+            QStringLiteral("--target")) {
+            if (optionValueMissing(
+                    arguments,
+                    index)) {
+                error = QStringLiteral(
+                    "--target requires xlsx, c-header, or markdown.");
+                return false;
+            }
+            const QString value =
+                arguments.at(++index);
+            const auto kind =
+                parseGenerationTarget(value);
+            if (!kind) {
+                error = QStringLiteral(
+                    "Unsupported generation target '%1'. Expected xlsx, c-header, or markdown.")
+                    .arg(value);
+                return false;
+            }
+            if (!options.targets.insert(*kind).second) {
+                error = QStringLiteral(
+                    "Generation target '%1' can be specified only once.")
+                    .arg(
+                        generationTargetToken(*kind));
+                return false;
+            }
+            continue;
+        }
+        if (token ==
             QStringLiteral(
                 "--require-current")) {
             if (sawRequireCurrent) {
@@ -9916,6 +10184,34 @@ void writeTextResponse(
          ++index) {
         const QString& token =
             arguments.at(index);
+        if (token ==
+            QStringLiteral("--target")) {
+            if (optionValueMissing(
+                    arguments,
+                    index)) {
+                error = QStringLiteral(
+                    "--target requires xlsx, c-header, or markdown.");
+                return false;
+            }
+            const QString value =
+                arguments.at(++index);
+            const auto kind =
+                parseGenerationTarget(value);
+            if (!kind) {
+                error = QStringLiteral(
+                    "Unsupported generation target '%1'. Expected xlsx, c-header, or markdown.")
+                    .arg(value);
+                return false;
+            }
+            if (!options.targets.insert(*kind).second) {
+                error = QStringLiteral(
+                    "Generation target '%1' can be specified only once.")
+                    .arg(
+                        generationTargetToken(*kind));
+                return false;
+            }
+            continue;
+        }
         if (token ==
             QStringLiteral(
                 "--dry-run")) {
@@ -9999,12 +10295,96 @@ void writeTextResponse(
     }
     bool sawName = false;
     bool sawWorkspaceId = false;
+    bool sawOutputDirectory = false;
+    bool sawTarget = false;
     bool sawNoGenerate = false;
     for (qsizetype index = 2;
          index < arguments.size();
          ++index) {
         const QString& token =
             arguments.at(index);
+        if (token ==
+            QStringLiteral("--output-dir")) {
+            if (sawOutputDirectory) {
+                error = QStringLiteral(
+                    "--output-dir can be specified only once.");
+                return false;
+            }
+            if (optionValueMissing(
+                    arguments,
+                    index)) {
+                error = QStringLiteral(
+                    "--output-dir requires a relative path.");
+                return false;
+            }
+            sawOutputDirectory = true;
+            options.outputDirectory =
+                arguments.at(++index);
+            continue;
+        }
+        if (token ==
+            QStringLiteral("--target")) {
+            if (optionValueMissing(
+                    arguments,
+                    index)) {
+                error = QStringLiteral(
+                    "--target requires xlsx, c-header, or markdown.");
+                return false;
+            }
+            sawTarget = true;
+            const QString value =
+                arguments.at(++index);
+            const auto kind =
+                parseGenerationTarget(value);
+            if (!kind) {
+                error = QStringLiteral(
+                    "Unsupported generation target '%1'. Expected xlsx, c-header, or markdown.")
+                    .arg(value);
+                return false;
+            }
+            if (!options.targets.insert(*kind).second) {
+                error = QStringLiteral(
+                    "Generation target '%1' can be specified only once.")
+                    .arg(
+                        generationTargetToken(*kind));
+                return false;
+            }
+            continue;
+        }
+        const auto targetFileKind =
+            token == QStringLiteral("--xlsx-file")
+            ? std::optional{
+                  GenerationTargetKind::xlsx}
+            : token == QStringLiteral(
+                  "--c-header-file")
+                ? std::optional{
+                      GenerationTargetKind::cHeader}
+                : token == QStringLiteral(
+                      "--markdown-file")
+                    ? std::optional{
+                          GenerationTargetKind::markdown}
+                    : std::nullopt;
+        if (targetFileKind) {
+            if (options.targetFileNames.contains(
+                    *targetFileKind)) {
+                error = QStringLiteral(
+                    "%1 can be specified only once.")
+                    .arg(token);
+                return false;
+            }
+            if (optionValueMissing(
+                    arguments,
+                    index)) {
+                error = QStringLiteral(
+                    "%1 requires a relative file path.")
+                    .arg(token);
+                return false;
+            }
+            options.targetFileNames.insert_or_assign(
+                *targetFileKind,
+                arguments.at(++index));
+            continue;
+        }
         if (token ==
             QStringLiteral("--name")) {
             if (sawName) {
@@ -10093,7 +10473,16 @@ void writeTextResponse(
     if (options.name.isEmpty()) {
         options.name =
             defaultProjectName(
-                options.projectPath);
+            options.projectPath);
+    }
+    if (!options.generate && sawTarget) {
+        error = QStringLiteral(
+            "--target cannot be combined with --no-generate because no outputs are generated.");
+        return false;
+    }
+    if (!sawTarget) {
+        options.targets =
+            allGenerationTargets();
     }
     return true;
 }
@@ -11345,83 +11734,6 @@ resolveOperationObjectReference(
         });
 }
 
-[[nodiscard]] QJsonArray artifactsJson(
-    const std::vector<GeneratedArtifact>&
-        artifacts)
-{
-    QJsonArray result;
-    for (const auto& artifact :
-         artifacts) {
-        const std::uint64_t size =
-            artifact.isBinary()
-            ? static_cast<std::uint64_t>(
-                  artifact.binaryContent
-                      .size())
-            : static_cast<std::uint64_t>(
-                  artifact.content
-                      .size());
-        result.append(
-            QJsonObject{
-                {QStringLiteral("kind"),
-                 fromUtf8(
-                     toString(
-                         artifact.kind))},
-                {QStringLiteral("path"),
-                 fromPath(
-                     artifact.path)},
-                {QStringLiteral("bytes"),
-                 QString::number(size)},
-            });
-    }
-    return result;
-}
-
-[[nodiscard]] QString artifactStateText(
-    const GeneratedArtifactInspection& inspection)
-{
-    switch (inspection.state) {
-    case GeneratedArtifactState::current:
-        return inspection.readOnly
-            ? QStringLiteral("synchronized")
-            : QStringLiteral("writable");
-    case GeneratedArtifactState::missing:
-        return QStringLiteral("missing");
-    case GeneratedArtifactState::modified:
-        return QStringLiteral("modified");
-    case GeneratedArtifactState::unreadable:
-        return QStringLiteral("unreadable");
-    }
-    return QStringLiteral("unreadable");
-}
-
-[[nodiscard]] QJsonObject artifactStatusJson(
-    const GeneratedArtifact& artifact)
-{
-    const GeneratedArtifactInspection inspection =
-        inspectGeneratedArtifact(artifact);
-    const QFileInfo information(
-        fromPath(artifact.path));
-    return {
-        {QStringLiteral("kind"),
-         fromUtf8(
-             toString(
-                 artifact.kind))},
-        {QStringLiteral("path"),
-         fromPath(artifact.path)},
-        {QStringLiteral("state"),
-         artifactStateText(inspection)},
-        {QStringLiteral("exists"),
-         information.exists()},
-        {QStringLiteral(
-             "content_current"),
-         inspection.contentCurrent()},
-        {QStringLiteral("read_only"),
-         inspection.readOnly},
-        {QStringLiteral("synchronized"),
-         inspection.synchronized()},
-    };
-}
-
 [[nodiscard]] QJsonObject applyResult(
     bool dryRun,
     bool changed,
@@ -11626,7 +11938,8 @@ void addGenerationRecovery(
     const QString& project,
     const QString& reason,
     const QString& expectedRevision =
-        QString{})
+        QString{},
+    const GenerationTargetSet& targets = {})
 {
     QJsonArray arguments{
         QStringLiteral(
@@ -11655,6 +11968,11 @@ void addGenerationRecovery(
                 "--expect"));
         arguments.append(
             expectedRevision);
+    }
+    for (const QString& token :
+         generationTargetArguments(
+             targets)) {
+        arguments.append(token);
     }
     recovery.insert(
         QStringLiteral(
@@ -11892,6 +12210,21 @@ void addGenerationRecovery(
                 .toStdString(),
             std::move(
                 requestedWorkspaceId));
+    QString generationConfigurationError;
+    if (!configureInitialGeneration(
+            project.manifest,
+            options.outputDirectory,
+            options.targets,
+            options.targetFileNames,
+            generationConfigurationError)) {
+        return usageError(
+            QStringLiteral("init"),
+            generationConfigurationError);
+    }
+    ProjectManifest generationManifest =
+        manifestForTargets(
+            project.manifest,
+            options.targets);
     response.diagnostics =
         validateWorkspace(
             project.workspace);
@@ -11908,7 +12241,7 @@ void addGenerationRecovery(
                 return {};
             }
             for (const auto& target :
-                 project.manifest.targets) {
+                 generationManifest.targets) {
                 const QString path =
                     fromPath(
                         target.path
@@ -11937,18 +12270,21 @@ void addGenerationRecovery(
         generation =
             generateArtifacts(
                 project.workspace,
-                project.manifest);
+                generationManifest);
         appendUniqueDiagnostics(
             response.diagnostics,
             std::move(
                 generation.diagnostics));
         artifacts =
-            artifactsJson(
+            artifactPreviewJson(
                 generation.artifacts);
         if (hasErrors(
                 response.diagnostics)) {
+            response.error =
+                QStringLiteral(
+                    "Initial artifact generation failed; no files were written.");
             response.exitCode =
-                ExitCode::writeError;
+                ExitCode::generationError;
             return response;
         }
     }
@@ -12080,17 +12416,27 @@ void addGenerationRecovery(
         return response;
     }
 
+    bool artifactWritesSuccessful = true;
     if (options.generate) {
+        ArtifactWriteReport report =
+            writeArtifactsWithReport(
+                generation.artifacts);
+        artifactWritesSuccessful =
+            report.successful();
+        artifacts =
+            std::move(report.artifacts);
         appendUniqueDiagnostics(
             response.diagnostics,
-            writeGeneratedArtifacts(
-                generation.artifacts));
+            std::move(
+                report.diagnostics));
     }
     const bool generated =
         options.generate &&
+        artifactWritesSuccessful &&
         !hasErrors(
             response.diagnostics);
     response.ok =
+        artifactWritesSuccessful &&
         !hasErrors(
             response.diagnostics);
     const QJsonObject projectSummary =
@@ -12128,7 +12474,8 @@ void addGenerationRecovery(
             response.project,
             QStringLiteral(
                 "generated_outputs_incomplete"),
-            response.revision);
+            response.revision,
+            options.targets);
     }
     response.result =
         result;
@@ -12735,11 +13082,21 @@ void addGenerationRecovery(
             ExitCode::projectError;
         return response;
     }
-
+    ProjectManifest generationManifest;
+    if (!selectGenerationManifest(
+            *opened.open.manifest,
+            options.targets,
+            opened.path,
+            generationManifest,
+            response.diagnostics)) {
+        response.exitCode =
+            ExitCode::projectError;
+        return response;
+    }
     GenerationResult generation =
         generateArtifacts(
             *opened.open.workspace,
-            *opened.open.manifest);
+            generationManifest);
     response.diagnostics.insert(
         response.diagnostics.end(),
         std::make_move_iterator(
@@ -12750,8 +13107,11 @@ void addGenerationRecovery(
                 .diagnostics.end()));
     if (hasErrors(
             response.diagnostics)) {
+        response.error =
+            QStringLiteral(
+                "Artifact generation failed while checking status.");
         response.exitCode =
-            ExitCode::writeError;
+            ExitCode::generationError;
         return response;
     }
 
@@ -12869,6 +13229,17 @@ void addGenerationRecovery(
         };
     if (synchronizedCount !=
         outputCount) {
+        QJsonArray recoveryArguments{
+            QStringLiteral("generate"),
+            opened.path,
+            QStringLiteral("--expect"),
+            opened.revision,
+        };
+        for (const QString& token :
+             generationTargetArguments(
+                 options.targets)) {
+            recoveryArguments.append(token);
+        }
         statusResult.insert(
             QStringLiteral(
                 "recovery"),
@@ -12885,13 +13256,7 @@ void addGenerationRecovery(
                  opened.revision},
                 {QStringLiteral(
                      "arguments"),
-                 QJsonArray{
-                     QStringLiteral(
-                         "generate"),
-                     opened.path,
-                     QStringLiteral(
-                         "--expect"),
-                     opened.revision}},
+                 recoveryArguments},
             });
     }
     response.result =
@@ -12928,7 +13293,8 @@ void addGenerationRecovery(
     QString parent;
     QString tag;
     QString expectedRevision;
-    std::optional<qsizetype> limit;
+    std::optional<qsizetype> limit{
+        defaultQueryLimit};
     qsizetype offset = 0;
     bool sawKind = false;
     bool sawParent = false;
@@ -12936,6 +13302,7 @@ void addGenerationRecovery(
     bool sawRecursive = false;
     bool sawTag = false;
     bool sawLimit = false;
+    bool sawAll = false;
     bool sawOffset = false;
     bool sawExpect = false;
     for (qsizetype index = 2;
@@ -13091,6 +13458,18 @@ void addGenerationRecovery(
             continue;
         }
         if (token ==
+            QStringLiteral("--all")) {
+            if (sawAll) {
+                return usageError(
+                    QStringLiteral("list"),
+                    QStringLiteral(
+                        "--all can be specified only once."));
+            }
+            sawAll = true;
+            limit.reset();
+            continue;
+        }
+        if (token ==
             QStringLiteral("--expect")) {
             if (sawExpect) {
                 return usageError(
@@ -13132,6 +13511,12 @@ void addGenerationRecovery(
             QStringLiteral("list"),
             QStringLiteral(
                 "--recursive requires --parent <stable-id>."));
+    }
+    if (sawAll && sawLimit) {
+        return usageError(
+            QStringLiteral("list"),
+            QStringLiteral(
+                "--all cannot be combined with --limit."));
     }
     if (!validKind(kind)) {
         return usageError(
@@ -13275,7 +13660,8 @@ void addGenerationRecovery(
     QString parent;
     QString tag;
     QString expectedRevision;
-    std::optional<qsizetype> limit;
+    std::optional<qsizetype> limit{
+        defaultQueryLimit};
     qsizetype offset = 0;
     bool sawKind = false;
     bool sawParent = false;
@@ -13287,6 +13673,7 @@ void addGenerationRecovery(
     bool sawRequireOne = false;
     bool sawTag = false;
     bool sawLimit = false;
+    bool sawAll = false;
     bool sawOffset = false;
     bool sawExpect = false;
     for (qsizetype index = 3;
@@ -13496,6 +13883,18 @@ void addGenerationRecovery(
             continue;
         }
         if (token ==
+            QStringLiteral("--all")) {
+            if (sawAll) {
+                return usageError(
+                    QStringLiteral("find"),
+                    QStringLiteral(
+                        "--all can be specified only once."));
+            }
+            sawAll = true;
+            limit.reset();
+            continue;
+        }
+        if (token ==
             QStringLiteral("--expect")) {
             if (sawExpect) {
                 return usageError(
@@ -13536,11 +13935,17 @@ void addGenerationRecovery(
                 token));
     }
     if (requireOne &&
-        (sawOffset || sawLimit)) {
+        (sawOffset || sawLimit || sawAll)) {
         return usageError(
             QStringLiteral("find"),
             QStringLiteral(
-                "--require-one cannot be combined with --offset or --limit."));
+                "--require-one cannot be combined with --offset, --limit, or --all."));
+    }
+    if (sawAll && sawLimit) {
+        return usageError(
+            QStringLiteral("find"),
+            QStringLiteral(
+                "--all cannot be combined with --limit."));
     }
     if (recursive && !sawParent) {
         return usageError(
@@ -13554,6 +13959,9 @@ void addGenerationRecovery(
             QStringLiteral(
                 "Unsupported object kind '%1'. Expected workspace, page, block, register, field, enum, or all.")
                 .arg(kind));
+    }
+    if (requireOne) {
+        limit.reset();
     }
 
     OpenedProject opened =
@@ -14190,6 +14598,17 @@ void addGenerationRecovery(
             ExitCode::projectError;
         return response;
     }
+    ProjectManifest generationManifest;
+    if (!selectGenerationManifest(
+            *opened.open.manifest,
+            options.targets,
+            opened.path,
+            generationManifest,
+            response.diagnostics)) {
+        response.exitCode =
+            ExitCode::projectError;
+        return response;
+    }
 
     const auto resultJson =
         [&](bool written,
@@ -14222,6 +14641,9 @@ void addGenerationRecovery(
                 {QStringLiteral(
                      "artifacts"),
                  artifacts},
+                {QStringLiteral(
+                     "target_count"),
+                 artifacts.size()},
             };
         };
     const auto revisionConflict =
@@ -14267,7 +14689,8 @@ void addGenerationRecovery(
                     opened.path,
                     QStringLiteral(
                         "project_changed_after_output_write"),
-                    actual);
+                    actual,
+                    options.targets);
             }
             conflict.result =
                 result;
@@ -14292,7 +14715,7 @@ void addGenerationRecovery(
     GenerationResult generation =
         generateArtifacts(
             *opened.open.workspace,
-            *opened.open.manifest);
+            generationManifest);
     response.diagnostics.insert(
         response.diagnostics.end(),
         std::make_move_iterator(
@@ -14301,8 +14724,8 @@ void addGenerationRecovery(
         std::make_move_iterator(
             generation
                 .diagnostics.end()));
-    const QJsonArray artifacts =
-        artifactsJson(
+    QJsonArray artifacts =
+        artifactPreviewJson(
             generation.artifacts);
     if (hasErrors(
             response.diagnostics)) {
@@ -14312,8 +14735,11 @@ void addGenerationRecovery(
                 false,
                 opened.revision,
                 artifacts);
+        response.error =
+            QStringLiteral(
+                "Artifact generation failed; no files were written.");
         response.exitCode =
-            ExitCode::writeError;
+            ExitCode::generationError;
         return response;
     }
 
@@ -14358,18 +14784,22 @@ void addGenerationRecovery(
         return response;
     }
 
-    auto writeDiagnostics =
-        writeGeneratedArtifacts(
+    ArtifactWriteReport writeReport =
+        writeArtifactsWithReport(
             generation.artifacts);
+    artifacts =
+        std::move(
+            writeReport.artifacts);
     const bool outputsWritten =
-        !hasErrors(
-            writeDiagnostics);
+        writeReport.successful();
+    const bool anyOutputWritten =
+        writeReport.writtenCount > 0;
     response.diagnostics.insert(
         response.diagnostics.end(),
         std::make_move_iterator(
-            writeDiagnostics.begin()),
+            writeReport.diagnostics.begin()),
         std::make_move_iterator(
-            writeDiagnostics.end()));
+            writeReport.diagnostics.end()));
     const QString revisionAfterWrite =
         fileRevision(opened.path);
     if (revisionAfterWrite.isEmpty()) {
@@ -14380,7 +14810,7 @@ void addGenerationRecovery(
                 opened.path));
         response.result =
             resultJson(
-                outputsWritten,
+                anyOutputWritten,
                 false,
                 {},
                 artifacts);
@@ -14390,11 +14820,12 @@ void addGenerationRecovery(
     }
     response.revision =
         revisionAfterWrite;
-    if (hasErrors(
+    if (!outputsWritten ||
+        hasErrors(
             response.diagnostics)) {
         QJsonObject result =
             resultJson(
-                false,
+                anyOutputWritten,
                 false,
                 revisionAfterWrite,
                 artifacts);
@@ -14403,7 +14834,8 @@ void addGenerationRecovery(
             opened.path,
             QStringLiteral(
                 "generated_outputs_incomplete"),
-            revisionAfterWrite);
+            revisionAfterWrite,
+            options.targets);
         response.result =
             result;
         response.exitCode =
@@ -14416,7 +14848,7 @@ void addGenerationRecovery(
             opened.revision,
             revisionAfterWrite,
             artifacts,
-            true,
+            anyOutputWritten,
             QStringLiteral(
                 "Project revision changed while outputs were being written; regenerate the current revision."));
     }
@@ -14424,7 +14856,7 @@ void addGenerationRecovery(
     response.ok = true;
     response.result =
         resultJson(
-            true,
+            anyOutputWritten,
             true,
             revisionAfterWrite,
             artifacts);
@@ -14456,9 +14888,27 @@ void addGenerationRecovery(
             standardInput,
             patchErrorText);
     if (!patch) {
-        return usageError(
-            QStringLiteral("apply"),
-            patchErrorText);
+        CommandResponse response;
+        response.command =
+            QStringLiteral("apply");
+        response.project =
+            QFileInfo(options.projectPath)
+                .absoluteFilePath();
+        response.error =
+            patchErrorText;
+        response.result =
+            QJsonObject{
+                {QStringLiteral("stage"),
+                 QStringLiteral("input")},
+                {QStringLiteral("patch"),
+                 options.patchPath},
+                {QStringLiteral(
+                     "writes_performed"),
+                 false},
+            };
+        response.exitCode =
+            ExitCode::inputError;
+        return response;
     }
     const QString patchRevision =
         patch->value(
@@ -14737,8 +15187,8 @@ void addGenerationRecovery(
         response.diagnostics,
         std::move(
             generation.diagnostics));
-    const QJsonArray artifacts =
-        artifactsJson(
+    QJsonArray artifacts =
+        artifactPreviewJson(
             generation.artifacts);
     if (hasErrors(
             response.diagnostics)) {
@@ -14769,7 +15219,7 @@ void addGenerationRecovery(
         response.result =
             result;
         response.exitCode =
-            ExitCode::writeError;
+            ExitCode::generationError;
         return response;
     }
 
@@ -14968,16 +15418,18 @@ void addGenerationRecovery(
         return response;
     }
 
-    auto writeDiagnostics =
-        writeGeneratedArtifacts(
+    ArtifactWriteReport writeReport =
+        writeArtifactsWithReport(
             generation.artifacts);
+    artifacts =
+        std::move(
+            writeReport.artifacts);
     const bool outputsWritten =
-        !hasErrors(
-            writeDiagnostics);
+        writeReport.successful();
     appendUniqueDiagnostics(
         response.diagnostics,
         std::move(
-            writeDiagnostics));
+            writeReport.diagnostics));
     const QString revisionAfterOutputs =
         fileRevision(opened.path);
     if (revisionAfterOutputs
