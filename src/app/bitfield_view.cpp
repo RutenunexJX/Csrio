@@ -1,5 +1,7 @@
 #include "bitfield_view.hpp"
 
+#include "workbench_theme.hpp"
+
 #include <QApplication>
 #include <QColor>
 #include <QEvent>
@@ -25,11 +27,8 @@ namespace {
 
 [[nodiscard]] QColor fieldColor(const std::string& id)
 {
-    static const std::array<QColor, 6> colors{
-        QColor(QStringLiteral("#5B9BD5")), QColor(QStringLiteral("#70AD47")),
-        QColor(QStringLiteral("#ED7D31")), QColor(QStringLiteral("#FFC000")),
-        QColor(QStringLiteral("#A5A5A5")), QColor(QStringLiteral("#4472C4")),
-    };
+    const auto& colors =
+        WorkbenchTheme::currentTokens().bitfield;
     const std::size_t hash = qHash(fromUtf8(id));
     return colors[hash % colors.size()];
 }
@@ -39,7 +38,7 @@ namespace {
 BitfieldView::BitfieldView(QWidget* parent)
     : QWidget(parent)
 {
-    setMinimumHeight(158);
+    setMinimumHeight(188);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     setMouseTracking(true);
     setFocusPolicy(
@@ -127,7 +126,9 @@ void BitfieldView::paintEvent(QPaintEvent* event)
     Q_UNUSED(event)
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.fillRect(rect(), QColor(QStringLiteral("#F4F7FB")));
+    const auto& token =
+        WorkbenchTheme::currentTokens();
+    painter.fillRect(rect(), token.canvas);
     exactHitRegions_.clear();
     hitRegions_.clear();
 
@@ -146,8 +147,8 @@ void BitfieldView::paintEvent(QPaintEvent* event)
     const bool denseLayout = pixelsPerBit < 9.0;
     const QRect bar(left, top, available, barHeight);
 
-    painter.setPen(QColor(QStringLiteral("#C6D2E1")));
-    painter.setBrush(QColor(QStringLiteral("#E7ECF2")));
+    painter.setPen(token.border);
+    painter.setBrush(token.panel);
     painter.drawRoundedRect(bar, 3, 3);
     const QFont baseFont = painter.font();
 
@@ -167,6 +168,8 @@ void BitfieldView::paintEvent(QPaintEvent* event)
 
     int fieldIndex = 0;
     QVector<QRect> endpointLabels;
+    std::vector<const regmap::Field*>
+        legendFields;
     for (const auto* fieldPointer : paintOrder) {
         const auto& field = *fieldPointer;
         const bool preview =
@@ -189,13 +192,19 @@ void BitfieldView::paintEvent(QPaintEvent* event)
                        other.lsb <= msb;
             });
         if (overlaps) {
-            color = QColor(QStringLiteral("#F28B82"));
-            painter.setPen(QPen(QColor(QStringLiteral("#B3261E")), 3));
+            color = token.diagnosticError.lighter(
+                WorkbenchTheme::currentMode() ==
+                        WorkbenchTheme::Mode::dark
+                    ? 100
+                    : 170);
+            painter.setPen(
+                QPen(token.diagnosticError, 3));
         } else if (
             field.id == selectedFieldId_ ||
             fromUtf8(field.id) == hoveredFieldId_) {
             color = color.lighter(118);
-            painter.setPen(QPen(QColor(QStringLiteral("#17365D")), 3));
+            painter.setPen(
+                QPen(token.focus, 3));
         } else {
             painter.setPen(QPen(color.darker(145), 1));
         }
@@ -203,10 +212,20 @@ void BitfieldView::paintEvent(QPaintEvent* event)
         painter.drawRoundedRect(fieldRect.adjusted(1, 1, -1, -1), 2, 2);
 
         const QString label = fromUtf8(field.name);
-        if (fieldRect.width() >= painter.fontMetrics().horizontalAdvance(label) + 8) {
-            painter.setPen(color.lightness() < 145 ? QColor(Qt::white)
-                                                   : QColor(QStringLiteral("#0B1F33")));
+        const bool labelFits =
+            fieldRect.width() >=
+            painter.fontMetrics()
+                    .horizontalAdvance(label) +
+                8;
+        if (labelFits) {
+            painter.setPen(
+                color.lightness() < 145
+                    ? token.onAccent
+                    : token.text);
             painter.drawText(fieldRect.adjusted(4, 2, -4, -2), Qt::AlignCenter, label);
+        } else {
+            legendFields.push_back(
+                &field);
         }
 
         const bool emphasized =
@@ -217,7 +236,7 @@ void BitfieldView::paintEvent(QPaintEvent* event)
         painter.setFont(positionFont);
         const int labelY = emphasized ? 10 : (fieldIndex % 2 == 0 ? 10 : 34);
         const QColor positionColor =
-            preview ? QColor(QStringLiteral("#B3261E")) : QColor(QStringLiteral("#385D8A"));
+            preview ? token.diagnosticError : token.address;
         const auto endpointRectangle = [&](std::uint32_t value, int centerX, int y) {
             const QString text = QString::number(value);
             const int endpointWidth =
@@ -229,7 +248,7 @@ void BitfieldView::paintEvent(QPaintEvent* event)
         const auto drawEndpoint = [&](std::uint32_t value, const QRect& endpoint) {
             if (emphasized) {
                 painter.setPen(Qt::NoPen);
-                painter.setBrush(QColor(QStringLiteral("#DCE6F1")));
+                painter.setBrush(token.selection);
                 painter.drawRoundedRect(endpoint, 3, 3);
             }
             painter.setPen(positionColor);
@@ -313,14 +332,72 @@ void BitfieldView::paintEvent(QPaintEvent* event)
                 -2, -2, 2, 2),
             4, 4);
     }
-    painter.setPen(QColor(QStringLiteral("#385D8A")));
-    painter.drawText(QRect(left, top + barHeight + 7, available, 20), Qt::AlignCenter,
-                     dragging_ && previewLsb_ ? QStringLiteral("Moving field [%1:%2]")
-                                                    .arg(*previewLsb_ + draggedWidth_ - 1)
-                                                    .arg(*previewLsb_)
-                                              : (scopeLabel_.isEmpty()
-                                                     ? QStringLiteral("%1 bits").arg(register_->width)
-                                                     : scopeLabel_));
+    const QRect footer(
+        left, top + barHeight + 7,
+        available,
+        std::max(20, height() -
+                         (top + barHeight + 12)));
+    painter.setPen(token.address);
+    if (dragging_ && previewLsb_) {
+        painter.drawText(
+            footer, Qt::AlignTop | Qt::AlignHCenter,
+            QStringLiteral("Moving field [%1:%2]")
+                .arg(*previewLsb_ + draggedWidth_ - 1)
+                .arg(*previewLsb_));
+    } else if (legendFields.empty()) {
+        painter.drawText(
+            footer, Qt::AlignTop | Qt::AlignHCenter,
+            scopeLabel_.isEmpty()
+                ? QStringLiteral("%1 bits")
+                      .arg(register_->width)
+                : scopeLabel_);
+    } else {
+        const int columnCount =
+            available >= 720 ? 4
+                             : (available >= 440 ? 3 : 2);
+        const int columnWidth =
+            std::max(1, available / columnCount);
+        const int rowHeight = 20;
+        for (std::size_t index = 0;
+             index < legendFields.size(); ++index) {
+            const auto& field =
+                *legendFields[index];
+            const int column =
+                static_cast<int>(index) %
+                columnCount;
+            const int row =
+                static_cast<int>(index) /
+                columnCount;
+            const QRect entry(
+                left + column * columnWidth,
+                footer.top() + row * rowHeight,
+                columnWidth, rowHeight);
+            if (entry.bottom() > footer.bottom()) {
+                break;
+            }
+            const QColor color =
+                fieldColor(field.id);
+            painter.setPen(token.border);
+            painter.setBrush(color);
+            painter.drawRoundedRect(
+                QRect(entry.left() + 2,
+                      entry.top() + 5, 9, 9),
+                2, 2);
+            painter.setPen(token.text);
+            const QString text =
+                QStringLiteral("%1  [%2:%3]")
+                    .arg(fromUtf8(field.name))
+                    .arg(field.msb)
+                    .arg(field.lsb);
+            painter.drawText(
+                entry.adjusted(16, 0, -4, 0),
+                Qt::AlignLeft | Qt::AlignVCenter,
+                painter.fontMetrics().elidedText(
+                    text, Qt::ElideRight,
+                    std::max(1,
+                             entry.width() - 20)));
+        }
+    }
 }
 
 void BitfieldView::mousePressEvent(QMouseEvent* event)

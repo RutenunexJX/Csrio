@@ -4,6 +4,7 @@
 #include "bitfield_view.hpp"
 #include "source_navigation.hpp"
 #include "table_selection_utils.hpp"
+#include "workbench_theme.hpp"
 
 #include "regmap/core/model_tokens.hpp"
 #include "regmap/core/serialization.hpp"
@@ -14,6 +15,7 @@
 
 #include <QAbstractItemView>
 #include <QAction>
+#include <QActionGroup>
 #include <QApplication>
 #include <QBrush>
 #include <QClipboard>
@@ -32,6 +34,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFont>
+#include <QFontDatabase>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QFormLayout>
@@ -59,6 +62,7 @@
 #include <QPixmap>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QResizeEvent>
 #include <QScopedValueRollback>
 #include <QScreen>
 #include <QScrollArea>
@@ -69,6 +73,7 @@
 #include <QSizePolicy>
 #include <QStyle>
 #include <QSplitter>
+#include <QSplitterHandle>
 #include <QStyledItemDelegate>
 #include <QStyleOptionButton>
 #include <QStyleOptionViewItem>
@@ -95,6 +100,7 @@
 #include <functional>
 #include <iterator>
 #include <limits>
+#include <numeric>
 #include <optional>
 #include <set>
 #include <string>
@@ -161,6 +167,7 @@ constexpr auto fieldHeaderSettingsKey =
 constexpr qsizetype maximumRecentProjectCount = 8;
 constexpr std::size_t maximumRecentObjectCount = 12;
 constexpr int maximumVisibleSearchResults = 40;
+constexpr int compactLayoutThreshold = 1180;
 
 enum class HierarchyDropPlacement {
     onItem,
@@ -175,9 +182,11 @@ enum class HierarchyDropPlacement {
     pixmap.fill(Qt::transparent);
     QPainter painter(&pixmap);
     painter.setRenderHint(QPainter::Antialiasing, true);
-    const QColor ink(QStringLiteral("#9C4A08"));
+    const auto& token =
+        WorkbenchTheme::currentTokens();
+    const QColor ink = token.reset;
     painter.setPen(QPen(ink, 1.5));
-    painter.setBrush(QColor(QStringLiteral("#FCE4D6")));
+    painter.setBrush(token.selection);
     painter.drawRoundedRect(QRectF(2.5, 6.0, 9.0, 6.5), 1.2, 1.2);
     painter.setBrush(Qt::NoBrush);
     painter.drawArc(QRectF(4.0, 1.5, 6.0, 8.0), 0, 180 * 16);
@@ -833,6 +842,18 @@ parseNumericRangeText(const QString& value)
     return font;
 }
 
+[[nodiscard]] QFont monospaceFont()
+{
+    QFont font = QFontDatabase::systemFont(
+        QFontDatabase::FixedFont);
+    const qreal pointSize =
+        QApplication::font().pointSizeF();
+    if (pointSize > 0.0) {
+        font.setPointSizeF(pointSize);
+    }
+    return font;
+}
+
 [[nodiscard]] QStandardItem* addRowItem(const QString& text, int addRole)
 {
     auto* result = new QStandardItem(text);
@@ -840,7 +861,9 @@ parseNumericRangeText(const QString& value)
     result->setTextAlignment(Qt::AlignCenter);
     result->setData(true, addRole);
     result->setFont(fontWithWeight(QFont::DemiBold));
-    result->setForeground(QColor(QStringLiteral("#385D8A")));
+    result->setForeground(
+        WorkbenchTheme::currentTokens()
+            .address);
     return result;
 }
 
@@ -1379,28 +1402,6 @@ void restoreResultSelection(
     }
     return values.join(QStringLiteral(", "));
 }
-
-constexpr auto popupListStyle = R"(
-QListWidget {
-    border: 1px solid #C6D2E1;
-    border-radius: 3px;
-    background: #FFFDF5;
-    outline: none;
-}
-QListWidget::item {
-    border: 0;
-    border-radius: 3px;
-    padding: 5px 8px;
-}
-QListWidget::item:hover {
-    background: #DCE6F1;
-    color: #17365D;
-}
-QListWidget::item:selected {
-    background: #385D8A;
-    color: white;
-}
-)";
 
 void installProjectDropRouting(
     QWidget* editor)
@@ -2565,12 +2566,17 @@ protected:
         const int boundaryY = rowViewportPosition(insertionBoundary_);
         QPainter painter(viewport());
         painter.setRenderHint(QPainter::Antialiasing, true);
-        painter.setPen(QPen(QColor(QStringLiteral("#4472C4")), 2));
+        const auto& token =
+            WorkbenchTheme::currentTokens();
+        painter.setPen(
+            QPen(token.selectionStrong, 2));
         painter.drawLine(4, boundaryY, viewport()->width() - 4, boundaryY);
-        painter.setBrush(QColor(QStringLiteral("#4472C4")));
+        painter.setBrush(
+            token.selectionStrong);
         painter.setPen(Qt::NoPen);
         painter.drawEllipse(QPoint(plusCenterX, boundaryY), 9, 9);
-        painter.setPen(QPen(Qt::white, 2));
+        painter.setPen(
+            QPen(token.onAccent, 2));
         painter.drawLine(plusCenterX - 4, boundaryY, plusCenterX + 4, boundaryY);
         painter.drawLine(plusCenterX, boundaryY - 4, plusCenterX, boundaryY + 4);
     }
@@ -4186,6 +4192,9 @@ MainWindow::MainWindow(QWidget* parent)
     refreshRangeClipboardState();
     resize(1500, 920);
     restoreUiState();
+    uiStateRestoreComplete_ = true;
+    updateResponsiveLayout();
+    ensureSafeSplitterSizes();
     refreshProject();
     statusBar()->setSizeGripEnabled(false);
     statusBar()->showMessage(QStringLiteral("Open a .regmap.yaml project to begin"));
@@ -4241,6 +4250,9 @@ void MainWindow::buildUi()
     auto* hierarchyPanel = new QWidget(this);
     hierarchyPanel->setObjectName(QStringLiteral("hierarchyPanel"));
     hierarchyPanel->setMinimumWidth(220);
+    hierarchyPanel->setSizePolicy(
+        QSizePolicy::Ignored,
+        QSizePolicy::Expanding);
     auto* hierarchyLayout = new QVBoxLayout(hierarchyPanel);
     hierarchyLayout->setContentsMargins(0, 0, 0, 0);
     hierarchyLayout->setSpacing(4);
@@ -4578,6 +4590,8 @@ void MainWindow::buildUi()
     registerPanel->setMinimumHeight(140);
     QSizePolicy registerPanelPolicy =
         registerPanel->sizePolicy();
+    registerPanelPolicy.setHorizontalPolicy(
+        QSizePolicy::Ignored);
     registerPanelPolicy.setVerticalPolicy(
         QSizePolicy::Ignored);
     registerPanel->setSizePolicy(
@@ -4598,7 +4612,12 @@ void MainWindow::buildUi()
     pageRow->addWidget(pageBaseEdit_);
     pageRow->addWidget(new QLabel(QStringLiteral("Address Width (bits)"), contextBar));
     pageRow->addWidget(pageWidthEdit_);
-    pageRow->addWidget(new QLabel(QStringLiteral("Description"), contextBar));
+    pageDescriptionLabel_ =
+        new QLabel(
+            QStringLiteral("Description"),
+            contextBar);
+    pageRow->addWidget(
+        pageDescriptionLabel_);
     pageRow->addWidget(pageDescriptionEdit_, 1);
     contextLayout->addLayout(pageRow);
 
@@ -4609,7 +4628,12 @@ void MainWindow::buildUi()
     blockRow->addWidget(blockBaseEdit_);
     blockRow->addWidget(new QLabel(QStringLiteral("Size (bytes)"), contextBar));
     blockRow->addWidget(blockSizeEdit_);
-    blockRow->addWidget(new QLabel(QStringLiteral("Description"), contextBar));
+    blockDescriptionLabel_ =
+        new QLabel(
+            QStringLiteral("Description"),
+            contextBar);
+    blockRow->addWidget(
+        blockDescriptionLabel_);
     blockRow->addWidget(blockDescriptionEdit_, 1);
     contextLayout->addLayout(blockRow);
 
@@ -4649,13 +4673,13 @@ void MainWindow::buildUi()
         new QLabel(registerToolsBar);
     fixedAddressIconLabel->setPixmap(
         fixedAddressIcon().pixmap(14, 14));
-    auto* fixedAddressLegend =
+    fixedAddressLegend_ =
         new QLabel(
             QStringLiteral("Fixed address"),
             registerToolsBar);
-    fixedAddressLegend->setObjectName(
+    fixedAddressLegend_->setObjectName(
         QStringLiteral("fixedAddressLegend"));
-    fixedAddressLegend->setToolTip(
+    fixedAddressLegend_->setToolTip(
         QStringLiteral(
             "Fixed Registers keep their Offset during reorder, insert-shift, and delete-shift operations."));
     registerToolsLayout->addWidget(
@@ -4663,7 +4687,7 @@ void MainWindow::buildUi()
     registerToolsLayout->addWidget(
         fixedAddressIconLabel);
     registerToolsLayout->addWidget(
-        fixedAddressLegend);
+        fixedAddressLegend_);
     registerToolsLayout->addWidget(
         registerCountLabel_);
     registerToolsLayout->addWidget(
@@ -4671,10 +4695,12 @@ void MainWindow::buildUi()
     registerToolsLayout->addWidget(
         registerBatchEditButton_);
     registerToolsLayout->addStretch(1);
-    registerToolsLayout->addWidget(
+    registerTagFilterLabel_ =
         new QLabel(
             QStringLiteral("Filter by tag"),
-            registerToolsBar));
+            registerToolsBar);
+    registerToolsLayout->addWidget(
+        registerTagFilterLabel_);
     registerToolsLayout->addWidget(
         tagFilter_);
     registerToolsLayout->addWidget(
@@ -4928,6 +4954,8 @@ void MainWindow::buildUi()
     fieldPanel_->setObjectName(QStringLiteral("fieldPanel"));
     QSizePolicy fieldPanelPolicy =
         fieldPanel_->sizePolicy();
+    fieldPanelPolicy.setHorizontalPolicy(
+        QSizePolicy::Ignored);
     fieldPanelPolicy.setVerticalPolicy(
         QSizePolicy::Ignored);
     fieldPanel_->setSizePolicy(
@@ -4943,6 +4971,20 @@ void MainWindow::buildUi()
     fieldHeaderLayout->setSpacing(8);
     fieldContextLabel_ = new QLabel(QStringLiteral("Fields"), fieldHeaderBar_);
     fieldContextLabel_->setObjectName(QStringLiteral("fieldContextLabel"));
+    selectedFieldSummaryLabel_ =
+        new QLabel(fieldHeaderBar_);
+    selectedFieldSummaryLabel_->setObjectName(
+        QStringLiteral(
+            "selectedFieldSummaryLabel"));
+    selectedFieldSummaryLabel_->setAccessibleName(
+        QStringLiteral(
+            "Selected Field summary"));
+    selectedFieldSummaryLabel_->setTextInteractionFlags(
+        Qt::TextSelectableByMouse);
+    selectedFieldSummaryLabel_->setSizePolicy(
+        QSizePolicy::Ignored,
+        QSizePolicy::Preferred);
+    selectedFieldSummaryLabel_->setVisible(false);
     fieldSelectionLabel_ = new QLabel(fieldHeaderBar_);
     fieldSelectionLabel_->setObjectName(
         QStringLiteral("fieldSelectionLabel"));
@@ -4969,8 +5011,9 @@ void MainWindow::buildUi()
     closeFieldsButton_->setToolTip(QStringLiteral("Close the Register details workspace"));
     closeFieldsButton_->setAutoDefault(false);
     fieldHeaderLayout->addWidget(fieldContextLabel_);
+    fieldHeaderLayout->addWidget(
+        selectedFieldSummaryLabel_, 1);
     fieldHeaderLayout->addWidget(fieldSelectionLabel_);
-    fieldHeaderLayout->addStretch(1);
     fieldHeaderLayout->addWidget(
         fieldBatchEditButton_);
     fieldHeaderLayout->addWidget(closeFieldsButton_);
@@ -5119,22 +5162,38 @@ void MainWindow::buildUi()
     editorSplitter_ = new QSplitter(Qt::Vertical, this);
     editorSplitter_->setObjectName(
         QStringLiteral("editorSplitter"));
+    editorSplitter_->setSizePolicy(
+        QSizePolicy::Ignored,
+        QSizePolicy::Ignored);
     editorSplitter_->addWidget(registerPanel);
     editorSplitter_->addWidget(fieldPanel);
     editorSplitter_->setStretchFactor(0, 3);
     editorSplitter_->setStretchFactor(1, 2);
     editorSplitter_->setChildrenCollapsible(false);
-    editorSplitter_->setHandleWidth(4);
+    editorSplitter_->setHandleWidth(8);
+    editorSplitter_->handle(1)->setFocusPolicy(
+        Qt::StrongFocus);
+    editorSplitter_->handle(1)->setAccessibleName(
+        QStringLiteral(
+            "Resize Register canvas and Field inspector"));
 
     workspaceSplitter_ = new QSplitter(Qt::Horizontal, this);
     workspaceSplitter_->setObjectName(
         QStringLiteral("workspaceSplitter"));
+    workspaceSplitter_->setSizePolicy(
+        QSizePolicy::Ignored,
+        QSizePolicy::Ignored);
     workspaceSplitter_->addWidget(hierarchyPanel);
     workspaceSplitter_->addWidget(editorSplitter_);
     workspaceSplitter_->setStretchFactor(0, 0);
     workspaceSplitter_->setStretchFactor(1, 1);
     workspaceSplitter_->setChildrenCollapsible(false);
-    workspaceSplitter_->setHandleWidth(4);
+    workspaceSplitter_->setHandleWidth(8);
+    workspaceSplitter_->handle(1)->setFocusPolicy(
+        Qt::StrongFocus);
+    workspaceSplitter_->handle(1)->setAccessibleName(
+        QStringLiteral(
+            "Resize Workspace navigation"));
     workspaceSplitter_->setSizes({230, 1260});
 
     problemsView_ = new QTableView(this);
@@ -5232,7 +5291,54 @@ void MainWindow::buildUi()
     problemsSummaryLabel_->setContentsMargins(8, 4, 8, 0);
     problemsSummaryLabel_->setAccessibleName(
         QStringLiteral("Validation summary"));
-    problemsLayout->addWidget(problemsSummaryLabel_);
+    auto* diagnosticsToolbar =
+        new QWidget(problemsPanel);
+    diagnosticsToolbar->setObjectName(
+        QStringLiteral("diagnosticsToolbar"));
+    diagnosticsToolbar->setSizePolicy(
+        QSizePolicy::Ignored,
+        QSizePolicy::Preferred);
+    auto* diagnosticsToolbarLayout =
+        new QHBoxLayout(diagnosticsToolbar);
+    diagnosticsToolbarLayout->setContentsMargins(
+        8, 4, 8, 4);
+    diagnosticsToolbarLayout->setSpacing(6);
+    diagnosticsToolbarLayout->addWidget(
+        problemsSummaryLabel_, 1);
+    diagnosticsSeverityFilter_ =
+        new QComboBox(diagnosticsToolbar);
+    diagnosticsSeverityFilter_->setObjectName(
+        QStringLiteral(
+            "diagnosticsSeverityFilter"));
+    diagnosticsSeverityFilter_->setAccessibleName(
+        QStringLiteral(
+            "Filter diagnostics by severity"));
+    diagnosticsSeverityFilter_->addItems(
+        {QStringLiteral("All severities"),
+         QStringLiteral("Errors"),
+         QStringLiteral("Warnings"),
+         QStringLiteral("Information")});
+    diagnosticsFilterEdit_ =
+        new QLineEdit(diagnosticsToolbar);
+    diagnosticsFilterEdit_->setObjectName(
+        QStringLiteral(
+            "diagnosticsFilterEdit"));
+    diagnosticsFilterEdit_->setAccessibleName(
+        QStringLiteral(
+            "Search diagnostics"));
+    diagnosticsFilterEdit_->setPlaceholderText(
+        QStringLiteral(
+            "Filter code, message, object, or source"));
+    diagnosticsFilterEdit_->setClearButtonEnabled(
+        true);
+    diagnosticsFilterEdit_->setMaximumWidth(
+        320);
+    diagnosticsToolbarLayout->addWidget(
+        diagnosticsSeverityFilter_);
+    diagnosticsToolbarLayout->addWidget(
+        diagnosticsFilterEdit_);
+    problemsLayout->addWidget(
+        diagnosticsToolbar);
     problemsLayout->addWidget(problemsView_, 1);
     tabs_->addTab(problemsPanel, QStringLiteral("Problems"));
     auto* generatedPanel = new QWidget(tabs_);
@@ -5260,6 +5366,9 @@ void MainWindow::buildUi()
     conflictLayout->setContentsMargins(8, 5, 8, 5);
     conflictSummaryLabel_ = new QLabel(conflictBar_);
     conflictSummaryLabel_->setObjectName(QStringLiteral("conflictSummaryLabel"));
+    conflictSummaryLabel_->setSizePolicy(
+        QSizePolicy::Ignored,
+        QSizePolicy::Preferred);
     conflictLayout->addWidget(conflictSummaryLabel_, 1);
     keepWorkbenchButton_ =
         new QPushButton(QStringLiteral("Keep Workbench changes"), conflictBar_);
@@ -5277,19 +5386,160 @@ void MainWindow::buildUi()
     diffLayout->addWidget(diffView_, 1);
     tabs_->addTab(diffPanel, QStringLiteral("Diff"));
     tabs_->setMinimumHeight(0);
+    tabs_->setSizePolicy(
+        QSizePolicy::Ignored,
+        QSizePolicy::Ignored);
 
     resultsSplitter_ = new QSplitter(Qt::Vertical, this);
     resultsSplitter_->setObjectName(
         QStringLiteral("resultsSplitter"));
+    resultsSplitter_->setSizePolicy(
+        QSizePolicy::Ignored,
+        QSizePolicy::Ignored);
     resultsSplitter_->addWidget(workspaceSplitter_);
     resultsSplitter_->addWidget(tabs_);
     resultsSplitter_->setStretchFactor(0, 1);
     resultsSplitter_->setStretchFactor(1, 0);
     resultsSplitter_->setChildrenCollapsible(true);
-    resultsSplitter_->setHandleWidth(4);
-    resultsSplitter_->setContentsMargins(6, 6, 6, 6);
+    resultsSplitter_->setHandleWidth(8);
+    resultsSplitter_->handle(1)->setFocusPolicy(
+        Qt::StrongFocus);
+    resultsSplitter_->handle(1)->setAccessibleName(
+        QStringLiteral(
+            "Resize diagnostics and synchronization drawer"));
+    resultsSplitter_->setContentsMargins(0, 0, 0, 0);
     resultsSplitter_->setSizes({690, 230});
-    setCentralWidget(resultsSplitter_);
+
+    pageHeader_ = new QWidget(this);
+    pageHeader_->setObjectName(
+        QStringLiteral("pageHeader"));
+    pageHeader_->setSizePolicy(
+        QSizePolicy::Ignored,
+        QSizePolicy::Preferred);
+    pageHeader_->setAccessibleName(
+        QStringLiteral("Project overview"));
+    auto* pageHeaderLayout =
+        new QHBoxLayout(pageHeader_);
+    pageHeaderLayout->setContentsMargins(
+        14, 8, 10, 8);
+    pageHeaderLayout->setSpacing(8);
+    auto* projectIdentityLayout =
+        new QVBoxLayout;
+    projectIdentityLayout->setContentsMargins(
+        0, 0, 0, 0);
+    projectIdentityLayout->setSpacing(1);
+    projectTitleLabel_ =
+        new QLabel(
+            QStringLiteral(
+                "Register Map Workbench"),
+            pageHeader_);
+    projectTitleLabel_->setObjectName(
+        QStringLiteral("projectTitleLabel"));
+    projectTitleLabel_->setSizePolicy(
+        QSizePolicy::Ignored,
+        QSizePolicy::Preferred);
+    projectPathLabel_ =
+        new QLabel(
+            QStringLiteral(
+                "Open or create a project"),
+            pageHeader_);
+    projectPathLabel_->setObjectName(
+        QStringLiteral("projectPathLabel"));
+    projectPathLabel_->setSizePolicy(
+        QSizePolicy::Ignored,
+        QSizePolicy::Preferred);
+    projectPathLabel_->setTextInteractionFlags(
+        Qt::TextSelectableByMouse);
+    projectIdentityLayout->addWidget(
+        projectTitleLabel_);
+    projectIdentityLayout->addWidget(
+        projectPathLabel_);
+    pageHeaderLayout->addLayout(
+        projectIdentityLayout, 1);
+
+    fileStateLabel_ =
+        new QLabel(
+            QStringLiteral("No project"),
+            pageHeader_);
+    fileStateLabel_->setObjectName(
+        QStringLiteral("fileStateBadge"));
+    fileStateLabel_->setSizePolicy(
+        QSizePolicy::Fixed,
+        QSizePolicy::Preferred);
+    fileStateLabel_->setProperty(
+        "state", QStringLiteral("idle"));
+    fileStateLabel_->setAccessibleName(
+        QStringLiteral(
+            "Project file state"));
+    pageHeaderLayout->addWidget(
+        fileStateLabel_);
+    syncStateLabel_ =
+        new QLabel(
+            QStringLiteral("No project"),
+            pageHeader_);
+    syncStateLabel_->setObjectName(
+        QStringLiteral("syncStateBadge"));
+    syncStateLabel_->setSizePolicy(
+        QSizePolicy::Fixed,
+        QSizePolicy::Preferred);
+    syncStateLabel_->setProperty(
+        "state", QStringLiteral("idle"));
+    syncStateLabel_->setAccessibleName(
+        QStringLiteral(
+            "RTL and generated output state"));
+    pageHeaderLayout->addWidget(
+        syncStateLabel_);
+
+    generateButton_ =
+        new QToolButton(pageHeader_);
+    generateButton_->setObjectName(
+        QStringLiteral("generateButton"));
+    generateButton_->setText(
+        QStringLiteral("Generate"));
+    generateButton_->setMinimumWidth(88);
+    generateButton_->setToolButtonStyle(
+        Qt::ToolButtonTextOnly);
+    synchronizeButton_ =
+        new QToolButton(pageHeader_);
+    synchronizeButton_->setObjectName(
+        QStringLiteral("synchronizeButton"));
+    synchronizeButton_->setText(
+        QStringLiteral("Sync RTL"));
+    synchronizeButton_->setMinimumWidth(86);
+    synchronizeButton_->setToolButtonStyle(
+        Qt::ToolButtonTextOnly);
+    saveSyncButton_ =
+        new QToolButton(pageHeader_);
+    saveSyncButton_->setObjectName(
+        QStringLiteral("saveSyncButton"));
+    saveSyncButton_->setText(
+        QStringLiteral("Save & Sync"));
+    saveSyncButton_->setMinimumWidth(104);
+    saveSyncButton_->setToolButtonStyle(
+        Qt::ToolButtonTextOnly);
+    pageHeaderLayout->addWidget(
+        generateButton_);
+    pageHeaderLayout->addWidget(
+        synchronizeButton_);
+    pageHeaderLayout->addWidget(
+        saveSyncButton_);
+
+    auto* workbenchCanvas =
+        new QWidget(this);
+    workbenchCanvas->setObjectName(
+        QStringLiteral("workbenchCanvas"));
+    workbenchCanvas->setSizePolicy(
+        QSizePolicy::Ignored,
+        QSizePolicy::Ignored);
+    auto* canvasLayout =
+        new QVBoxLayout(workbenchCanvas);
+    canvasLayout->setContentsMargins(
+        8, 8, 8, 8);
+    canvasLayout->setSpacing(8);
+    canvasLayout->addWidget(pageHeader_);
+    canvasLayout->addWidget(
+        resultsSplitter_, 1);
+    setCentralWidget(workbenchCanvas);
 }
 
 void MainWindow::buildActions()
@@ -5368,6 +5618,13 @@ void MainWindow::buildActions()
         }
         controller_.save();
     });
+    saveSyncButton_->setDefaultAction(
+        saveAction_);
+    saveSyncButton_->setText(
+        QStringLiteral("Save & Sync"));
+    saveSyncButton_->setAccessibleName(
+        QStringLiteral(
+            "Save project and synchronize all outputs"));
 
     openXlsxAction_ =
         new QAction(
@@ -5649,6 +5906,8 @@ void MainWindow::buildActions()
     });
 
     generateAction_ = new QAction(QStringLiteral("Generate"), this);
+    generateAction_->setObjectName(
+        QStringLiteral("generateAction"));
     generateAction_->setShortcut(QKeySequence(QStringLiteral("Ctrl+G")));
     generateAction_->setEnabled(false);
     connect(generateAction_, &QAction::triggered, this, [this] {
@@ -5657,8 +5916,18 @@ void MainWindow::buildActions()
         }
         controller_.generateNow();
     });
+    generateButton_->setDefaultAction(
+        generateAction_);
+    generateButton_->setText(
+        QStringLiteral("Generate"));
+    generateButton_->setAccessibleName(
+        QStringLiteral(
+            "Generate read-only outputs"));
 
     synchronizeAction_ = new QAction(QStringLiteral("Synchronize RTL"), this);
+    synchronizeAction_->setObjectName(
+        QStringLiteral(
+            "synchronizeAction"));
     synchronizeAction_->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+S")));
     synchronizeAction_->setEnabled(false);
     connect(synchronizeAction_, &QAction::triggered, this, [this] {
@@ -5667,6 +5936,13 @@ void MainWindow::buildActions()
         }
         controller_.synchronizeNow();
     });
+    synchronizeButton_->setDefaultAction(
+        synchronizeAction_);
+    synchronizeButton_->setText(
+        QStringLiteral("Sync RTL"));
+    synchronizeButton_->setAccessibleName(
+        QStringLiteral(
+            "Synchronize managed RTL"));
 
     useWorkbenchAction_ = new QAction(QStringLiteral("Resolve Conflicts Using Workbench"), this);
     useWorkbenchAction_->setEnabled(false);
@@ -5992,6 +6268,61 @@ void MainWindow::buildActions()
     viewMenu->addAction(
         showDetailedRegistersAction_);
     viewMenu->addAction(showAdvancedFieldsAction_);
+    QMenu* themeMenu =
+        viewMenu->addMenu(
+            QStringLiteral("Theme"));
+    auto* themeGroup =
+        new QActionGroup(this);
+    themeGroup->setExclusive(true);
+    lightThemeAction_ =
+        themeMenu->addAction(
+            QStringLiteral("Light"));
+    lightThemeAction_->setObjectName(
+        QStringLiteral("lightThemeAction"));
+    lightThemeAction_->setCheckable(true);
+    darkThemeAction_ =
+        themeMenu->addAction(
+            QStringLiteral("Dark"));
+    darkThemeAction_->setObjectName(
+        QStringLiteral("darkThemeAction"));
+    darkThemeAction_->setCheckable(true);
+    themeGroup->addAction(
+        lightThemeAction_);
+    themeGroup->addAction(
+        darkThemeAction_);
+    const auto themeMode =
+        WorkbenchTheme::currentMode();
+    lightThemeAction_->setChecked(
+        themeMode ==
+        WorkbenchTheme::Mode::light);
+    darkThemeAction_->setChecked(
+        themeMode ==
+        WorkbenchTheme::Mode::dark);
+    const auto applyTheme =
+        [this](const WorkbenchTheme::Mode mode) {
+            WorkbenchTheme::apply(
+                *qApp, mode);
+            WorkbenchTheme::storePreference(
+                mode);
+            refreshProject();
+            update();
+        };
+    connect(
+        lightThemeAction_,
+        &QAction::triggered,
+        this,
+        [applyTheme] {
+            applyTheme(
+                WorkbenchTheme::Mode::light);
+        });
+    connect(
+        darkThemeAction_,
+        &QAction::triggered,
+        this,
+        [applyTheme] {
+            applyTheme(
+                WorkbenchTheme::Mode::dark);
+        });
 
     QMenu* projectMenu = menuBar()->addMenu(QStringLiteral("Project"));
     projectMenu->addAction(synchronizeAction_);
@@ -6007,7 +6338,6 @@ void MainWindow::buildActions()
     toolbar->setFloatable(false);
     toolbar->addAction(newProjectAction_);
     toolbar->addAction(openProjectAction_);
-    toolbar->addAction(saveAction_);
     openXlsxButton_ =
         new QToolButton(toolbar);
     openXlsxButton_->setObjectName(
@@ -6171,11 +6501,6 @@ void MainWindow::buildActions()
         this);
     toolbar->addWidget(
         resultsToggleButton_);
-    syncStateLabel_ = new QLabel(QStringLiteral("No project"), toolbar);
-    syncStateLabel_->setObjectName(QStringLiteral("syncStateBadge"));
-    syncStateLabel_->setProperty("state", QStringLiteral("idle"));
-    toolbar->addWidget(syncStateLabel_);
-
     recoveryStateLabel_ =
         new QLabel(this);
     recoveryStateLabel_->setObjectName(
@@ -6296,6 +6621,20 @@ void MainWindow::buildActions()
 
 void MainWindow::connectSignals()
 {
+    connect(
+        diagnosticsFilterEdit_,
+        &QLineEdit::textChanged,
+        this,
+        [this] {
+            refreshDiagnostics();
+        });
+    connect(
+        diagnosticsSeverityFilter_,
+        &QComboBox::currentIndexChanged,
+        this,
+        [this] {
+            refreshDiagnostics();
+        });
     connect(
         qApp,
         &QApplication::focusChanged,
@@ -7901,7 +8240,31 @@ void MainWindow::restoreUiState()
                         mainWindowGeometrySettingsKey))
             .toByteArray();
     if (!geometry.isEmpty()) {
-        static_cast<void>(restoreGeometry(geometry));
+        if (restoreGeometry(geometry)) {
+            const QRect available =
+                screen() == nullptr
+                    ? QRect{}
+                    : screen()
+                          ->availableGeometry();
+            if (available.isValid()) {
+                QSize bounded = size()
+                                    .boundedTo(
+                                        available.size());
+                bounded.setWidth(
+                    std::max(640,
+                             bounded.width()));
+                bounded.setHeight(
+                    std::max(480,
+                             bounded.height()));
+                resize(bounded);
+                if (!available.intersects(
+                        this->geometry())) {
+                    move(available.center() -
+                         QPoint(width() / 2,
+                                height() / 2));
+                }
+            }
+        }
     }
     const auto restoreSplitter =
         [&settings](QSplitter* splitter, const char* key) {
@@ -7934,7 +8297,7 @@ void MainWindow::restoreUiState()
         settings.value(
                     QString::fromLatin1(
                         editorSplitterFractionSettingsKey),
-                    0.5)
+                    0.58)
             .toDouble();
     expandedEditorLowerFraction_ =
         std::clamp(
@@ -7966,6 +8329,349 @@ void MainWindow::restoreUiState()
             .toBool());
     applyRegisterColumnVisibility();
     applyFieldColumnVisibility();
+}
+
+void MainWindow::updateResponsiveLayout()
+{
+    if (editorSplitter_ == nullptr) {
+        return;
+    }
+    const bool nextCompact =
+        width() < compactLayoutThreshold;
+    const Qt::Orientation nextOrientation =
+        nextCompact
+            ? Qt::Vertical
+            : Qt::Horizontal;
+    if (editorSplitter_->orientation() !=
+        nextOrientation) {
+        if (uiStateRestoreComplete_ &&
+            fieldPanel_ != nullptr &&
+            fieldPanel_->isVisible()) {
+            const QList<int> oldSizes =
+                editorSplitter_->sizes();
+            if (oldSizes.size() == 2 &&
+                oldSizes[0] + oldSizes[1] > 0) {
+                expandedEditorLowerFraction_ =
+                    static_cast<double>(
+                        oldSizes[1]) /
+                    static_cast<double>(
+                        oldSizes[0] +
+                        oldSizes[1]);
+            }
+        }
+        const QSignalBlocker blocker(
+            editorSplitter_);
+        editorSplitter_->setOrientation(
+            nextOrientation);
+        const int total =
+            nextOrientation == Qt::Horizontal
+                ? editorSplitter_->width()
+                : editorSplitter_->height();
+        if (total > 1 &&
+            fieldPanel_ != nullptr &&
+            fieldPanel_->isVisible()) {
+            const int inspector =
+                std::clamp(
+                    static_cast<int>(
+                        static_cast<double>(
+                            total) *
+                        expandedEditorLowerFraction_),
+                    1, total - 1);
+            editorSplitter_->setSizes(
+                {total - inspector,
+                 inspector});
+        }
+    }
+    compactLayout_ = nextCompact;
+    if (auto* hierarchyPanel =
+            findChild<QWidget*>(
+                QStringLiteral(
+                    "hierarchyPanel"))) {
+        hierarchyPanel->setMinimumWidth(
+            compactLayout_ ? 220 : 304);
+    }
+    if (projectPathLabel_ != nullptr) {
+        projectPathLabel_->setVisible(
+            !compactLayout_);
+    }
+    if (syncStateLabel_ != nullptr) {
+        syncStateLabel_->setVisible(
+            !compactLayout_);
+    }
+    if (quickNavigationButton_ != nullptr) {
+        quickNavigationButton_->setText(
+            compactLayout_
+                ? QStringLiteral("Go")
+                : QStringLiteral("Navigate"));
+    }
+    if (bitfieldView_ != nullptr) {
+        bitfieldView_->setMinimumHeight(
+            compactLayout_ ? 96 : 188);
+        bitfieldView_->setMaximumHeight(
+            compactLayout_ ? 112
+                           : QWIDGETSIZE_MAX);
+    }
+    if (enumView_ != nullptr) {
+        enumView_->setFixedHeight(
+            compactLayout_ ? 64 : 112);
+    }
+    if (pageDescriptionLabel_ != nullptr) {
+        const bool showContextDescriptions =
+            !compactLayout_ &&
+            (fieldPanel_ == nullptr ||
+             !fieldPanel_->isVisible());
+        pageDescriptionLabel_->setVisible(
+            showContextDescriptions);
+        pageDescriptionEdit_->setVisible(
+            showContextDescriptions);
+        blockDescriptionLabel_->setVisible(
+            showContextDescriptions);
+        blockDescriptionEdit_->setVisible(
+            showContextDescriptions);
+    }
+    if (fixedAddressLegend_ != nullptr) {
+        fixedAddressLegend_->setVisible(
+            !compactLayout_);
+    }
+    if (registerTagFilterLabel_ != nullptr) {
+        registerTagFilterLabel_->setVisible(
+            !compactLayout_);
+    }
+    if (diagnosticsFilterEdit_ != nullptr) {
+        diagnosticsFilterEdit_->setMaximumWidth(
+            compactLayout_ ? 220 : 320);
+    }
+    if (problemsView_ != nullptr &&
+        problemsView_->model() != nullptr &&
+        problemsView_->model()->columnCount() > 4) {
+        problemsView_->setColumnHidden(
+            4, compactLayout_);
+    }
+    if (saveSyncButton_ != nullptr) {
+        fileStateLabel_->setFixedWidth(
+            compactLayout_ ? 96 : 112);
+        syncStateLabel_->setFixedWidth(
+            compactLayout_ ? 0 : 250);
+        saveSyncButton_->setText(
+            QStringLiteral("Save + Sync"));
+        synchronizeButton_->setText(
+            compactLayout_
+                ? QStringLiteral("Sync")
+                : QStringLiteral("Sync RTL"));
+    }
+    if (fieldPanel_ != nullptr) {
+        if (enumOnlyEditorLayout_) {
+            fieldPanel_->setMinimumWidth(
+                compactLayout_ ? 0 : 280);
+            fieldPanel_->setMaximumHeight(
+                compactLayout_
+                    ? fieldHeaderBar_->sizeHint()
+                              .height() +
+                          enumPanel_->sizeHint()
+                              .height() +
+                          8
+                    : QWIDGETSIZE_MAX);
+        } else {
+            fieldPanel_->setMaximumHeight(
+                QWIDGETSIZE_MAX);
+            fieldPanel_->setMinimumWidth(
+                compactLayout_ ? 0 : 300);
+        }
+    }
+    updateHierarchyAddAction();
+    updateContextBar();
+    ensureSafeSplitterSizes();
+    updateSyncPresentation();
+}
+
+void MainWindow::ensureSafeSplitterSizes()
+{
+    const auto clampSplitter =
+        [](QSplitter* splitter,
+           const int firstMinimum,
+           const int secondMinimum) {
+            if (splitter == nullptr) {
+                return;
+            }
+            QList<int> sizes =
+                splitter->sizes();
+            if (sizes.size() != 2) {
+                return;
+            }
+            const int total =
+                sizes[0] + sizes[1];
+            if (total <= 1 ||
+                !splitter->widget(1)
+                     ->isVisible()) {
+                return;
+            }
+            const int safeFirst =
+                std::min(firstMinimum,
+                         std::max(1, total / 2));
+            const int safeSecond =
+                std::min(secondMinimum,
+                         std::max(1,
+                                  total -
+                                      safeFirst));
+            if (total <=
+                safeFirst + safeSecond) {
+                const int second =
+                    std::max(1, total / 3);
+                splitter->setSizes(
+                    {std::max(1,
+                              total - second),
+                     second});
+                return;
+            }
+            const int first =
+                std::clamp(
+                    sizes[0], safeFirst,
+                    total - safeSecond);
+            if (first != sizes[0]) {
+                splitter->setSizes(
+                    {first, total - first});
+            }
+        };
+    clampSplitter(
+        workspaceSplitter_, 190, 360);
+    clampSplitter(
+        editorSplitter_,
+        compactLayout_ ? 150 : 360,
+        compactLayout_ ? 150 : 280);
+    clampSplitter(
+        resultsSplitter_, 260, 150);
+}
+
+void MainWindow::updateProjectHeader(
+    const QString& transientState)
+{
+    if (projectTitleLabel_ == nullptr ||
+        fileStateLabel_ == nullptr) {
+        return;
+    }
+    if (!transientState.isEmpty()) {
+        const bool failed =
+            transientState ==
+            QStringLiteral("failed");
+        fileStateLabel_->setText(
+            failed
+                ? QStringLiteral("Open failed")
+                : QStringLiteral("Loading…"));
+        fileStateLabel_->setProperty(
+            "state",
+            failed ? QStringLiteral("failed")
+                   : QStringLiteral("loading"));
+        fileStateLabel_->style()->unpolish(
+            fileStateLabel_);
+        fileStateLabel_->style()->polish(
+            fileStateLabel_);
+        return;
+    }
+
+    const auto* workspace =
+        controller_.workspace();
+    QString state =
+        QStringLiteral("idle");
+    if (workspace == nullptr) {
+        projectTitleLabel_->setText(
+            QStringLiteral(
+                "Register Map Workbench"));
+        projectPathLabel_->setText(
+            QStringLiteral(
+                "Open or create a project"));
+        projectPathLabel_->setToolTip({});
+        fileStateLabel_->setText(
+            QStringLiteral("No project"));
+    } else {
+        projectTitleLabel_->setText(
+            fromUtf8(workspace->name));
+        const QString path =
+            QDir::toNativeSeparators(
+                fromPath(
+                    controller_.manifestPath()));
+        projectPathLabel_->setText(path);
+        projectPathLabel_->setToolTip(path);
+        if (controller_.isDirty()) {
+            state =
+                QStringLiteral("dirty");
+            fileStateLabel_->setText(
+                QStringLiteral("Dirty · %1")
+                    .arg(
+                        controller_
+                            .changes()
+                            .size()));
+        } else {
+            state =
+                QStringLiteral("saved");
+            fileStateLabel_->setText(
+                QStringLiteral("Saved"));
+        }
+    }
+    fileStateLabel_->setProperty(
+        "state", state);
+    fileStateLabel_->setToolTip(
+        workspace == nullptr
+            ? QStringLiteral(
+                  "No project file is open.")
+            : controller_.isDirty()
+            ? QStringLiteral(
+                  "Workbench contains edits that are not yet saved to the project file.")
+            : QStringLiteral(
+                  "The Workbench model matches the saved project file."));
+    fileStateLabel_->style()->unpolish(
+        fileStateLabel_);
+    fileStateLabel_->style()->polish(
+        fileStateLabel_);
+}
+
+void MainWindow::updateSelectedFieldSummary()
+{
+    if (selectedFieldSummaryLabel_ ==
+        nullptr) {
+        return;
+    }
+    const auto* reg =
+        findRegister(selectedRegisterId_);
+    const auto* field =
+        reg == nullptr ||
+                selectedFieldId_.empty()
+            ? nullptr
+            : findField(
+                  *reg,
+                  selectedFieldId_);
+    if (field == nullptr) {
+        selectedFieldSummaryLabel_->clear();
+        selectedFieldSummaryLabel_->setVisible(
+            false);
+        return;
+    }
+    const QString reset =
+        field->resetValue.has_value()
+            ? fromUtf8(
+                  field->resetValue
+                      ->toHexString())
+            : QStringLiteral("—");
+    const QString text =
+        QStringLiteral("%1 · [%2:%3] · SW %4 / HW %5 · Reset %6")
+            .arg(fromUtf8(field->name))
+            .arg(field->msb)
+            .arg(field->lsb)
+            .arg(accessText(
+                field->softwareAccess))
+            .arg(accessText(
+                field->hardwareAccess))
+            .arg(reset);
+    selectedFieldSummaryLabel_->setText(
+        text);
+    selectedFieldSummaryLabel_->setToolTip(
+        field->description.empty()
+            ? text
+            : text +
+                  QStringLiteral("\n") +
+                  fromUtf8(
+                      field->description));
+    selectedFieldSummaryLabel_->setVisible(
+        true);
 }
 
 void MainWindow::saveUiState() const
@@ -8043,6 +8749,24 @@ void MainWindow::saveUiState() const
 void MainWindow::updateEditorPanelMode(
     bool hasOpenFieldEditor, bool hasEnumEditor)
 {
+    const auto updateContextDescriptionVisibility =
+        [this](const bool inspectorVisible) {
+            if (pageDescriptionLabel_ ==
+                nullptr) {
+                return;
+            }
+            const bool visible =
+                !compactLayout_ &&
+                !inspectorVisible;
+            pageDescriptionLabel_->setVisible(
+                visible);
+            pageDescriptionEdit_->setVisible(
+                visible);
+            blockDescriptionLabel_->setVisible(
+                visible);
+            blockDescriptionEdit_->setVisible(
+                visible);
+        };
     const bool nextEnumOnly =
         hasEnumEditor && !hasOpenFieldEditor;
     const bool returningFromEnumOnly =
@@ -8071,30 +8795,42 @@ void MainWindow::updateEditorPanelMode(
         preserveRestoredEditorState_ =
             true;
         fieldPanel_->setMinimumHeight(0);
+        fieldPanel_->setMinimumWidth(
+            compactLayout_ ? 0 : 280);
         fieldPanel_->setMaximumHeight(
-            fieldHeaderBar_->sizeHint().height() +
-            enumPanel_->sizeHint().height() +
-            8);
+            compactLayout_
+                ? fieldHeaderBar_->sizeHint().height() +
+                      enumPanel_->sizeHint().height() +
+                      8
+                : QWIDGETSIZE_MAX);
         fieldPanel_->setVisible(true);
         fieldPanel_->updateGeometry();
+        updateContextDescriptionVisibility(
+            true);
+        updateContextBar();
         return;
     }
 
     enumOnlyEditorLayout_ = false;
     fieldPanel_->setMinimumHeight(
-        hasOpenFieldEditor ? 140 : 0);
+        hasOpenFieldEditor && compactLayout_
+            ? 140
+            : 0);
+    fieldPanel_->setMinimumWidth(
+        hasOpenFieldEditor && !compactLayout_
+            ? 300
+            : 0);
     fieldPanel_->setMaximumHeight(
         QWIDGETSIZE_MAX);
     fieldPanel_->setVisible(
         hasOpenFieldEditor);
     fieldPanel_->updateGeometry();
-    if (hasOpenFieldEditor &&
-        !expandedEditorSplitterState_.isEmpty()) {
+    updateContextDescriptionVisibility(
+        hasOpenFieldEditor);
+    updateContextBar();
+    if (hasOpenFieldEditor) {
         const QSignalBlocker blocker(
             editorSplitter_);
-        static_cast<void>(
-            editorSplitter_->restoreState(
-                expandedEditorSplitterState_));
         const QList<int> sizes =
             editorSplitter_->sizes();
         if (sizes.size() == 2) {
@@ -8113,6 +8849,7 @@ void MainWindow::updateEditorPanelMode(
                     {total - lower, lower});
             }
         }
+        ensureSafeSplitterSizes();
         if (returningFromEnumOnly) {
             ignoreProgrammaticEditorSplitterMoves_ =
                 true;
@@ -8215,10 +8952,16 @@ bool MainWindow::confirmProjectReplacement()
 
 bool MainWindow::openProjectPath(const QString& path)
 {
+    updateProjectHeader(
+        QStringLiteral("loading"));
     const bool opened = controller_.openProject(path);
     finalizeProjectReplacement(opened);
     if (opened) {
         promptRecoveryDraft();
+        updateProjectHeader();
+    } else {
+        updateProjectHeader(
+            QStringLiteral("failed"));
     }
     return opened;
 }
@@ -8853,6 +9596,7 @@ void MainWindow::refreshProject()
         setWindowModified(false);
         setWindowTitle(QStringLiteral("Register Map Workbench"));
     }
+    updateProjectHeader();
     updateSyncPresentation();
     updateBottomPanelVisibility();
 }
@@ -8906,14 +9650,27 @@ void MainWindow::updateContextBar()
             "aggregateReadOnly",
             page != nullptr && !explicitBlockScope);
     }
-    pageContextLabel_->setText(page == nullptr
-                                   ? QStringLiteral("Page: select in tree")
-                                   : QStringLiteral("Page: %1%2")
-                                         .arg(
-                                             fromUtf8(page->name),
-                                             explicitBlockScope
-                                                 ? QString{}
-                                                 : QStringLiteral(" · read-only aggregate")));
+    const QString pageContext =
+        page == nullptr
+        ? QStringLiteral("Page: select in tree")
+        : QStringLiteral("Page: %1%2")
+              .arg(
+                  fromUtf8(page->name),
+                  explicitBlockScope
+                      ? QString{}
+                      : QStringLiteral(
+                            " · read-only aggregate"));
+    const bool constrainedContext =
+        compactLayout_ ||
+        (fieldPanel_ != nullptr &&
+         fieldPanel_->isVisible());
+    pageContextLabel_->setText(
+        constrainedContext && page != nullptr
+            ? QStringLiteral("Page: %1")
+                  .arg(fromUtf8(page->name))
+            : pageContext);
+    pageContextLabel_->setToolTip(
+        pageContext);
     pageBaseEdit_->setText(page == nullptr ? QString{} : hex(page->baseAddress));
     pageWidthEdit_->setText(page == nullptr ? QString{} : QString::number(page->addressWidth));
     pageDescriptionEdit_->setText(page == nullptr ? QString{} : fromUtf8(page->description));
@@ -8927,14 +9684,23 @@ void MainWindow::updateContextBar()
             "aggregateReadOnly",
             block != nullptr && !explicitBlockScope);
     }
-    blockContextLabel_->setText(block == nullptr
-                                    ? QStringLiteral("Block: select in tree")
-                                    : QStringLiteral("Block: %1%2")
-                                          .arg(
-                                              fromUtf8(block->name),
-                                              explicitBlockScope
-                                                  ? QString{}
-                                                  : QStringLiteral(" · open Block to edit")));
+    const QString blockContext =
+        block == nullptr
+        ? QStringLiteral("Block: select in tree")
+        : QStringLiteral("Block: %1%2")
+              .arg(
+                  fromUtf8(block->name),
+                  explicitBlockScope
+                      ? QString{}
+                      : QStringLiteral(
+                            " · open Block to edit"));
+    blockContextLabel_->setText(
+        constrainedContext && block != nullptr
+            ? QStringLiteral("Block: %1")
+                  .arg(fromUtf8(block->name))
+            : blockContext);
+    blockContextLabel_->setToolTip(
+        blockContext);
     blockBaseEdit_->setText(block == nullptr ? QString{} : hex(block->baseAddress));
     blockSizeEdit_->setText(block == nullptr || !block->size ? QString{} : hex(*block->size));
     blockDescriptionEdit_->setText(block == nullptr ? QString{} : fromUtf8(block->description));
@@ -9108,43 +9874,70 @@ void MainWindow::populateHierarchy()
 
 void MainWindow::updateHierarchyAddAction()
 {
+    const auto setPresentation =
+        [this](const QString& wideText,
+               const QString& accessibleName,
+               const QString& toolTip,
+               const bool enabled) {
+            hierarchyAddButton_->setText(
+                compactLayout_
+                    ? QStringLiteral("+")
+                    : wideText);
+            hierarchyAddButton_
+                ->setAccessibleName(
+                    accessibleName);
+            hierarchyAddButton_->setToolTip(
+                toolTip);
+            hierarchyAddButton_->setEnabled(
+                enabled);
+        };
     const auto* workspace =
         controller_.workspace();
     if (workspace == nullptr) {
-        hierarchyAddButton_->setText(QStringLiteral("+ Page"));
-        hierarchyAddButton_->setToolTip(
-            QStringLiteral("Open or create a project before adding a Page"));
-        hierarchyAddButton_->setEnabled(false);
+        setPresentation(
+            QStringLiteral("+ Page"),
+            QStringLiteral("Add Page"),
+            QStringLiteral(
+                "Open or create a project before adding a Page"),
+            false);
         return;
     }
     if (workspace->addressSpaces
             .empty()) {
-        hierarchyAddButton_->setText(
+        setPresentation(
             QStringLiteral(
-                "+ First Register"));
-        hierarchyAddButton_->setToolTip(
+                "+ First Register"),
             QStringLiteral(
-                "Create the first Register. Workbench will create a default Page and Block when needed. Shortcut: Insert."));
-        hierarchyAddButton_->setEnabled(
+                "Create First Register"),
+            QStringLiteral(
+                "Create the first Register. Workbench will create a default Page and Block when needed. Shortcut: Insert."),
             true);
         return;
     }
 
     const QModelIndex current = hierarchyView_->currentIndex();
     if (current.isValid() && !current.data(blockIdRole).toString().isEmpty()) {
-        hierarchyAddButton_->setText(QStringLiteral("+ Register"));
-        hierarchyAddButton_->setToolTip(
-            QStringLiteral("Add a Register to the selected Block. Shortcut: Insert."));
+        setPresentation(
+            QStringLiteral("+ Register"),
+            QStringLiteral("Add Register"),
+            QStringLiteral(
+                "Add a Register to the selected Block. Shortcut: Insert."),
+            true);
     } else if (current.isValid() && !current.data(addressIdRole).toString().isEmpty()) {
-        hierarchyAddButton_->setText(QStringLiteral("+ Block"));
-        hierarchyAddButton_->setToolTip(
-            QStringLiteral("Add a Register Block to the selected Page. Shortcut: Insert."));
+        setPresentation(
+            QStringLiteral("+ Block"),
+            QStringLiteral("Add Register Block"),
+            QStringLiteral(
+                "Add a Register Block to the selected Page. Shortcut: Insert."),
+            true);
     } else {
-        hierarchyAddButton_->setText(QStringLiteral("+ Page"));
-        hierarchyAddButton_->setToolTip(
-            QStringLiteral("Add a Page to this Workspace. Shortcut: Insert."));
+        setPresentation(
+            QStringLiteral("+ Page"),
+            QStringLiteral("Add Page"),
+            QStringLiteral(
+                "Add a Page to this Workspace. Shortcut: Insert."),
+            true);
     }
-    hierarchyAddButton_->setEnabled(true);
 }
 
 void MainWindow::populateRegisters()
@@ -9376,6 +10169,12 @@ void MainWindow::populateRegisters()
                 auto* access =
                     pasteableItem(accessText(reg.access).toUpper(), reg.id, "access",
                                   objectIdRole, propertyRole);
+                access->setForeground(
+                    WorkbenchTheme::currentTokens()
+                        .access);
+                access->setFont(
+                    fontWithWeight(
+                        QFont::DemiBold));
                 access->setToolTip(
                     QStringLiteral(
                         "Double-click or press Enter, Space, or F2 to choose Access."));
@@ -9401,7 +10200,9 @@ void MainWindow::populateRegisters()
                 if (reg.addressFixed) {
                     offset->setIcon(
                         fixedAddressIcon());
-                    offset->setBackground(QColor(QStringLiteral("#FCE4D6")));
+                    offset->setBackground(
+                        WorkbenchTheme::currentTokens()
+                            .selection);
                     offset->setFont(
                         fontWithWeight(QFont::DemiBold));
                 }
@@ -9490,11 +10291,31 @@ void MainWindow::populateRegisters()
                     << editableItem(fromUtf8(reg.description), reg.id, "description", objectIdRole,
                                     propertyRole)
                     << location;
+                for (const int column :
+                     {registerOffsetColumn,
+                      registerAddressColumn,
+                      registerWidthColumn,
+                      registerInitialColumn,
+                      registerResetColumn}) {
+                    row[column]->setFont(
+                        monospaceFont());
+                }
+                offset->setForeground(
+                    WorkbenchTheme::currentTokens()
+                        .address);
+                absoluteAddress->setForeground(
+                    WorkbenchTheme::currentTokens()
+                        .address);
+                reset->setForeground(
+                    WorkbenchTheme::currentTokens()
+                        .reset);
                 if (reg.reserved) {
                     for (auto* current : row) {
                         current->setFont(
                             fontWithWeight(QFont::DemiBold));
-                        current->setForeground(QColor(QStringLiteral("#B3261E")));
+                        current->setForeground(
+                            WorkbenchTheme::currentTokens()
+                                .reserved);
                     }
                 }
                 const int rowNumber = registerModel_->rowCount();
@@ -9829,9 +10650,13 @@ void MainWindow::populateFields(const regmap::Register* reg)
                         : std::nullopt;
             auto* reset = item(valueText(derivedReset));
             reset->setForeground(
-                QColor(QStringLiteral("#5F6F82")));
+                WorkbenchTheme::currentTokens()
+                    .reset);
             reset->setBackground(
-                QColor(QStringLiteral("#F2F5F8")));
+                WorkbenchTheme::currentTokens()
+                    .panel);
+            reset->setFont(
+                monospaceFont());
             reset->setToolTip(
                 reg->resetValue && resetSliceInRange
                     ? QStringLiteral(
@@ -9872,6 +10697,26 @@ void MainWindow::populateFields(const regmap::Register* reg)
                                 "write_side_effect", objectIdRole, propertyRole)
                 << editableItem(fromUtf8(field.description), field.id, "description", objectIdRole,
                                 propertyRole);
+            for (const int column :
+                 {fieldMsbColumn,
+                  fieldLsbColumn,
+                  fieldWidthColumn,
+                  fieldMinimumColumn,
+                  fieldMaximumColumn,
+                  fieldResetColumn}) {
+                row[column]->setFont(
+                    monospaceFont());
+            }
+            for (const int column :
+                 {fieldSoftwareAccessColumn,
+                  fieldHardwareAccessColumn}) {
+                row[column]->setForeground(
+                    WorkbenchTheme::currentTokens()
+                        .access);
+                row[column]->setFont(
+                    fontWithWeight(
+                        QFont::DemiBold));
+            }
             const int rowNumber = fieldModel_->rowCount();
             fieldModel_->appendRow(row);
             if (field.id == preferredField) {
@@ -10011,7 +10856,12 @@ void MainWindow::populateEnumValues(const regmap::Register* reg, const regmap::F
     const bool visible =
         enumAvailable &&
         detailsOpen;
+    enumPanel_->setProperty(
+        "implicitBoolean",
+        implicitBoolean);
     enumPanel_->setVisible(visible);
+    enumView_->setVisible(
+        visible);
     updateEditorPanelMode(
         hasOpenFieldEditor, visible);
     if (!visible) {
@@ -10130,6 +10980,8 @@ void MainWindow::refreshDiagnostics()
         {QStringLiteral("Severity"), QStringLiteral("Code"), QStringLiteral("Message"),
          QStringLiteral("Object ID"), QStringLiteral("Source")});
     const auto& diagnostics = controller_.diagnostics();
+    totalDiagnostics_ =
+        static_cast<int>(diagnostics.size());
     const auto diagnosticBaseKey =
         [](const regmap::Diagnostic&
                diagnostic) {
@@ -10173,16 +11025,122 @@ void MainWindow::refreshDiagnostics()
     }
     QHash<QString, int>
         duplicateDiagnosticOrdinals;
-    int errorCount = 0;
-    int warningCount = 0;
+    const int errorCount =
+        static_cast<int>(std::ranges::count_if(
+            diagnostics,
+            [](const regmap::Diagnostic& diagnostic) {
+                return diagnostic.severity ==
+                    regmap::DiagnosticSeverity::error;
+            }));
+    const int warningCount =
+        static_cast<int>(std::ranges::count_if(
+            diagnostics,
+            [](const regmap::Diagnostic& diagnostic) {
+                return diagnostic.severity ==
+                    regmap::DiagnosticSeverity::warning;
+            }));
     int nonOutputErrorCount = 0;
-    for (std::size_t index = 0; index < diagnostics.size(); ++index) {
+    for (const auto& diagnostic : diagnostics) {
+        if (diagnostic.severity ==
+                regmap::DiagnosticSeverity::error &&
+            !diagnostic.code.starts_with("RM4")) {
+            ++nonOutputErrorCount;
+        }
+    }
+    std::vector<std::size_t> diagnosticOrder(
+        diagnostics.size());
+    std::iota(
+        diagnosticOrder.begin(),
+        diagnosticOrder.end(),
+        std::size_t{0});
+    const auto severityRank =
+        [](const regmap::DiagnosticSeverity severity) {
+            switch (severity) {
+            case regmap::DiagnosticSeverity::error:
+                return 0;
+            case regmap::DiagnosticSeverity::warning:
+                return 1;
+            case regmap::DiagnosticSeverity::information:
+                return 2;
+            }
+            return 3;
+        };
+    std::ranges::stable_sort(
+        diagnosticOrder,
+        [&](const std::size_t left,
+            const std::size_t right) {
+            const auto& leftDiagnostic =
+                diagnostics[left];
+            const auto& rightDiagnostic =
+                diagnostics[right];
+            return std::tuple{
+                       severityRank(
+                           leftDiagnostic.severity),
+                       sourceText(
+                           leftDiagnostic.source),
+                       fromUtf8(
+                           leftDiagnostic.code)} <
+                std::tuple{
+                       severityRank(
+                           rightDiagnostic.severity),
+                       sourceText(
+                           rightDiagnostic.source),
+                       fromUtf8(
+                           rightDiagnostic.code)};
+        });
+    const QString filterText =
+        diagnosticsFilterEdit_ == nullptr
+            ? QString{}
+            : diagnosticsFilterEdit_->text()
+                  .trimmed();
+    const int severityFilter =
+        diagnosticsSeverityFilter_ == nullptr
+            ? 0
+            : diagnosticsSeverityFilter_
+                  ->currentIndex();
+    const auto matchesSeverity =
+        [severityFilter](
+            const regmap::DiagnosticSeverity severity) {
+            return severityFilter == 0 ||
+                (severityFilter == 1 &&
+                 severity ==
+                     regmap::DiagnosticSeverity::error) ||
+                (severityFilter == 2 &&
+                 severity ==
+                     regmap::DiagnosticSeverity::warning) ||
+                (severityFilter == 3 &&
+                 severity ==
+                     regmap::DiagnosticSeverity::information);
+        };
+    const auto& theme =
+        WorkbenchTheme::currentTokens();
+    for (const std::size_t index :
+         diagnosticOrder) {
         const auto& diagnostic = diagnostics[index];
+        const QString diagnosticSource =
+            sourceText(diagnostic.source);
+        const QString searchable =
+            QStringLiteral("%1 %2 %3 %4 %5")
+                .arg(
+                    severityText(
+                        diagnostic.severity),
+                    fromUtf8(
+                        diagnostic.code),
+                    fromUtf8(
+                        diagnostic.message),
+                    fromUtf8(
+                        diagnostic.objectId),
+                    diagnosticSource);
+        if (!matchesSeverity(
+                diagnostic.severity) ||
+            (!filterText.isEmpty() &&
+             !searchable.contains(
+                 filterText,
+                 Qt::CaseInsensitive))) {
+            continue;
+        }
         auto* severity = item(severityText(diagnostic.severity));
         severity->setData(static_cast<int>(index), rowIndexRole);
-        const QString diagnosticSource =
-            sourceText(
-                diagnostic.source);
         QString diagnosticKey =
             diagnosticBaseKeys[
                 static_cast<qsizetype>(
@@ -10207,14 +11165,14 @@ void MainWindow::refreshDiagnostics()
             diagnosticKey,
             resultKeyRole);
         if (diagnostic.severity == regmap::DiagnosticSeverity::error) {
-            severity->setForeground(QBrush(QColor(190, 35, 35)));
-            ++errorCount;
-            if (!diagnostic.code.starts_with("RM4")) {
-                ++nonOutputErrorCount;
-            }
+            severity->setForeground(
+                QBrush(theme.diagnosticError));
         } else if (diagnostic.severity == regmap::DiagnosticSeverity::warning) {
-            severity->setForeground(QBrush(QColor(180, 115, 0)));
-            ++warningCount;
+            severity->setForeground(
+                QBrush(theme.diagnosticWarning));
+        } else {
+            severity->setForeground(
+                QBrush(theme.diagnosticInfo));
         }
         problemsModel_->appendRow(
             {severity, item(fromUtf8(diagnostic.code)),
@@ -10226,7 +11184,7 @@ void MainWindow::refreshDiagnostics()
     problemsView_->setColumnHidden(
         3, true);
     problemsView_->setColumnHidden(
-        4, true);
+        4, compactLayout_);
     auto* problemsHeader =
         problemsView_
             ->horizontalHeader();
@@ -10243,6 +11201,9 @@ void MainWindow::refreshDiagnostics()
     problemsHeader->setSectionResizeMode(
         2,
         QHeaderView::Stretch);
+    problemsHeader->setSectionResizeMode(
+        4,
+        QHeaderView::ResizeToContents);
     if (sameProject) {
         restoreResultSelection(
             problemsView_,
@@ -10271,12 +11232,21 @@ void MainWindow::refreshDiagnostics()
                         : QStringLiteral("%1 notices")
                               .arg(otherCount));
     }
+    const int visibleDiagnosticCount =
+        problemsModel_->rowCount();
+    const bool filtered =
+        !filterText.isEmpty() ||
+        severityFilter != 0;
     problemsSummaryLabel_->setText(
-        summary.empty()
+        (summary.empty()
             ? QStringLiteral(
                   "No validation problems")
             : summary.join(
-                  QStringLiteral(" · ")));
+                  QStringLiteral(" · "))) +
+        (filtered
+             ? QStringLiteral(" · %1 shown")
+                   .arg(visibleDiagnosticCount)
+             : QString{}));
     problemsSummaryLabel_->setProperty(
         "state",
         errorCount > 0
@@ -10289,7 +11259,14 @@ void MainWindow::refreshDiagnostics()
         problemsSummaryLabel_);
     problemsSummaryLabel_->style()->polish(
         problemsSummaryLabel_);
-    tabs_->setTabText(0, QStringLiteral("Problems (%1)").arg(diagnostics.size()));
+    tabs_->setTabText(
+        0,
+        filtered
+            ? QStringLiteral("Problems (%1/%2)")
+                  .arg(visibleDiagnosticCount)
+                  .arg(diagnostics.size())
+            : QStringLiteral("Problems (%1)")
+                  .arg(diagnostics.size()));
     generateAction_->setEnabled(controller_.workspace() != nullptr &&
                                 !controller_.hasProjectErrors());
     if (errorCount > 0) {
@@ -10403,9 +11380,16 @@ void MainWindow::refreshGenerated()
         if (status == QStringLiteral("Out of date") ||
             status == QStringLiteral("Externally changed")) {
             statusItem->setForeground(
-                QColor(QStringLiteral("#8A5A00")));
+                WorkbenchTheme::currentTokens()
+                    .rtlStale);
         } else if (status != QStringLiteral("Synchronized")) {
-            statusItem->setForeground(QColor(QStringLiteral("#B3261E")));
+            statusItem->setForeground(
+                WorkbenchTheme::currentTokens()
+                    .rtlConflict);
+        } else {
+            statusItem->setForeground(
+                WorkbenchTheme::currentTokens()
+                    .rtlSynced);
         }
         generatedModel_->appendRow(
             {kind, leftItem(fromPath(artifact.path)), statusItem,
@@ -11286,7 +12270,7 @@ void MainWindow::setResultsPanelRequested(
         return;
     }
     const bool hasResults =
-        problemsModel_->rowCount() > 0 ||
+        totalDiagnostics_ > 0 ||
         generatedModel_->rowCount() > 0 ||
         diffModel_->rowCount() > 0;
     resultsPanelRequested_ =
@@ -11299,7 +12283,7 @@ void MainWindow::setResultsPanelRequested(
 
 void MainWindow::updateBottomPanelVisibility()
 {
-    const bool showProblems = problemsModel_->rowCount() > 0;
+    const bool showProblems = totalDiagnostics_ > 0;
     const bool showGenerated = generatedModel_->rowCount() > 0;
     const bool showDiff = diffModel_->rowCount() > 0;
     tabs_->setTabVisible(0, showProblems);
@@ -11339,7 +12323,7 @@ void MainWindow::updateBottomPanelVisibility()
     }
     if (resultsToggleButton_ != nullptr) {
         const int pendingTotal =
-            problemsModel_->rowCount() +
+            totalDiagnostics_ +
             diffModel_->rowCount() +
             static_cast<int>(generatedOutputsNeedingRetry_);
         resultsToggleButton_->setText(
@@ -11355,7 +12339,7 @@ void MainWindow::updateBottomPanelVisibility()
             QStringLiteral(
                 "Show or hide Results (Ctrl+J): %1, %2, %3")
                 .arg(quantityLabel(
-                    problemsModel_->rowCount(),
+                    totalDiagnostics_,
                     QStringLiteral("problem"),
                     QStringLiteral("problems")))
                 .arg(quantityLabel(
@@ -11370,7 +12354,7 @@ void MainWindow::updateBottomPanelVisibility()
             QStringLiteral(
                 "Results: %1, %2, %3")
                 .arg(quantityLabel(
-                    problemsModel_->rowCount(),
+                    totalDiagnostics_,
                     QStringLiteral("problem"),
                     QStringLiteral("problems")))
                 .arg(quantityLabel(
@@ -11430,6 +12414,8 @@ void MainWindow::updateSyncPresentation(const QString& message)
         lastSyncMessage_.startsWith(QStringLiteral("Synchronizing")) ||
         lastSyncMessage_.startsWith(QStringLiteral("Merging")) ||
         lastSyncMessage_.startsWith(QStringLiteral("Generating")) ||
+        lastSyncMessage_.startsWith(QStringLiteral("Applying")) ||
+        lastSyncMessage_.startsWith(QStringLiteral("Saving")) ||
         lastSyncMessage_.startsWith(QStringLiteral("Waiting"));
 
     if (workspace == nullptr) {
@@ -11440,12 +12426,21 @@ void MainWindow::updateSyncPresentation(const QString& message)
         state =
             QStringLiteral(
                 "conflict");
-        text =
-            QStringLiteral(
-                "Disk changed · save paused");
+        text = QStringLiteral(
+            "Disk changed · save paused");
     } else if (controller_.hasConflicts()) {
         state = QStringLiteral("conflict");
         text = QStringLiteral("Conflict · %1").arg(controller_.conflicts().size());
+    } else if (busy) {
+        state = QStringLiteral("busy");
+        text =
+            lastSyncMessage_.startsWith(
+                QStringLiteral("Generating"))
+                ? QStringLiteral("Generating…")
+                : lastSyncMessage_.startsWith(
+                      QStringLiteral("Loading"))
+                ? QStringLiteral("Loading…")
+                : QStringLiteral("Applying…");
     } else if (controller_.hasProjectErrors()) {
         state = QStringLiteral("blocked");
         if (controller_.isDirty()) {
@@ -11483,16 +12478,13 @@ void MainWindow::updateSyncPresentation(const QString& message)
                 : QStringLiteral(
                       "Saved · %1 outputs need regeneration")
                       .arg(generatedOutputsNeedingRetry_);
-    } else if (busy) {
-        state = QStringLiteral("busy");
-        text = QStringLiteral("Synchronizing…");
     } else {
         state = QStringLiteral("synced");
-        text = QStringLiteral("Synchronized · %1")
-                   .arg(quantityLabel(
-                       controller_.artifacts().size(),
-                       QStringLiteral("output"),
-                       QStringLiteral("outputs")));
+        text = QStringLiteral("Synchronized · %1 %2")
+                   .arg(controller_.artifacts().size())
+                   .arg(controller_.artifacts().size() == 1
+                            ? QStringLiteral("output")
+                            : QStringLiteral("outputs"));
     }
 
     syncStateLabel_->setText(text);
@@ -11515,6 +12507,7 @@ void MainWindow::updateSyncPresentation(const QString& message)
         syncStateLabel_->style()->unpolish(syncStateLabel_);
         syncStateLabel_->style()->polish(syncStateLabel_);
     }
+    updateProjectHeader();
     updateOpenXlsxAction();
 }
 
@@ -15273,6 +16266,7 @@ void MainWindow::updateRowSelectionPresentation()
         fieldSelectionLabel_,
         QStringLiteral("Field"),
         QStringLiteral("Fields"));
+    updateSelectedFieldSummary();
 }
 
 void MainWindow::showInlineFailure(
@@ -15529,7 +16523,6 @@ void MainWindow::editRegisterTags(const QModelIndex& index)
     list->setObjectName(QStringLiteral("tagOptions"));
     list->setSelectionMode(QAbstractItemView::MultiSelection);
     list->setMouseTracking(true);
-    list->setStyleSheet(QString::fromLatin1(popupListStyle));
     for (const QString& value : available) {
         auto* current = new QListWidgetItem(value, list);
         current->setFlags(current->flags() & ~Qt::ItemIsUserCheckable);
@@ -15696,7 +16689,6 @@ void MainWindow::editRegisterAccess(const QModelIndex& index)
     list->setObjectName(QStringLiteral("accessOptions"));
     list->setSelectionMode(QAbstractItemView::SingleSelection);
     list->setMouseTracking(true);
-    list->setStyleSheet(QString::fromLatin1(popupListStyle));
     const QString currentAccess = accessText(reg->access).toUpper();
     for (const QString& value : {QStringLiteral("NONE"), QStringLiteral("RO"), QStringLiteral("WO"),
                                  QStringLiteral("RW")}) {
@@ -17414,7 +18406,10 @@ void MainWindow::batchEditSelectedRegisters()
         QStringLiteral("batchRegisterValidation"));
     validation->setWordWrap(true);
     validation->setStyleSheet(
-        QStringLiteral("color: #b42318;"));
+        QStringLiteral("color: %1;")
+            .arg(WorkbenchTheme::currentTokens()
+                     .diagnosticError
+                     .name()));
     validation->hide();
     layout->addWidget(validation);
     const auto showValidation =
@@ -18032,7 +19027,10 @@ void MainWindow::batchEditSelectedFields()
         QStringLiteral("batchFieldValidation"));
     validation->setWordWrap(true);
     validation->setStyleSheet(
-        QStringLiteral("color: #b42318;"));
+        QStringLiteral("color: %1;")
+            .arg(WorkbenchTheme::currentTokens()
+                     .diagnosticError
+                     .name()));
     validation->hide();
     layout->addWidget(validation);
     const auto showValidation =
@@ -19211,7 +20209,9 @@ void MainWindow::showRegisterContextMenu(const QPoint& position)
     reserve->setFont(
         fontWithWeight(QFont::DemiBold));
     QPixmap reserveIcon(10, 10);
-    reserveIcon.fill(QColor(QStringLiteral("#B3261E")));
+    reserveIcon.fill(
+        WorkbenchTheme::currentTokens()
+            .reserved);
     reserve->setIcon(QIcon(reserveIcon));
     reserve->setEnabled(!reg->reserved);
     QAction* removeAndShift =
@@ -25686,6 +26686,18 @@ void MainWindow::updateEditActions()
                   "Selected Registers are already at the bottom")
             : reorderToolTip);
     updateSyncPresentation();
+}
+
+void MainWindow::resizeEvent(
+    QResizeEvent* event)
+{
+    QMainWindow::resizeEvent(event);
+    updateResponsiveLayout();
+    QTimer::singleShot(
+        0, this,
+        [this] {
+            ensureSafeSplitterSizes();
+        });
 }
 
 void MainWindow::closeEvent(QCloseEvent* event)

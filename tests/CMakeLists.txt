@@ -127,6 +127,27 @@ if(TARGET RegMap::WorkbenchUi)
             ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>"
     )
 
+    qt_add_executable(
+        regmap_ui_snapshot
+        ui_snapshot.cpp
+    )
+    set_target_properties(
+        regmap_ui_snapshot
+        PROPERTIES AUTOMOC ON
+    )
+    target_link_libraries(
+        regmap_ui_snapshot
+        PRIVATE
+            RegMap::WorkbenchUi
+            Qt6::Widgets
+            ${REGMAP_XLSX_TARGET}
+    )
+    target_compile_features(
+        regmap_ui_snapshot
+        PRIVATE cxx_std_20
+    )
+    regmap_enable_warnings(regmap_ui_snapshot)
+
     if(SuiteApp_FOUND)
         qt_add_executable(
             regmap_suiteapp_integration_test

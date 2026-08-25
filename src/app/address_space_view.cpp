@@ -1,5 +1,7 @@
 #include "address_space_view.hpp"
 
+#include "workbench_theme.hpp"
+
 #include <QEvent>
 #include <QKeyEvent>
 #include <QMouseEvent>
@@ -676,6 +678,8 @@ void AddressSpaceView::paintEvent(QPaintEvent* event)
     painter.setRenderHint(
         QPainter::Antialiasing,
         true);
+    const auto& token =
+        WorkbenchTheme::currentTokens();
 
     QString summary =
         QStringLiteral(
@@ -701,8 +705,7 @@ void AddressSpaceView::paintEvent(QPaintEvent* event)
                 " - %1 outside Page range")
                 .arg(outOfRangeBlockCount_);
     }
-    painter.setPen(
-        QColor(QStringLiteral("#243447")));
+    painter.setPen(token.text);
     painter.drawText(
         QRect(10, 3, width() - 20, 21),
         Qt::AlignLeft | Qt::AlignVCenter,
@@ -712,8 +715,7 @@ void AddressSpaceView::paintEvent(QPaintEvent* event)
             std::max(0, width() - 20)));
 
     if (pages_.empty()) {
-        painter.setPen(
-            QColor(QStringLiteral("#526579")));
+        painter.setPen(token.mutedText);
         painter.drawText(
             rect().adjusted(10, 28, -10, -10),
             Qt::AlignCenter,
@@ -733,15 +735,15 @@ void AddressSpaceView::paintEvent(QPaintEvent* event)
         painter.setPen(
             selectedPage
                 ? QPen(
-                      QColor(QStringLiteral("#70AD47")),
+                      token.success,
                       2)
                 : QPen(
-                      QColor(QStringLiteral("#D5DEE8")),
+                      token.border,
                       1));
         painter.setBrush(
             selectedPage
-                ? QColor(QStringLiteral("#F1F8EC"))
-                : QColor(QStringLiteral("#F8FAFC")));
+                ? token.selection
+                : token.canvas);
         painter.drawRoundedRect(
             lane,
             3,
@@ -764,8 +766,7 @@ void AddressSpaceView::paintEvent(QPaintEvent* event)
                     hex(page.baseAddress),
                     span)
                 .arg(page.addressWidth);
-        painter.setPen(
-            QColor(QStringLiteral("#243447")));
+        painter.setPen(token.text);
         painter.drawText(
             label,
             Qt::AlignLeft | Qt::AlignVCenter,
@@ -776,10 +777,9 @@ void AddressSpaceView::paintEvent(QPaintEvent* event)
 
         painter.setPen(
             QPen(
-                QColor(QStringLiteral("#AAB7C7")),
+                token.border,
                 1));
-        painter.setBrush(
-            QColor(QStringLiteral("#EDF2F7")));
+        painter.setBrush(token.panel);
         painter.drawRoundedRect(
             track,
             2,
@@ -789,8 +789,7 @@ void AddressSpaceView::paintEvent(QPaintEvent* event)
             pageSpanRect(pageIndex);
         if (spanRectangle.isValid()) {
             painter.setPen(Qt::NoPen);
-            painter.setBrush(
-                QColor(QStringLiteral("#DCE6F1")));
+            painter.setBrush(token.selection);
             painter.drawRoundedRect(
                 spanRectangle.adjusted(
                     1, 1, -1, -1),
@@ -813,10 +812,10 @@ void AddressSpaceView::paintEvent(QPaintEvent* event)
             QColor fill =
                 block.conflicting ||
                         block.outsidePageRange
-                    ? QColor(QStringLiteral("#B3261E"))
+                    ? token.diagnosticError
                     : (block.id == selectedBlockId_
-                           ? QColor(QStringLiteral("#70AD47"))
-                           : QColor(QStringLiteral("#4472C4")));
+                           ? token.success
+                           : token.selectionStrong);
             if (hoveredPage_ ==
                     static_cast<int>(pageIndex) &&
                 hoveredBlock_ ==
@@ -828,8 +827,8 @@ void AddressSpaceView::paintEvent(QPaintEvent* event)
             painter.setPen(
                 QPen(
                     selectedBlock
-                        ? QColor(QStringLiteral("#1F4E2B"))
-                        : QColor(QStringLiteral("#FFFFFF")),
+                        ? token.text
+                        : token.onAccent,
                     selectedBlock ? 2 : 1,
                     block.declaredExtent
                         ? Qt::SolidLine
@@ -841,7 +840,7 @@ void AddressSpaceView::paintEvent(QPaintEvent* event)
                 2);
             if (rectangle.width() >= 36 &&
                 rectangle.height() >= 12) {
-                painter.setPen(Qt::white);
+                painter.setPen(token.onAccent);
                 const QString labelText =
                     block.conflicting ||
                             block.outsidePageRange
@@ -864,8 +863,7 @@ void AddressSpaceView::paintEvent(QPaintEvent* event)
 
     const QRect lastTrack =
         trackRect(pages_.size() - 1);
-    painter.setPen(
-        QColor(QStringLiteral("#526579")));
+    painter.setPen(token.mutedText);
     const QRect scaleLine(
         lastTrack.left(),
         height() - 18,
@@ -886,7 +884,7 @@ void AddressSpaceView::paintEvent(QPaintEvent* event)
     if (hasFocus()) {
         painter.setPen(
             QPen(
-                palette().highlight().color(),
+                token.focus,
                 2,
                 Qt::DashLine));
         painter.setBrush(Qt::NoBrush);

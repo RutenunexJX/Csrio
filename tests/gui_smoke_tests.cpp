@@ -68,6 +68,7 @@
 #include <QScrollBar>
 #include <QSignalBlocker>
 #include <QSplitter>
+#include <QSplitterHandle>
 #include <QStandardItemModel>
 #include <QSignalSpy>
 #include <QStringList>
@@ -136,6 +137,9 @@ class GuiSmokeTests final : public QObject {
 private slots:
     void init();
     void appliesWorkbookTheme();
+    void structuresCompetitionShellResponsively();
+    void filtersDiagnosticsBySeverityAndSource();
+    void boundsInvalidPersistedSplitterState();
     void parsesStartupProjectArguments();
     void startsWithCleanNoProjectState();
     void createsWorkbenchFirstProject();
@@ -1015,24 +1019,453 @@ void GuiSmokeTests::init()
 
 void GuiSmokeTests::appliesWorkbookTheme()
 {
-    if (QApplication::platformName() ==
-            QStringLiteral("offscreen") ||
-        QApplication::platformName() ==
-            QStringLiteral("minimal")) {
-        QSKIP(
-            "The headless Qt platform cannot safely polish the full visual theme.");
-    }
-    WorkbenchTheme::apply(*qApp);
+    const auto& light =
+        WorkbenchTheme::tokens(
+            WorkbenchTheme::Mode::light);
+    const auto& dark =
+        WorkbenchTheme::tokens(
+            WorkbenchTheme::Mode::dark);
+    QCOMPARE(light.application,
+             QColor(QStringLiteral("#F3F6FA")));
+    QCOMPARE(light.canvas,
+             QColor(QStringLiteral("#FFFFFF")));
+    QCOMPARE(light.focus,
+             QColor(QStringLiteral("#0B73C9")));
+    QCOMPARE(dark.application,
+             QColor(QStringLiteral("#111827")));
+    QCOMPARE(dark.text,
+             QColor(QStringLiteral("#E5EDF7")));
+    QVERIFY(light.canvas != dark.canvas);
+    QVERIFY(light.diagnosticError !=
+            light.diagnosticWarning);
+    QVERIFY(dark.rtlSynced !=
+            dark.rtlConflict);
+    const QString lightSheet =
+        WorkbenchTheme::styleSheet(
+            WorkbenchTheme::Mode::light);
+    const QString darkSheet =
+        WorkbenchTheme::styleSheet(
+            WorkbenchTheme::Mode::dark);
+    QVERIFY(!lightSheet.contains(
+        QStringLiteral("{{")));
+    QVERIFY(!darkSheet.contains(
+        QStringLiteral("{{")));
+    QVERIFY(lightSheet.contains(
+        QStringLiteral(
+            "QSplitter::handle:focus")));
+    QVERIFY(lightSheet.contains(
+        QStringLiteral(
+            "QAbstractItemView:focus")));
+    QVERIFY(darkSheet.contains(
+        QStringLiteral("#79C0FF")));
+}
 
-    QCOMPARE(qApp->palette().color(QPalette::Window), QColor(QStringLiteral("#F4F7FB")));
-    QCOMPARE(qApp->palette().color(QPalette::Base), QColor(QStringLiteral("#FFF9E6")));
-    QCOMPARE(qApp->palette().color(QPalette::Highlight), QColor(QStringLiteral("#DCE6F1")));
-    QCOMPARE(qApp->font().pointSizeF(), 10.0);
-    QCOMPARE(qApp->font().weight(), QFont::Normal);
-    QVERIFY(qApp->styleSheet().contains(QStringLiteral("#17365D")));
-    QVERIFY(qApp->styleSheet().contains(QStringLiteral("#C6D2E1")));
-    QVERIFY(qApp->styleSheet().contains(QStringLiteral("font-weight: 600")));
-    QVERIFY(!qApp->styleSheet().contains(QStringLiteral("font-weight: 700")));
+void GuiSmokeTests::structuresCompetitionShellResponsively()
+{
+    SettingsScope settingsScope(
+        QStringLiteral(
+            "CompetitionShellTest"));
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest =
+        directory.filePath(
+            QStringLiteral(
+                "competition.regmap.yaml"));
+    createTwoRegisterProject(manifest);
+
+    MainWindow window;
+    QVERIFY(window.openProjectPath(manifest));
+    window.resize(1440, 900);
+    window.show();
+    QTest::qWait(50);
+    QCOMPARE(window.size(),
+             QSize(1440, 900));
+
+    auto* controller =
+        window.findChild<ProjectController*>();
+    auto* pageHeader =
+        window.findChild<QWidget*>(
+            QStringLiteral("pageHeader"));
+    auto* projectTitle =
+        window.findChild<QLabel*>(
+            QStringLiteral(
+                "projectTitleLabel"));
+    auto* projectPath =
+        window.findChild<QLabel*>(
+            QStringLiteral(
+                "projectPathLabel"));
+    auto* fileState =
+        window.findChild<QLabel*>(
+            QStringLiteral(
+                "fileStateBadge"));
+    auto* syncState =
+        window.findChild<QLabel*>(
+            QStringLiteral(
+                "syncStateBadge"));
+    auto* generate =
+        window.findChild<QToolButton*>(
+            QStringLiteral(
+                "generateButton"));
+    auto* synchronize =
+        window.findChild<QToolButton*>(
+            QStringLiteral(
+                "synchronizeButton"));
+    auto* save =
+        window.findChild<QToolButton*>(
+            QStringLiteral(
+                "saveSyncButton"));
+    auto* editor =
+        window.findChild<QSplitter*>(
+            QStringLiteral(
+                "editorSplitter"));
+    auto* workspace =
+        window.findChild<QSplitter*>(
+            QStringLiteral(
+                "workspaceSplitter"));
+    auto* registers =
+        window.findChild<QTableView*>(
+            QStringLiteral(
+                "registerView"));
+    auto* fields =
+        window.findChild<QTableView*>(
+            QStringLiteral(
+                "fieldView"));
+    auto* summary =
+        window.findChild<QLabel*>(
+            QStringLiteral(
+                "selectedFieldSummaryLabel"));
+    auto* pageDescription =
+        window.findChild<QLineEdit*>(
+            QStringLiteral(
+                "pageDescriptionEdit"));
+    QVERIFY(pageHeader != nullptr);
+    QVERIFY(controller != nullptr);
+    QVERIFY(projectTitle != nullptr);
+    QVERIFY(projectPath != nullptr);
+    QVERIFY(fileState != nullptr);
+    QVERIFY(syncState != nullptr);
+    QVERIFY(generate != nullptr);
+    QVERIFY(synchronize != nullptr);
+    QVERIFY(save != nullptr);
+    QVERIFY(editor != nullptr);
+    QVERIFY(workspace != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(fields != nullptr);
+    QVERIFY(summary != nullptr);
+    QVERIFY(pageDescription != nullptr);
+    QCOMPARE(projectTitle->text(),
+             QStringLiteral("GUI Workspace"));
+    QVERIFY(projectPath->isVisible());
+    QVERIFY(syncState->isVisible());
+    QCOMPARE(fileState->text(),
+             QStringLiteral("Saved"));
+    QCOMPARE(fileState->property("state")
+                 .toString(),
+             QStringLiteral("saved"));
+    QVERIFY(!syncState->text().isEmpty());
+    QCOMPARE(editor->orientation(),
+             Qt::Horizontal);
+    QVERIFY(pageDescription->isVisible());
+    for (QToolButton* action :
+         {generate, synchronize, save}) {
+        QVERIFY(action->width() >=
+                action->minimumWidth());
+        QVERIFY(action->width() >=
+                action->sizeHint().width());
+    }
+
+    Q_EMIT registers->clicked(
+        registers->model()->index(0, 5));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fields->isVisible(), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        summary->isVisible(), 2000);
+    QVERIFY(!pageDescription->isVisible());
+    QVERIFY(summary->text().contains(
+        QStringLiteral("READY")));
+    QVERIFY(summary->text().contains(
+        QStringLiteral("[0:0]")));
+
+    window.resize(960, 720);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        editor->orientation(),
+        Qt::Vertical, 2000);
+    QCOMPARE(window.size(),
+             QSize(960, 720));
+    QVERIFY(!projectPath->isVisible());
+    QVERIFY(!pageDescription->isVisible());
+    QVERIFY(fileState->isVisible());
+    QVERIFY(!syncState->isVisible());
+    QVERIFY(generate->isVisible());
+    QVERIFY(synchronize->isVisible());
+    QVERIFY(save->isVisible());
+    QVERIFY(summary->isVisible());
+    const QList<int> workspaceSizes =
+        workspace->sizes();
+    const QList<int> editorSizes =
+        editor->sizes();
+    QCOMPARE(workspaceSizes.size(), 2);
+    QCOMPARE(editorSizes.size(), 2);
+    QVERIFY(workspaceSizes[0] >= 190);
+    QVERIFY(workspaceSizes[1] >= 360);
+    QVERIFY(editorSizes[0] >= 150);
+    QVERIFY(editorSizes[1] >= 150);
+    for (QWidget* action :
+         {static_cast<QWidget*>(generate),
+          static_cast<QWidget*>(synchronize),
+          static_cast<QWidget*>(save)}) {
+        const QRect actionRect(
+            action->mapTo(pageHeader,
+                          QPoint(0, 0)),
+            action->size());
+        QVERIFY(pageHeader->rect().contains(
+            actionRect));
+    }
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral(
+            "Test compact dirty state"),
+        [](regmap::Workspace& workspace) {
+            if (!workspace.addressSpaces
+                     .empty()) {
+                workspace.addressSpaces
+                    .front()
+                    .description =
+                    "Unsaved compact state";
+            }
+        }));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fileState->property("state")
+            .toString(),
+        QStringLiteral("dirty"),
+        2000);
+    QVERIFY(fileState->text().startsWith(
+        QStringLiteral("Dirty · ")));
+    const QRect fileStateRect(
+        fileState->mapTo(pageHeader,
+                         QPoint(0, 0)),
+        fileState->size());
+    for (QWidget* action :
+         {static_cast<QWidget*>(generate),
+          static_cast<QWidget*>(synchronize),
+          static_cast<QWidget*>(save)}) {
+        const QRect actionRect(
+            action->mapTo(pageHeader,
+                          QPoint(0, 0)),
+            action->size());
+        QVERIFY(!fileStateRect.intersects(
+            actionRect));
+    }
+    controller->undo();
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fileState->property("state")
+            .toString(),
+        QStringLiteral("saved"),
+        2000);
+
+    makeGeneratedFilesWritable(
+        directory.path());
+}
+
+void GuiSmokeTests::filtersDiagnosticsBySeverityAndSource()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest =
+        directory.filePath(
+            QStringLiteral(
+                "diagnostics.regmap.yaml"));
+    createTwoRegisterProject(manifest);
+
+    MainWindow window;
+    QVERIFY(window.openProjectPath(manifest));
+    window.resize(1440, 900);
+    window.show();
+    QTest::qWait(50);
+    auto* controller =
+        window.findChild<ProjectController*>();
+    auto* problems =
+        window.findChild<QTableView*>(
+            QStringLiteral(
+                "problemsView"));
+    auto* filter =
+        window.findChild<QLineEdit*>(
+            QStringLiteral(
+                "diagnosticsFilterEdit"));
+    auto* severity =
+        window.findChild<QComboBox*>(
+            QStringLiteral(
+                "diagnosticsSeverityFilter"));
+    auto* summary =
+        window.findChild<QLabel*>(
+            QStringLiteral(
+                "problemsSummaryLabel"));
+    auto* results =
+        window.findChild<QToolButton*>(
+            QStringLiteral(
+                "resultsToggleButton"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(problems != nullptr);
+    QVERIFY(filter != nullptr);
+    QVERIFY(severity != nullptr);
+    QVERIFY(summary != nullptr);
+    QVERIFY(results != nullptr);
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral(
+            "Create diagnostic fixture"),
+        [](regmap::Workspace& workspace) {
+            auto* control =
+                regmap::findRegister(
+                    workspace,
+                    "reg-control");
+            QVERIFY(control != nullptr);
+            control->offset = 0;
+        }));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        problems->model()->rowCount() > 0,
+        2000);
+    QVERIFY(!problems->isColumnHidden(4));
+    bool hasSource = false;
+    for (int row = 0;
+         row < problems->model()->rowCount();
+         ++row) {
+        hasSource = hasSource ||
+            !problems->model()
+                 ->index(row, 4)
+                 .data()
+                 .toString()
+                 .isEmpty();
+    }
+    QVERIFY(hasSource);
+
+    severity->setCurrentText(
+        QStringLiteral("Errors"));
+    filter->setText(
+        QStringLiteral("RM3024"));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        problems->model()->rowCount() > 0,
+        2000);
+    for (int row = 0;
+         row < problems->model()->rowCount();
+         ++row) {
+        QCOMPARE(problems->model()
+                     ->index(row, 0)
+                     .data()
+                     .toString(),
+                 QStringLiteral("Error"));
+        QCOMPARE(problems->model()
+                     ->index(row, 1)
+                     .data()
+                     .toString(),
+                 QStringLiteral("RM3024"));
+    }
+    filter->setText(
+        QStringLiteral(
+            "no-diagnostic-can-match"));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        problems->model()->rowCount(),
+        0, 2000);
+    QVERIFY(results->isEnabled());
+    QVERIFY(summary->text().contains(
+        QStringLiteral("0 shown")));
+    filter->clear();
+    severity->setCurrentIndex(0);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        problems->model()->rowCount() > 0,
+        2000);
+
+    makeGeneratedFilesWritable(
+        directory.path());
+}
+
+void GuiSmokeTests::boundsInvalidPersistedSplitterState()
+{
+    SettingsScope settingsScope(
+        QStringLiteral(
+            "InvalidSplitterStateTest"));
+    QSettings settings;
+    settings.setValue(
+        QStringLiteral(
+            "ui/v1/mainWindowGeometry"),
+        QByteArrayLiteral("invalid geometry"));
+    settings.setValue(
+        QStringLiteral(
+            "ui/v1/workspaceSplitter"),
+        QByteArrayLiteral("invalid splitter"));
+    settings.setValue(
+        QStringLiteral(
+            "ui/v1/editorSplitter"),
+        QByteArrayLiteral("invalid splitter"));
+    settings.setValue(
+        QStringLiteral(
+            "ui/v1/resultsSplitter"),
+        QByteArrayLiteral("invalid splitter"));
+    settings.setValue(
+        QStringLiteral("ui/v2/theme"),
+        QStringLiteral("dark"));
+    settings.sync();
+    QCOMPARE(WorkbenchTheme::preferredMode(),
+             WorkbenchTheme::Mode::dark);
+
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest =
+        directory.filePath(
+            QStringLiteral(
+                "splitters.regmap.yaml"));
+    createTwoRegisterProject(manifest);
+    MainWindow window;
+    QVERIFY(window.openProjectPath(manifest));
+    window.resize(960, 720);
+    window.show();
+    QTest::qWait(50);
+    auto* workspace =
+        window.findChild<QSplitter*>(
+            QStringLiteral(
+                "workspaceSplitter"));
+    auto* editor =
+        window.findChild<QSplitter*>(
+            QStringLiteral(
+                "editorSplitter"));
+    auto* results =
+        window.findChild<QSplitter*>(
+            QStringLiteral(
+                "resultsSplitter"));
+    auto* registers =
+        window.findChild<QTableView*>(
+            QStringLiteral(
+                "registerView"));
+    auto* resultsToggle =
+        window.findChild<QToolButton*>(
+            QStringLiteral(
+                "resultsToggleButton"));
+    QVERIFY(workspace != nullptr);
+    QVERIFY(editor != nullptr);
+    QVERIFY(results != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(resultsToggle != nullptr);
+    Q_EMIT registers->clicked(
+        registers->model()->index(0, 5));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        editor->widget(1)->isVisible(),
+        2000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        editor->sizes()[0] >= 150 &&
+            editor->sizes()[1] >= 150,
+        2000);
+    QVERIFY(workspace->sizes()[0] >= 190);
+    QVERIFY(workspace->sizes()[1] >= 360);
+    resultsToggle->click();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        results->widget(1)->isVisible(),
+        2000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        results->sizes()[0] >= 260 &&
+            results->sizes()[1] >= 150,
+        2000);
+
+    makeGeneratedFilesWritable(
+        directory.path());
 }
 
 void GuiSmokeTests::parsesStartupProjectArguments()
@@ -1344,7 +1777,7 @@ void GuiSmokeTests::parsesStartupProjectArguments()
     QVERIFY(
         versionOutput.contains(
             QStringLiteral(
-                "Register Map Workbench 0.1.0")));
+                "Register Map Workbench 0.2.0")));
 
     const auto [errorFinished,
                 errorExit,
@@ -2504,7 +2937,14 @@ void GuiSmokeTests::opensProjectAndPopulatesEditableViews()
         QCOMPARE(
             splitter->childrenCollapsible(),
             splitter->objectName() == QStringLiteral("resultsSplitter"));
-        QCOMPARE(splitter->handleWidth(), 4);
+        QCOMPARE(splitter->handleWidth(), 8);
+        QVERIFY(splitter->handle(1) != nullptr);
+        QCOMPARE(
+            splitter->handle(1)->focusPolicy(),
+            Qt::StrongFocus);
+        QVERIFY(!splitter->handle(1)
+                     ->accessibleName()
+                     .isEmpty());
     }
 
     makeGeneratedFilesWritable(directory.path());
@@ -2973,8 +3413,20 @@ void GuiSmokeTests::keepsEnumEditorCompact()
          enumContext->height());
     QVERIFY(enumGap >= 0);
     QVERIFY(enumGap <= 8);
-    QVERIFY(fieldPanel->height() <=
-            enumPanel->height() + 2);
+    QCOMPARE(editor->orientation(),
+             Qt::Horizontal);
+    QVERIFY(fieldPanel->height() >=
+            enumPanel->height());
+
+    window.resize(960, 720);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        editor->orientation(),
+        Qt::Vertical, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fieldPanel->height() <=
+            fieldHeader->height() +
+                enumPanel->height() + 16,
+        2000);
 
     registers->setCurrentIndex(openFields);
     registers->selectionModel()->select(
@@ -3316,12 +3768,31 @@ void GuiSmokeTests::navigatesHierarchyAndOpensFieldsExplicitly()
             toolbarCommands.push_back(action->text());
         }
     }
-    QCOMPARE(toolbarCommands.size(), 3);
+    QCOMPARE(toolbarCommands.size(), 2);
     QVERIFY(std::ranges::any_of(toolbarCommands,
                                [](const QString& text) { return text.startsWith("New Project"); }));
     QVERIFY(std::ranges::any_of(toolbarCommands,
                                [](const QString& text) { return text.startsWith("Open Project"); }));
-    QVERIFY(toolbarCommands.contains(QStringLiteral("Save && Sync")));
+    QVERIFY(!toolbarCommands.contains(
+        QStringLiteral("Save && Sync")));
+    auto* saveSyncButton =
+        window.findChild<QToolButton*>(
+            QStringLiteral(
+                "saveSyncButton"));
+    auto* generateButton =
+        window.findChild<QToolButton*>(
+            QStringLiteral(
+                "generateButton"));
+    auto* synchronizeButton =
+        window.findChild<QToolButton*>(
+            QStringLiteral(
+                "synchronizeButton"));
+    QVERIFY(saveSyncButton != nullptr);
+    QVERIFY(generateButton != nullptr);
+    QVERIFY(synchronizeButton != nullptr);
+    QVERIFY(saveSyncButton->isVisible());
+    QCOMPARE(saveSyncButton->text(),
+             QStringLiteral("Save + Sync"));
     QVERIFY(openXlsxButton->isVisible());
     QCOMPARE(
         openXlsxButton->text(),
@@ -4451,7 +4922,9 @@ void GuiSmokeTests::placesNewHierarchyObjectsWithoutAddressErrors()
         }));
     QTRY_VERIFY_WITH_TIMEOUT(
         selectHierarchyObject(QStringLiteral("space-main")), 2000);
-    QCOMPARE(add->text(), QStringLiteral("+ Block"));
+    QCOMPARE(add->text(), QStringLiteral("+"));
+    QCOMPARE(add->accessibleName(),
+             QStringLiteral("Add Register Block"));
     add->click();
     QTRY_VERIFY_WITH_TIMEOUT(visibleEditor(hierarchy) != nullptr, 2000);
     QTest::keyClick(visibleEditor(hierarchy), Qt::Key_Escape);
@@ -4484,7 +4957,9 @@ void GuiSmokeTests::placesNewHierarchyObjectsWithoutAddressErrors()
         }));
     QTRY_VERIFY_WITH_TIMEOUT(
         selectHierarchyObject(QStringLiteral("space-main")), 2000);
-    QCOMPARE(add->text(), QStringLiteral("+ Block"));
+    QCOMPARE(add->text(), QStringLiteral("+"));
+    QCOMPARE(add->accessibleName(),
+             QStringLiteral("Add Register Block"));
     add->click();
     QTRY_VERIFY_WITH_TIMEOUT(visibleEditor(hierarchy) != nullptr, 2000);
     const QString smallBlockId =
@@ -4518,7 +4993,9 @@ void GuiSmokeTests::placesNewHierarchyObjectsWithoutAddressErrors()
         QStringLiteral("no free address range")));
 
     QVERIFY(selectHierarchyObject(smallBlockId));
-    QCOMPARE(add->text(), QStringLiteral("+ Register"));
+    QCOMPARE(add->text(), QStringLiteral("+"));
+    QCOMPARE(add->accessibleName(),
+             QStringLiteral("Add Register"));
     add->click();
     QTRY_VERIFY_WITH_TIMEOUT(visibleEditor(registers) != nullptr, 2000);
     QTest::keyClick(visibleEditor(registers), Qt::Key_Escape);
@@ -13735,7 +14212,13 @@ void GuiSmokeTests::editsTagsAndAccessFromDoubleClick()
     QVERIFY(search != nullptr);
     QVERIFY(add != nullptr);
     QVERIFY(tags != nullptr);
-    QVERIFY(tags->styleSheet().contains(QStringLiteral("item:hover")));
+    QVERIFY(tags->styleSheet().isEmpty());
+    QVERIFY(
+        WorkbenchTheme::styleSheet(
+            WorkbenchTheme::Mode::light)
+            .contains(
+                QStringLiteral(
+                    "QAbstractItemView::item:hover")));
 
     QListWidgetItem* control = nullptr;
     QListWidgetItem* existing = nullptr;
@@ -15824,7 +16307,7 @@ void GuiSmokeTests::navigatesProblemsWithKeyboard()
     QVERIFY(
         problems->isColumnHidden(3));
     QVERIFY(
-        problems->isColumnHidden(4));
+        !problems->isColumnHidden(4));
     QCOMPARE(
         problems->horizontalHeader()
             ->sectionResizeMode(2),
@@ -17606,7 +18089,7 @@ void GuiSmokeTests::searchesAndNavigatesProblems()
         }));
     QTRY_VERIFY_WITH_TIMEOUT(problems->model()->rowCount() > 0, 2000);
     QVERIFY(problems->isColumnHidden(3));
-    QVERIFY(problems->isColumnHidden(4));
+    QVERIFY(!problems->isColumnHidden(4));
     QVERIFY(problemsSummary->text().contains(
         QStringLiteral("error")));
     QCOMPARE(
@@ -19034,14 +19517,10 @@ void GuiSmokeTests::preservesNavigatedObjectCommandContext()
         window.findChild<QTableView*>(
             QStringLiteral(
                 "registerView"));
-    auto* toolbar =
-        window.findChild<QToolBar*>(
+    auto* neutralControl =
+        window.findChild<QToolButton*>(
             QStringLiteral(
-                "projectToolBar"));
-    auto* saveAction =
-        window.findChild<QAction*>(
-            QStringLiteral(
-                "saveSyncAction"));
+                "saveSyncButton"));
     auto* activeContext =
         window.findChild<QLabel*>(
             QStringLiteral(
@@ -19053,14 +19532,9 @@ void GuiSmokeTests::preservesNavigatedObjectCommandContext()
     QVERIFY(hierarchy != nullptr);
     QVERIFY(search != nullptr);
     QVERIFY(registers != nullptr);
-    QVERIFY(toolbar != nullptr);
-    QVERIFY(saveAction != nullptr);
+    QVERIFY(neutralControl != nullptr);
     QVERIFY(activeContext != nullptr);
     QVERIFY(copyAction != nullptr);
-    QWidget* neutralControl =
-        toolbar->widgetForAction(
-            saveAction);
-    QVERIFY(neutralControl != nullptr);
     QVERIFY(neutralControl->isEnabled());
 
     const QModelIndex page =
@@ -24261,7 +24735,9 @@ void GuiSmokeTests::createsFirstRegisterWithOneAction()
     QVERIFY(emptyState != nullptr);
     QVERIFY(emptyTitle != nullptr);
     QVERIFY(emptyPrimary != nullptr);
-    QCOMPARE(add->text(), QStringLiteral("+ First Register"));
+    QCOMPARE(add->text(), QStringLiteral("+"));
+    QCOMPARE(add->accessibleName(),
+             QStringLiteral("Create First Register"));
     QCOMPARE(registers->model()->rowCount(), 1);
     QVERIFY(emptyState->isVisible());
     QCOMPARE(emptyTitle->text(),
@@ -24300,7 +24776,9 @@ void GuiSmokeTests::createsFirstRegisterWithOneAction()
         controller->workspace()->addressSpaces.empty(),
         2000);
     QTRY_COMPARE_WITH_TIMEOUT(
-        add->text(), QStringLiteral("+ First Register"), 2000);
+        add->text(), QStringLiteral("+"), 2000);
+    QCOMPARE(add->accessibleName(),
+             QStringLiteral("Create First Register"));
     QVERIFY(!controller->isDirty());
 
     makeGeneratedFilesWritable(directory.path());

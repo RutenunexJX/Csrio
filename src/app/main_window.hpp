@@ -29,6 +29,7 @@ class QMenu;
 class QPoint;
 class QModelIndex;
 class QPushButton;
+class QResizeEvent;
 class QSplitter;
 class QScrollArea;
 class QStandardItem;
@@ -86,6 +87,10 @@ private:
     QCompleter* tagFilterCompleter_{nullptr};
     QToolButton* clearTagFilterButton_{nullptr};
     QLabel* registerCountLabel_{nullptr};
+    QLabel* fixedAddressLegend_{nullptr};
+    QLabel* registerTagFilterLabel_{nullptr};
+    QLabel* pageDescriptionLabel_{nullptr};
+    QLabel* blockDescriptionLabel_{nullptr};
     QLabel* registerSelectionLabel_{nullptr};
     QWidget* registerFeedbackBar_{nullptr};
     QLabel* registerFeedbackLabel_{nullptr};
@@ -101,6 +106,7 @@ private:
     QWidget* fieldPanel_{nullptr};
     QWidget* fieldHeaderBar_{nullptr};
     QLabel* fieldContextLabel_{nullptr};
+    QLabel* selectedFieldSummaryLabel_{nullptr};
     QLabel* fieldSelectionLabel_{nullptr};
     QWidget* fieldFeedbackBar_{nullptr};
     QLabel* fieldFeedbackLabel_{nullptr};
@@ -117,9 +123,18 @@ private:
     QTableView* generatedView_{nullptr};
     QTableView* diffView_{nullptr};
     QLabel* problemsSummaryLabel_{nullptr};
+    QLineEdit* diagnosticsFilterEdit_{nullptr};
+    QComboBox* diagnosticsSeverityFilter_{nullptr};
     QSplitter* workspaceSplitter_{nullptr};
     QSplitter* editorSplitter_{nullptr};
     QSplitter* resultsSplitter_{nullptr};
+    QWidget* pageHeader_{nullptr};
+    QLabel* projectTitleLabel_{nullptr};
+    QLabel* projectPathLabel_{nullptr};
+    QLabel* fileStateLabel_{nullptr};
+    QToolButton* generateButton_{nullptr};
+    QToolButton* synchronizeButton_{nullptr};
+    QToolButton* saveSyncButton_{nullptr};
     QLineEdit* globalSearchEdit_{nullptr};
     QLabel* searchResultLabel_{nullptr};
     QLabel* activeContextLabel_{nullptr};
@@ -169,6 +184,8 @@ private:
     QAction* moveRegistersDownAction_{nullptr};
     QAction* toggleFavoriteAction_{nullptr};
     QAction* toggleResultsAction_{nullptr};
+    QAction* lightThemeAction_{nullptr};
+    QAction* darkThemeAction_{nullptr};
     QMenu* recentProjectsMenu_{nullptr};
 
     std::string selectedAddressId_;
@@ -219,7 +236,7 @@ private:
     bool fieldColumnsInitialized_{false};
     bool fieldEditContextActive_{false};
     QByteArray expandedEditorSplitterState_;
-    double expandedEditorLowerFraction_{0.5};
+    double expandedEditorLowerFraction_{0.58};
     QByteArray registerHeaderState_;
     QByteArray fieldHeaderState_;
     bool discardRecoveryAfterReplacement_{false};
@@ -231,8 +248,11 @@ private:
     int searchResultIndex_{-1};
     bool suppressNextSearchReturn_{false};
     int generatedOutputsNeedingRetry_{0};
+    int totalDiagnostics_{0};
     bool resultsPanelRequested_{false};
     bool resultsPanelAutoOpenedForProblems_{false};
+    bool compactLayout_{false};
+    bool uiStateRestoreComplete_{false};
     enum class EmptyStateAction {
         none,
         newProject,
@@ -254,6 +274,11 @@ private:
     void connectSignals();
     void restoreUiState();
     void saveUiState() const;
+    void updateResponsiveLayout();
+    void ensureSafeSplitterSizes();
+    void updateProjectHeader(
+        const QString& transientState = {});
+    void updateSelectedFieldSummary();
     void updateEditorPanelMode(
         bool hasOpenFieldEditor, bool hasEnumEditor);
     [[nodiscard]] bool commitActiveEditor();
@@ -435,6 +460,7 @@ private:
     void dropEvent(QDropEvent* event) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
     void closeEvent(QCloseEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
 
     [[nodiscard]] const regmap::Register* findRegister(const std::string& id) const;
     [[nodiscard]] const regmap::AddressSpace* findAddressSpace(const std::string& id) const;
