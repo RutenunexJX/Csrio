@@ -1602,6 +1602,33 @@ public:
     }
 };
 
+class TypeEditorComboBox final : public QComboBox {
+public:
+    using QComboBox::QComboBox;
+
+    void showPopup() override
+    {
+        setProperty("typePopupAutoOpened", true);
+        if (QApplication::platformName() == QLatin1String("offscreen")) {
+            return;
+        }
+        QComboBox::showPopup();
+    }
+
+protected:
+    void showEvent(QShowEvent* event) override
+    {
+        QComboBox::showEvent(event);
+        QTimer::singleShot(
+            0, this,
+            [this] {
+                if (isVisible()) {
+                    showPopup();
+                }
+            });
+    }
+};
+
 class TypeItemDelegate final : public QStyledItemDelegate {
 public:
     explicit TypeItemDelegate(
@@ -1618,7 +1645,7 @@ public:
     {
         Q_UNUSED(option)
         Q_UNUSED(index)
-        auto* editor = new QComboBox(parent);
+        auto* editor = new TypeEditorComboBox(parent);
         editor->setObjectName(QStringLiteral("typeEditor"));
         editor->setEditable(true);
         editor->setInsertPolicy(QComboBox::NoInsert);
@@ -1632,15 +1659,25 @@ public:
         connect(editor, &QComboBox::textActivated, editor,
                 [delegate, editor] {
                     const QPointer<QComboBox> guardedEditor(editor);
+                    editor->hidePopup();
                     QTimer::singleShot(
                         0, delegate,
                         [delegate, guardedEditor] {
-                            if (guardedEditor != nullptr &&
-                                guardedEditor->isVisible()) {
-                                Q_EMIT delegate->closeEditor(guardedEditor);
+                            if (guardedEditor == nullptr ||
+                                !guardedEditor->isVisible()) {
+                                return;
+                            }
+                            Q_EMIT delegate->commitData(
+                                guardedEditor.data());
+                        });
+                    QTimer::singleShot(
+                        1, delegate,
+                        [delegate, guardedEditor] {
+                            if (guardedEditor != nullptr) {
+                                Q_EMIT delegate->closeEditor(
+                                    guardedEditor.data());
                             }
                         });
-                    Q_EMIT delegate->commitData(editor);
                 });
         return editor;
     }

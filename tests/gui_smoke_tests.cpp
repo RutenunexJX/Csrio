@@ -18,6 +18,7 @@
 
 #include <QAction>
 #include <QAbstractButton>
+#include <QAbstractItemView>
 #include <QApplication>
 #include <QByteArray>
 #include <QClipboard>
@@ -13796,15 +13797,23 @@ void GuiSmokeTests::editsTypesWithPresetAndCustomChoices()
         registers->visualRect(registerType).center());
     QTRY_VERIFY_WITH_TIMEOUT(
         visibleTypeEditor(registers) != nullptr, 2000);
-    auto* registerEditor = visibleTypeEditor(registers);
+    QPointer<QComboBox> registerEditor = visibleTypeEditor(registers);
     QVERIFY(registerEditor->isEditable());
     QCOMPARE(registerEditor->currentText(), QStringLiteral("uint32"));
     QVERIFY(registerEditor->findText(QStringLiteral("bool")) >= 0);
     QVERIFY(registerEditor->findText(QStringLiteral("field")) >= 0);
     QVERIFY(registerEditor->findText(QStringLiteral("reserved")) >= 0);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        registerEditor != nullptr &&
+            registerEditor->property("typePopupAutoOpened").toBool(),
+        2000);
     registerEditor->setCurrentText(QStringLiteral("uint16"));
     Q_EMIT registerEditor->textActivated(
         registerEditor->currentText());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        visibleTypeEditor(registers) == nullptr, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        QApplication::activePopupWidget() == nullptr, 2000);
     QTRY_COMPARE_WITH_TIMEOUT(
         registers->model()->index(
             rowNamed(registers, QStringLiteral("CONTROL")), 4)
@@ -13895,11 +13904,15 @@ void GuiSmokeTests::editsTypesWithPresetAndCustomChoices()
         fields->visualRect(fieldType).center());
     QTRY_VERIFY_WITH_TIMEOUT(
         visibleTypeEditor(fields) != nullptr, 2000);
-    auto* fieldEditor = visibleTypeEditor(fields);
+    QPointer<QComboBox> fieldEditor = visibleTypeEditor(fields);
     QCOMPARE(fieldEditor->currentText(), QStringLiteral("bool"));
     QVERIFY(fieldEditor->findText(QStringLiteral("uint32")) >= 0);
     QVERIFY(fieldEditor->findText(QStringLiteral("field")) >= 0);
-    QTest::keyClick(fieldEditor, Qt::Key_Escape);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fieldEditor != nullptr &&
+            fieldEditor->property("typePopupAutoOpened").toBool(),
+        2000);
+    QTest::keyPress(fieldEditor.data(), Qt::Key_Escape);
     QTRY_VERIFY_WITH_TIMEOUT(
         visibleTypeEditor(fields) == nullptr, 2000);
     QCOMPARE(fields->model()->index(readyRow, 5).data().toString(),
