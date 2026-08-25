@@ -1,8 +1,17 @@
 # RegMapWorkbench UI Implementation Plan
 
-Status: active
+Status: completed
 
 Date: 2026-08-25
+
+Delivery evidence:
+
+- Implementation commit: `2d68a6e`.
+- Debug and Release CTest: 4/4 passed in each configuration, including 166 GUI
+  assertions.
+- Visual verification: 16 deterministic screenshots covering light/dark,
+  960x720 and 1440x900, and 100/125/150/200% DPI scaling.
+- Packaging was not run and no package was generated.
 
 ## Information architecture
 
