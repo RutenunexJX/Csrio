@@ -13807,6 +13807,15 @@ void GuiSmokeTests::editsTypesWithPresetAndCustomChoices()
         registerEditor != nullptr &&
             registerEditor->property("typePopupAutoOpened").toBool(),
         2000);
+    QTest::qWait(120);
+    QVERIFY(registerEditor != nullptr);
+    QVERIFY(registerEditor->isVisible());
+    QCOMPARE(registerEditor->currentText(), QStringLiteral("uint32"));
+    QCOMPARE(registers->model()->index(controlRow, 4).data().toString(),
+             QStringLiteral("uint32"));
+    if (QApplication::platformName() != QLatin1String("offscreen")) {
+        QTRY_VERIFY_WITH_TIMEOUT(registerEditor->view()->isVisible(), 2000);
+    }
     registerEditor->setCurrentText(QStringLiteral("uint16"));
     Q_EMIT registerEditor->textActivated(
         registerEditor->currentText());
@@ -13912,11 +13921,21 @@ void GuiSmokeTests::editsTypesWithPresetAndCustomChoices()
         fieldEditor != nullptr &&
             fieldEditor->property("typePopupAutoOpened").toBool(),
         2000);
+    QTest::qWait(120);
+    QVERIFY(fieldEditor != nullptr);
+    QVERIFY(fieldEditor->isVisible());
+    QCOMPARE(fieldEditor->currentText(), QStringLiteral("bool"));
+    QCOMPARE(fields->model()->index(readyRow, 5).data().toString(),
+             QStringLiteral("bool"));
+    if (QApplication::platformName() != QLatin1String("offscreen")) {
+        QTRY_VERIFY_WITH_TIMEOUT(fieldEditor->view()->isVisible(), 2000);
+    }
     QTest::keyPress(fieldEditor.data(), Qt::Key_Escape);
     QTRY_VERIFY_WITH_TIMEOUT(
         visibleTypeEditor(fields) == nullptr, 2000);
     QCOMPARE(fields->model()->index(readyRow, 5).data().toString(),
              QStringLiteral("bool"));
+    QVERIFY(!controller->isDirty());
 
     makeGeneratedFilesWritable(directory.path());
 }
