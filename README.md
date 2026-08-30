@@ -629,6 +629,11 @@ See [architecture.md](docs/architecture.md), [manifest-schema.md](docs/manifest-
 
 RegMapWorkbench provides `regmap://project?...` resources through
 `suite-app/v1`. A URI may identify the whole project or a stable object ID.
+Register-focused navigation also accepts
+`regmap://register/<stable-id>?file=<project>&field=<optional-field-id>`.
+The optional `field` value must belong to the addressed Register; invalid
+Register or Field IDs return an explicit provider error and never change the
+open Workbench project.
 The provider exposes `regmap.project.open` and the model Surface
 `regmap.workbench`, while project loading and object lookup remain delegated to
 the existing RegMap core.

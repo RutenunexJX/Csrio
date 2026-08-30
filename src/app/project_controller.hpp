@@ -47,6 +47,10 @@ public:
     [[nodiscard]] bool generatedArtifactIsCurrent(
         std::size_t index) const;
     [[nodiscard]] const std::vector<regmap::ModelChange>& changes() const noexcept;
+    [[nodiscard]] const std::vector<regmap::ModelChange>&
+    savedChanges() const noexcept;
+    [[nodiscard]] const std::vector<regmap::ModelChange>&
+    externalChanges() const noexcept;
     [[nodiscard]] const std::filesystem::path& manifestPath() const noexcept;
     [[nodiscard]] bool hasProjectErrors() const noexcept;
     [[nodiscard]] bool isDirty() const;
@@ -93,6 +97,7 @@ signals:
     void generationChanged();
     void editStateChanged();
     void conflictsChanged();
+    void comparisonChanged();
     void syncStatusChanged(const QString& message);
     void recoveryDraftStatusChanged(const QString& message);
     void externalProjectChangeChanged();
@@ -126,6 +131,8 @@ private:
     std::vector<regmap::Diagnostic> diagnostics_;
     std::vector<regmap::GeneratedArtifact> artifacts_;
     std::vector<regmap::ModelChange> changes_;
+    std::vector<regmap::ModelChange> savedChanges_;
+    std::vector<regmap::ModelChange> externalChanges_;
     std::vector<regmap::MergeConflict> conflicts_;
     std::optional<regmap::Workspace> baseline_;
     std::optional<regmap::Workspace> recoveryBaseWorkspace_;
@@ -142,6 +149,8 @@ private:
     void rebuildDiagnostics();
     void refreshWatchPaths();
     void notifyModelEdited();
+    void rebuildSavedChanges();
+    void refreshExternalChangesFromDisk();
     void initializeSynchronization();
     void synchronizeRtl(bool automatic, bool persistWhenClean);
     void resolveConflicts(regmap::MergePreference preference);

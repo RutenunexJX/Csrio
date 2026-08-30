@@ -219,6 +219,7 @@ private slots:
     void keepsNewRegisterVisibleUnderActiveTagFilter();
     void keepsZeroMatchTagFilterThroughUndoAndRedo();
     void insertsRegisterBetweenRows();
+    void refreshesRowsIncrementallyAndMarksInlineProblems();
     void showsUnifiedSyncStateAndGeneratedResults();
     void keepsWarningsNonBlocking();
     void navigatesProblemsWithKeyboard();
@@ -5949,6 +5950,10 @@ void GuiSmokeTests::protectsWorkbenchAndCliProjectChanges()
         window.findChild<QTableView*>(
             QStringLiteral(
                 "registerView"));
+    auto* diff =
+        window.findChild<QTableView*>(
+            QStringLiteral(
+                "diffView"));
     auto* save =
         window.findChild<QAction*>(
             QStringLiteral(
@@ -5960,6 +5965,7 @@ void GuiSmokeTests::protectsWorkbenchAndCliProjectChanges()
     QVERIFY(controller != nullptr);
     QVERIFY(hierarchy != nullptr);
     QVERIFY(registers != nullptr);
+    QVERIFY(diff != nullptr);
     QVERIFY(save != nullptr);
     QVERIFY(syncState != nullptr);
 
@@ -6104,6 +6110,17 @@ void GuiSmokeTests::protectsWorkbenchAndCliProjectChanges()
         controller->
             hasExternalProjectChange(),
         6000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        [&] {
+            for (int row = 0; row < diff->model()->rowCount(); ++row) {
+                if (diff->model()->index(row, 6).data().toString() ==
+                    QStringLiteral("Disk / CLI apply")) {
+                    return true;
+                }
+            }
+            return false;
+        }(),
+        2000);
     QVERIFY(!controller->isDirty());
     QTRY_VERIFY_WITH_TIMEOUT(
         visibleRegisterEditor() !=
@@ -15876,6 +15893,119 @@ void GuiSmokeTests::insertsRegisterBetweenRows()
         regmap::validateWorkspace(
             *controller->workspace())
             .empty());
+
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::refreshesRowsIncrementallyAndMarksInlineProblems()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest =
+        directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createTwoRegisterProject(manifest);
+
+    MainWindow window;
+    QVERIFY(window.openProjectPath(manifest));
+    window.resize(1200, 760);
+    window.show();
+    QTest::qWait(50);
+
+    auto* controller = window.findChild<ProjectController*>();
+    auto* registers =
+        window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* diff =
+        window.findChild<QTableView*>(QStringLiteral("diffView"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(registers != nullptr);
+    QVERIFY(diff != nullptr);
+
+    const auto rowForId = [registers](const QString& objectId) {
+        for (int row = 0; row < registers->model()->rowCount(); ++row) {
+            if (registers->model()
+                    ->index(row, 0)
+                    .data(Qt::UserRole + 1)
+                    .toString() == objectId) {
+                return row;
+            }
+        }
+        return -1;
+    };
+    const auto diffHasOrigin = [diff](const QString& origin) {
+        for (int row = 0; row < diff->model()->rowCount(); ++row) {
+            if (diff->model()->index(row, 6).data().toString() == origin) {
+                return true;
+            }
+        }
+        return false;
+    };
+    const qulonglong fullRefreshes =
+        window.property("fullTableRefreshCount").toULongLong();
+    const qulonglong incrementalRefreshes =
+        window.property("incrementalTableRefreshCount").toULongLong();
+    const int controlRow = rowForId(QStringLiteral("reg-control"));
+    QVERIFY(controlRow >= 0);
+
+    QVERIFY(registers->model()->setData(
+        registers->model()->index(controlRow, 11),
+        QStringLiteral("Targeted row refresh")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        regmap::findRegister(*controller->workspace(), "reg-control")
+            ->description,
+        std::string{"Targeted row refresh"}, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        window.property("incrementalTableRefreshCount").toULongLong() >
+            incrementalRefreshes,
+        2000);
+    QCOMPARE(window.property("fullTableRefreshCount").toULongLong(),
+             fullRefreshes);
+    QVERIFY(controller->isDirty());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        diffHasOrigin(QStringLiteral("Since save")), 2000);
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Create overlap for inline validation"),
+        [](regmap::Workspace& workspace) {
+            regmap::findRegister(workspace, "reg-control")->offset = 2;
+        }));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        std::ranges::any_of(
+            controller->diagnostics(),
+            [](const regmap::Diagnostic& diagnostic) {
+                return diagnostic.code == "RM3024" &&
+                    diagnostic.objectId == "reg-control";
+            }),
+        2000);
+    const auto inlineDescription = [&] {
+        const int row = rowForId(QStringLiteral("reg-control"));
+        return row < 0
+            ? QString{}
+            : registers->model()
+                  ->index(row, 2)
+                  .data(Qt::AccessibleDescriptionRole)
+                  .toString();
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(
+        inlineDescription().contains(QStringLiteral("RM3024")), 2000);
+    const int invalidRow = rowForId(QStringLiteral("reg-control"));
+    QVERIFY(invalidRow >= 0);
+    QVERIFY(registers->model()
+                ->index(invalidRow, 2)
+                .data(Qt::DecorationRole)
+                .isValid());
+
+    controller->undo();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !std::ranges::any_of(
+            controller->diagnostics(),
+            [](const regmap::Diagnostic& diagnostic) {
+                return diagnostic.code == "RM3024" &&
+                    diagnostic.objectId == "reg-control";
+            }),
+        2000);
+    controller->undo();
+    QTRY_VERIFY_WITH_TIMEOUT(!controller->isDirty(), 2000);
+    QVERIFY(controller->savedChanges().empty());
 
     makeGeneratedFilesWritable(directory.path());
 }
@@ -31382,10 +31512,16 @@ void GuiSmokeTests::keepsUndoRedoInsideActiveEditor()
 
     QSignalSpy committedEditResetSpy(
         registers->model(), &QAbstractItemModel::modelReset);
+    const qulonglong incrementalRefreshes =
+        window.property("incrementalTableRefreshCount").toULongLong();
     const QModelIndex description = registers->model()->index(0, 11);
     QVERIFY(registers->model()->setData(
         description, QStringLiteral("Committed description")));
-    QTRY_VERIFY_WITH_TIMEOUT(committedEditResetSpy.count() > 0, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        window.property("incrementalTableRefreshCount").toULongLong() >
+            incrementalRefreshes,
+        2000);
+    QCOMPARE(committedEditResetSpy.count(), 0);
     QTRY_VERIFY_WITH_TIMEOUT(controller->canUndo(), 2000);
     QTRY_COMPARE_WITH_TIMEOUT(
         QString::fromStdString(

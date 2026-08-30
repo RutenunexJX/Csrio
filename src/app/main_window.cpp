@@ -6882,6 +6882,8 @@ void MainWindow::connectSignals()
         requestProjectRefresh();
     });
     connect(&controller_, &ProjectController::diagnosticsChanged, this, [this] {
+        rebuildInlineDiagnosticIndex();
+        refreshInlineDiagnostics();
         if (modelEditInProgress_) {
             QTimer::singleShot(0, this, &MainWindow::refreshDiagnostics);
         } else {
@@ -6899,6 +6901,8 @@ void MainWindow::connectSignals()
             updateRecoveryPresentation();
         });
     connect(&controller_, &ProjectController::conflictsChanged, this, &MainWindow::refreshDiff);
+    connect(&controller_, &ProjectController::comparisonChanged,
+            this, &MainWindow::refreshDiff);
     connect(&controller_, &ProjectController::syncStatusChanged, this,
             [this](const QString& text) {
                 statusBar()->showMessage(text);
@@ -9495,9 +9499,218 @@ void MainWindow::requestProjectRefresh()
     });
 }
 
+bool MainWindow::refreshIncrementalEdit()
+{
+    const auto* workspace = controller_.workspace();
+    if (workspace == nullptr || pendingIncrementalObjectId_.empty() ||
+        pendingIncrementalProperty_.empty()) {
+        return false;
+    }
+    const auto propertyAllowed =
+        [this](std::initializer_list<std::string_view> values) {
+            return std::ranges::find(
+                       values, pendingIncrementalProperty_) != values.end();
+        };
+    const auto rowForObject = [](QStandardItemModel* model,
+                                 const std::string& objectId) {
+        if (model == nullptr) {
+            return -1;
+        }
+        for (int row = 0; row < model->rowCount(); ++row) {
+            if (model->index(row, 0)
+                    .data(objectIdRole)
+                    .toString()
+                    .toUtf8()
+                    .toStdString() == objectId) {
+                return row;
+            }
+        }
+        return -1;
+    };
+    const auto setText = [](QStandardItemModel* model, const int row,
+                            const int column, const QString& text) {
+        if (QStandardItem* current = model->item(row, column)) {
+            current->setText(text);
+        }
+    };
+
+    bool updated = false;
+    if (const auto* reg = regmap::findRegister(
+            *workspace, pendingIncrementalObjectId_);
+        reg != nullptr &&
+        propertyAllowed({"description"})) {
+        const int row = rowForObject(registerModel_, reg->id);
+        if (row < 0) {
+            return false;
+        }
+        const regmap::AddressSpace* ownerPage = nullptr;
+        const regmap::RegisterBlock* ownerBlock = nullptr;
+        for (const auto& page : workspace->addressSpaces) {
+            for (const auto& block : page.blocks) {
+                if (std::ranges::any_of(
+                        block.registers,
+                        [reg](const regmap::Register& candidate) {
+                            return candidate.id == reg->id;
+                        })) {
+                    ownerPage = &page;
+                    ownerBlock = &block;
+                    break;
+                }
+            }
+            if (ownerBlock != nullptr) {
+                break;
+            }
+        }
+        if (ownerPage == nullptr || ownerBlock == nullptr) {
+            return false;
+        }
+        const QScopedValueRollback refreshGuard(refreshing_, true);
+        const QSignalBlocker modelBlocker(registerModel_);
+        std::uint64_t blockAddress = 0;
+        std::uint64_t address = 0;
+        const bool overflow =
+            addOverflow(ownerPage->baseAddress, ownerBlock->baseAddress,
+                        blockAddress) ||
+            addOverflow(blockAddress, reg->offset, address);
+        setText(registerModel_, row, registerOffsetColumn, hex(reg->offset));
+        setText(registerModel_, row, registerAddressColumn,
+                overflow ? QStringLiteral("overflow") : hex(address));
+        setText(registerModel_, row, registerWidthColumn,
+                QString::number(reg->width));
+        setText(registerModel_, row, registerTypeColumn,
+                registerTypeText(*reg));
+        setText(registerModel_, row, registerRangeColumn,
+                rangeText(reg->minimumValue, reg->maximumValue));
+        setText(registerModel_, row, registerInitialColumn,
+                valueText(reg->initialValue));
+        setText(registerModel_, row, registerResetColumn,
+                valueText(reg->resetValue));
+        setText(registerModel_, row, registerAccessColumn,
+                accessText(reg->access).toUpper());
+        setText(registerModel_, row, registerTagsColumn,
+                tagsText(reg->tags));
+        setText(registerModel_, row, registerDescriptionColumn,
+                fromUtf8(reg->description));
+        applyInlineDiagnosticsToRow(registerModel_, row, true);
+        if (reg->id == selectedRegisterId_) {
+            bitfieldView_->setRegister(reg);
+            if (openFieldsRegisterId_ == reg->id) {
+                populateFields(reg);
+            }
+        }
+        updated = true;
+    } else if (const auto* field = regmap::findField(
+                   *workspace, pendingIncrementalObjectId_);
+               field != nullptr &&
+               propertyAllowed({"description"})) {
+        const int row = rowForObject(fieldModel_, field->id);
+        if (row < 0) {
+            return false;
+        }
+        const regmap::Register* owner = nullptr;
+        for (const auto& page : workspace->addressSpaces) {
+            for (const auto& block : page.blocks) {
+                for (const auto& candidate : block.registers) {
+                    if (findFieldRecursive(candidate.fields, field->id) != nullptr) {
+                        owner = &candidate;
+                        break;
+                    }
+                }
+                if (owner != nullptr) {
+                    break;
+                }
+            }
+            if (owner != nullptr) {
+                break;
+            }
+        }
+        if (owner == nullptr) {
+            return false;
+        }
+        const QScopedValueRollback refreshGuard(refreshing_, true);
+        const QSignalBlocker modelBlocker(fieldModel_);
+        setText(fieldModel_, row, fieldMsbColumn,
+                QString::number(field->msb));
+        setText(fieldModel_, row, fieldLsbColumn,
+                QString::number(field->lsb));
+        setText(fieldModel_, row, fieldWidthColumn,
+                QString::number(field->width()));
+        setText(fieldModel_, row, fieldTypeColumn, fieldTypeText(*field));
+        setText(fieldModel_, row, fieldMinimumColumn,
+                field->minimumValue ? fromUtf8(*field->minimumValue) : QString{});
+        setText(fieldModel_, row, fieldMaximumColumn,
+                field->maximumValue ? fromUtf8(*field->maximumValue) : QString{});
+        setText(fieldModel_, row, fieldSoftwareAccessColumn,
+                accessText(field->softwareAccess));
+        setText(fieldModel_, row, fieldHardwareAccessColumn,
+                accessText(field->hardwareAccess));
+        setText(fieldModel_, row, fieldReadEffectColumn,
+                readSideEffectText(field->readSideEffect));
+        setText(fieldModel_, row, fieldWriteEffectColumn,
+                writeSideEffectText(field->writeSideEffect));
+        setText(fieldModel_, row, fieldDescriptionColumn,
+                fromUtf8(field->description));
+        const auto absoluteLsb = fieldAbsoluteLsb(owner->fields, field->id);
+        const bool resetSliceInRange =
+            absoluteLsb && *absoluteLsb <= owner->width &&
+            field->width() <=
+                static_cast<std::uint64_t>(owner->width) - *absoluteLsb;
+        const std::optional<regmap::UnsignedValue> reset =
+            owner->resetValue && resetSliceInRange
+            ? std::optional<regmap::UnsignedValue>(owner->resetValue->slice(
+                  static_cast<std::size_t>(*absoluteLsb),
+                  static_cast<std::size_t>(field->width())))
+            : std::nullopt;
+        setText(fieldModel_, row, fieldResetColumn, valueText(reset));
+        applyInlineDiagnosticsToRow(fieldModel_, row, false);
+        bitfieldView_->setRegister(owner);
+        if (field->id == selectedFieldId_) {
+            bitfieldView_->setSelectedField(field);
+        }
+        updated = true;
+    }
+    if (!updated) {
+        return false;
+    }
+
+    ++incrementalTableRefreshCount_;
+    setProperty("incrementalTableRefreshCount",
+                QVariant::fromValue<qulonglong>(incrementalTableRefreshCount_));
+    updateAddressSpaceView();
+    updateSelectedFieldSummary();
+    updateContextBar();
+    refreshDiff();
+    updateRegisterEmptyState();
+    updateRowSelectionPresentation();
+    updateEditActions();
+    if (searchRefreshPending_) {
+        searchRefreshPending_ = false;
+        if (!globalSearchEdit_->text().trimmed().isEmpty()) {
+            refreshSearchCompletion();
+        }
+    }
+    setWindowModified(controller_.isDirty());
+    updateProjectHeader();
+    updateSyncPresentation();
+    updateBottomPanelVisibility();
+    return true;
+}
+
 void MainWindow::refreshProject()
 {
+    rebuildInlineDiagnosticIndex();
     const auto& manifestPath = controller_.manifestPath();
+    if (manifestPath == displayedManifestPath_ &&
+        refreshIncrementalEdit()) {
+        pendingIncrementalObjectId_.clear();
+        pendingIncrementalProperty_.clear();
+        return;
+    }
+    pendingIncrementalObjectId_.clear();
+    pendingIncrementalProperty_.clear();
+    ++fullTableRefreshCount_;
+    setProperty("fullTableRefreshCount",
+                QVariant::fromValue<qulonglong>(fullTableRefreshCount_));
     if (manifestPath != displayedManifestPath_) {
         displayedManifestPath_ = manifestPath;
         selectedAddressId_.clear();
@@ -10357,6 +10570,8 @@ void MainWindow::populateRegisters()
                 }
                 const int rowNumber = registerModel_->rowCount();
                 registerModel_->appendRow(row);
+                applyInlineDiagnosticsToRow(
+                    registerModel_, rowNumber, true);
                 if (reg.id == preferredRegister) {
                     preferredRow = rowNumber;
                 }
@@ -10756,6 +10971,8 @@ void MainWindow::populateFields(const regmap::Register* reg)
             }
             const int rowNumber = fieldModel_->rowCount();
             fieldModel_->appendRow(row);
+            applyInlineDiagnosticsToRow(
+                fieldModel_, rowNumber, false);
             if (field.id == preferredField) {
                 preferredRow = rowNumber;
             }
@@ -10993,6 +11210,159 @@ void MainWindow::populateEnumValues(const regmap::Register* reg, const regmap::F
     restoreTableSelection(
         enumView_, previousSelection, objectIdRole, propertyRole);
 }
+void MainWindow::rebuildInlineDiagnosticIndex()
+{
+    inlineDiagnosticIndex_.clear();
+    const auto& diagnostics = controller_.diagnostics();
+    for (std::size_t index = 0; index < diagnostics.size(); ++index) {
+        const auto& diagnostic = diagnostics[index];
+        if (diagnostic.objectId.empty() ||
+            !diagnostic.code.starts_with("RM3")) {
+            continue;
+        }
+        inlineDiagnosticIndex_[diagnostic.objectId].push_back(index);
+    }
+}
+
+void MainWindow::applyInlineDiagnosticsToRow(
+    QStandardItemModel* model,
+    const int row,
+    const bool registerRow)
+{
+    if (model == nullptr || row < 0 || row >= model->rowCount()) {
+        return;
+    }
+    for (int column = 0; column < model->columnCount(); ++column) {
+        QStandardItem* current = model->item(row, column);
+        if (current == nullptr ||
+            !current->data(inlineDiagnosticTextRole).isValid()) {
+            continue;
+        }
+        current->setData(
+            current->data(inlineOriginalToolTipRole), Qt::ToolTipRole);
+        current->setData(
+            current->data(inlineOriginalForegroundRole), Qt::ForegroundRole);
+        current->setData(
+            current->data(inlineOriginalIconRole), Qt::DecorationRole);
+        current->setData(
+            current->data(inlineOriginalAccessibleRole),
+            Qt::AccessibleDescriptionRole);
+        for (const int role :
+             {inlineDiagnosticTextRole, inlineOriginalToolTipRole,
+              inlineOriginalForegroundRole, inlineOriginalIconRole,
+              inlineOriginalAccessibleRole}) {
+            current->setData(QVariant{}, role);
+        }
+    }
+
+    QStandardItem* nameItem = model->item(row, 0);
+    if (nameItem == nullptr || nameItem->data(addRowRole).toBool()) {
+        return;
+    }
+    const std::string objectId =
+        nameItem->data(objectIdRole).toString().toUtf8().toStdString();
+    const auto found = inlineDiagnosticIndex_.find(objectId);
+    if (found == inlineDiagnosticIndex_.end()) {
+        return;
+    }
+
+    struct CellDiagnostics {
+        int severity{0};
+        QStringList messages;
+    };
+    std::map<int, CellDiagnostics> byColumn;
+    const auto targetColumn = [registerRow](std::string_view code) -> int {
+        if (registerRow) {
+            if (code == "RM3020") return registerWidthColumn;
+            if (code == "RM3023" || code == "RM3052") return registerRangeColumn;
+            if (code == "RM3024" || code == "RM3026") return registerAddressColumn;
+            if (code == "RM3034" || code == "RM3043") return registerResetColumn;
+            if (code == "RM3036" || code == "RM3042" || code == "RM3050") {
+                return registerTypeColumn;
+            }
+            if (code == "RM3051") return registerTagsColumn;
+            if (code == "RM3054") return registerInitialColumn;
+            return registerNameColumn;
+        }
+        if (code == "RM3030" || code == "RM3031" || code == "RM3053") {
+            return fieldMsbColumn;
+        }
+        if (code == "RM3032") return fieldSoftwareAccessColumn;
+        if (code == "RM3033") return fieldReadEffectColumn;
+        if (code == "RM3034" || code == "RM3043") return fieldResetColumn;
+        if (code == "RM3036" || code == "RM3042") return fieldTypeColumn;
+        if (code == "RM3052") return fieldMinimumColumn;
+        return fieldNameColumn;
+    };
+    const auto& diagnostics = controller_.diagnostics();
+    for (const std::size_t diagnosticIndex : found->second) {
+        if (diagnosticIndex >= diagnostics.size()) {
+            continue;
+        }
+        const auto& diagnostic = diagnostics[diagnosticIndex];
+        const int severity =
+            diagnostic.severity == regmap::DiagnosticSeverity::error
+            ? 2
+            : 1;
+        CellDiagnostics& cell = byColumn[targetColumn(diagnostic.code)];
+        cell.severity = std::max(cell.severity, severity);
+        cell.messages.push_back(
+            QStringLiteral("%1 %2: %3")
+                .arg(
+                    severity == 2 ? QStringLiteral("Error")
+                                  : QStringLiteral("Warning"),
+                    fromUtf8(diagnostic.code),
+                    fromUtf8(diagnostic.message)));
+    }
+    for (const auto& [column, diagnostic] : byColumn) {
+        QStandardItem* current = model->item(row, column);
+        if (current == nullptr || diagnostic.messages.isEmpty()) {
+            continue;
+        }
+        const QString message = diagnostic.messages.join(QLatin1Char('\n'));
+        current->setData(current->data(Qt::ToolTipRole),
+                         inlineOriginalToolTipRole);
+        current->setData(current->data(Qt::ForegroundRole),
+                         inlineOriginalForegroundRole);
+        current->setData(current->data(Qt::DecorationRole),
+                         inlineOriginalIconRole);
+        current->setData(current->data(Qt::AccessibleDescriptionRole),
+                         inlineOriginalAccessibleRole);
+        current->setData(message, inlineDiagnosticTextRole);
+        const QString baseToolTip =
+            current->data(Qt::ToolTipRole).toString();
+        current->setToolTip(
+            baseToolTip.isEmpty()
+                ? message
+                : baseToolTip + QStringLiteral("\n\n") + message);
+        current->setData(message, Qt::AccessibleDescriptionRole);
+        current->setForeground(
+            diagnostic.severity == 2
+                ? WorkbenchTheme::currentTokens().diagnosticError
+                : WorkbenchTheme::currentTokens().diagnosticWarning);
+        current->setIcon(
+            QApplication::style()->standardIcon(
+                diagnostic.severity == 2
+                    ? QStyle::SP_MessageBoxCritical
+                    : QStyle::SP_MessageBoxWarning));
+    }
+}
+
+void MainWindow::refreshInlineDiagnostics()
+{
+    QScopedValueRollback guard(refreshing_, true);
+    const QSignalBlocker registerBlocker(registerModel_);
+    const QSignalBlocker fieldBlocker(fieldModel_);
+    for (int row = 0; registerModel_ != nullptr &&
+         row < registerModel_->rowCount(); ++row) {
+        applyInlineDiagnosticsToRow(registerModel_, row, true);
+    }
+    for (int row = 0; fieldModel_ != nullptr &&
+         row < fieldModel_->rowCount(); ++row) {
+        applyInlineDiagnosticsToRow(fieldModel_, row, false);
+    }
+}
+
 void MainWindow::refreshDiagnostics()
 {
     QScopedValueRollback refreshGuard(
@@ -11658,35 +12028,72 @@ void MainWindow::refreshDiff()
         controller_.manifestPath();
 
     diffModel_->clear();
-    diffModel_->setHorizontalHeaderLabels({QStringLiteral("Change"), QStringLiteral("Object Type"),
-                                           QStringLiteral("Name"), QStringLiteral("Stable ID"),
-                                           QStringLiteral("Summary"), QStringLiteral("Source")});
-    const auto& changes = controller_.changes();
-    for (std::size_t index = 0; index < changes.size(); ++index) {
-        const auto& change = changes[index];
-        auto* kind = item(fromUtf8(regmap::toString(change.change)));
-        kind->setData(static_cast<int>(index), rowIndexRole);
-        kind->setData(
-            QStringLiteral(
-                "change:%1:%2")
-                .arg(
-                    fromUtf8(
-                        regmap::toString(
-                            change.objectKind)),
-                    fromUtf8(change.id)),
-            resultKeyRole);
-        const auto& source = change.afterSource.empty() ? change.beforeSource : change.afterSource;
-        diffModel_->appendRow({kind, item(fromUtf8(regmap::toString(change.objectKind))),
-                               item(fromUtf8(change.name)), item(fromUtf8(change.id)),
-                               leftItem(fromUtf8(change.summary)),
-                               leftItem(sourceText(source))});
-    }
+    diffModel_->setHorizontalHeaderLabels(
+        {QStringLiteral("Change"), QStringLiteral("Object Type"),
+         QStringLiteral("Name"), QStringLiteral("Stable ID"),
+         QStringLiteral("Summary"), QStringLiteral("Source"),
+         QStringLiteral("Origin")});
+    std::set<QString> displayedChanges;
+    const auto appendChanges =
+        [this, &displayedChanges](
+            const std::vector<regmap::ModelChange>& changes,
+            const QString& origin,
+            const QString& originKey) {
+            for (std::size_t index = 0; index < changes.size(); ++index) {
+                const auto& change = changes[index];
+                const QString identity =
+                    QStringLiteral("%1:%2:%3:%4")
+                        .arg(
+                            fromUtf8(regmap::toString(change.change)),
+                            fromUtf8(regmap::toString(change.objectKind)),
+                            fromUtf8(change.id),
+                            fromUtf8(change.summary));
+                if (originKey == QStringLiteral("rtl") &&
+                    displayedChanges.contains(identity)) {
+                    continue;
+                }
+                displayedChanges.insert(identity);
+                auto* kind =
+                    item(fromUtf8(regmap::toString(change.change)));
+                kind->setData(static_cast<int>(index), rowIndexRole);
+                kind->setData(originKey, changeOriginRole);
+                kind->setData(
+                    static_cast<int>(change.change), changeKindRole);
+                kind->setData(fromUtf8(change.id), objectIdRole);
+                kind->setData(
+                    QStringLiteral("change:%1:%2:%3")
+                        .arg(originKey,
+                             fromUtf8(regmap::toString(change.objectKind)),
+                             fromUtf8(change.id)),
+                    resultKeyRole);
+                const auto& source = change.afterSource.empty()
+                    ? change.beforeSource
+                    : change.afterSource;
+                diffModel_->appendRow(
+                    {kind,
+                     item(fromUtf8(regmap::toString(change.objectKind))),
+                     item(fromUtf8(change.name)), item(fromUtf8(change.id)),
+                     leftItem(fromUtf8(change.summary)),
+                     leftItem(sourceText(source)), leftItem(origin)});
+            }
+        };
+    appendChanges(
+        controller_.savedChanges(),
+        QStringLiteral("Since save"), QStringLiteral("saved"));
+    appendChanges(
+        controller_.externalChanges(),
+        QStringLiteral("Disk / CLI apply"), QStringLiteral("external"));
+    appendChanges(
+        controller_.changes(),
+        QStringLiteral("Managed RTL"), QStringLiteral("rtl"));
     const auto displayValue = [](const std::optional<std::string>& value) {
         return value ? fromUtf8(*value) : QStringLiteral("<absent>");
     };
     for (const auto& conflict : controller_.conflicts()) {
         auto* kind = item(QStringLiteral("Conflict"));
         kind->setData(-1, rowIndexRole);
+        kind->setData(QStringLiteral("conflict"), changeOriginRole);
+        kind->setData(fromUtf8(conflict.objectId), objectIdRole);
         kind->setData(
             QStringLiteral(
                 "conflict:%1:%2:%3")
@@ -11709,7 +12116,8 @@ void MainWindow::refreshDiff()
                                leftItem(summary),
                                leftItem(controller_.manifest() == nullptr
                                             ? QString{}
-                                            : fromPath(controller_.manifest()->rtl.path.resolved))});
+                                            : fromPath(controller_.manifest()->rtl.path.resolved)),
+                               leftItem(QStringLiteral("Managed RTL"))});
     }
     diffView_->resizeColumnsToContents();
     diffView_->setColumnHidden(
@@ -11735,6 +12143,9 @@ void MainWindow::refreshDiff()
     diffHeader->setSectionResizeMode(
         4,
         QHeaderView::Stretch);
+    diffHeader->setSectionResizeMode(
+        6,
+        QHeaderView::ResizeToContents);
     if (sameProject) {
         restoreResultSelection(
             diffView_,
@@ -11742,7 +12153,7 @@ void MainWindow::refreshDiff()
             resultKeyRole);
     }
     tabs_->setTabText(
-        2, QStringLiteral("Diff (%1)").arg(changes.size() + controller_.conflicts().size()));
+        2, QStringLiteral("Diff (%1)").arg(diffModel_->rowCount()));
     const std::size_t conflictCount = controller_.conflicts().size();
     conflictBar_->setVisible(conflictCount > 0);
     if (controller_.requiresInitialSyncChoice()) {
@@ -12002,27 +12413,44 @@ void MainWindow::activateDiffIndex(
             index.row(), 0)
             .data(rowIndexRole)
             .toInt();
+    const QString origin =
+        diffModel_->index(index.row(), 0)
+            .data(changeOriginRole)
+            .toString();
+    const std::vector<regmap::ModelChange>* changes = nullptr;
+    if (origin == QStringLiteral("saved")) {
+        changes = &controller_.savedChanges();
+    } else if (origin == QStringLiteral("external")) {
+        changes = &controller_.externalChanges();
+    } else if (origin == QStringLiteral("rtl")) {
+        changes = &controller_.changes();
+    }
     if (changeIndex >= 0 &&
-        static_cast<std::size_t>(
-            changeIndex) <
-            controller_.changes().size()) {
+        changes != nullptr &&
+        static_cast<std::size_t>(changeIndex) < changes->size()) {
         const auto& change =
-            controller_.changes()[
+            (*changes)[
                 static_cast<std::size_t>(
                     changeIndex)];
-        if (change.change ==
-            regmap::ChangeKind::removed) {
+        const bool absentFromCurrent =
+            origin == QStringLiteral("external")
+            ? change.change == regmap::ChangeKind::added
+            : change.change == regmap::ChangeKind::removed;
+        if (absentFromCurrent) {
             diffView_->setFocus(
                 Qt::OtherFocusReason);
             statusBar()->showMessage(
-                QStringLiteral(
-                    "Removed %1 %2 is not present in the current Workbench model · Undo (Ctrl+Z) can restore the deletion")
-                    .arg(
-                        fromUtf8(
-                            regmap::toString(
-                                change.objectKind)),
-                        fromUtf8(
-                            change.name)),
+                origin == QStringLiteral("external")
+                    ? QStringLiteral(
+                          "Incoming disk / CLI %1 %2 is not loaded because the current Workbench model is protected")
+                          .arg(
+                              fromUtf8(regmap::toString(change.objectKind)),
+                              fromUtf8(change.name))
+                    : QStringLiteral(
+                          "Removed %1 %2 is not present in the current Workbench model · Undo (Ctrl+Z) can restore the deletion")
+                          .arg(
+                              fromUtf8(regmap::toString(change.objectKind)),
+                              fromUtf8(change.name)),
                 7000);
             return;
         }
@@ -13349,7 +13777,7 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
             });
     };
     const auto commit =
-        [this, &description, applyChanges,
+        [this, &description, &objectId, &property, applyChanges,
          stagedWorkspace](
             const regmap::WorkspaceStore::Mutation& mutation) {
             if (!applyChanges) {
@@ -13371,9 +13799,13 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                         : PropertyEditStatus::changed,
                     {}};
             }
+            pendingIncrementalObjectId_ = objectId;
+            pendingIncrementalProperty_ = property;
             if (controller_.editWorkspace(description, mutation)) {
                 return PropertyEditResult{PropertyEditStatus::changed, {}};
             }
+            pendingIncrementalObjectId_.clear();
+            pendingIncrementalProperty_.clear();
             return PropertyEditResult{PropertyEditStatus::unchanged, {}};
         };
     const auto reject = [this, reportFeedback, markRejected](const QString& expectation) {

@@ -167,12 +167,6 @@ void collectIds(const Workspace& workspace, std::set<ObjectId, std::less<>>& res
            sequence.fetch_add(1, std::memory_order_relaxed);
 }
 
-[[nodiscard]] bool sameWorkspaceState(const Workspace& left, const Workspace& right)
-{
-    return serializeWorkspaceState(left, false) ==
-        serializeWorkspaceState(right, false);
-}
-
 } // namespace
 
 WorkspaceStore::WorkspaceStore(Workspace workspace) { reset(std::move(workspace)); }
@@ -181,6 +175,9 @@ void WorkspaceStore::reset(Workspace workspace)
 {
     workspace_ = std::move(workspace);
     savedWorkspace_ = workspace_;
+    workspaceState_ = serializeWorkspaceState(*workspace_, false);
+    savedState_ = workspaceState_;
+    dirty_ = false;
     undo_.clear();
     redo_.clear();
     ++revision_;
@@ -192,6 +189,11 @@ const Workspace* WorkspaceStore::workspace() const noexcept
     return workspace_ ? &*workspace_ : nullptr;
 }
 
+const Workspace* WorkspaceStore::savedWorkspace() const noexcept
+{
+    return savedWorkspace_ ? &*savedWorkspace_ : nullptr;
+}
+
 const std::vector<Diagnostic>& WorkspaceStore::diagnostics() const noexcept { return diagnostics_; }
 
 bool WorkspaceStore::dirty() const
@@ -199,7 +201,7 @@ bool WorkspaceStore::dirty() const
     if (!workspace_ || !savedWorkspace_) {
         return workspace_.has_value() != savedWorkspace_.has_value();
     }
-    return !sameWorkspaceState(*savedWorkspace_, *workspace_);
+    return dirty_;
 }
 
 bool WorkspaceStore::canUndo() const noexcept { return !undo_.empty(); }
@@ -239,12 +241,18 @@ bool WorkspaceStore::transact(std::string description, const Mutation& mutation)
     }
     Workspace candidate = *workspace_;
     mutation(candidate);
-    if (sameWorkspaceState(*workspace_, candidate)) {
+    std::string candidateState =
+        serializeWorkspaceState(candidate, false);
+    if (workspaceState_ == candidateState) {
         return false;
     }
 
-    appendHistory(undo_, HistoryEntry{*workspace_, std::move(description)});
+    appendHistory(
+        undo_,
+        HistoryEntry{*workspace_, workspaceState_, std::move(description)});
     workspace_ = std::move(candidate);
+    workspaceState_ = std::move(candidateState);
+    dirty_ = workspaceState_ != savedState_;
     redo_.clear();
     ++revision_;
     revalidate();
@@ -271,8 +279,12 @@ bool WorkspaceStore::undo()
     }
     HistoryEntry entry = std::move(undo_.back());
     undo_.pop_back();
-    appendHistory(redo_, HistoryEntry{*workspace_, entry.description});
+    appendHistory(
+        redo_,
+        HistoryEntry{*workspace_, workspaceState_, entry.description});
     workspace_ = std::move(entry.workspace);
+    workspaceState_ = std::move(entry.state);
+    dirty_ = workspaceState_ != savedState_;
     ++revision_;
     revalidate();
     return true;
@@ -285,14 +297,23 @@ bool WorkspaceStore::redo()
     }
     HistoryEntry entry = std::move(redo_.back());
     redo_.pop_back();
-    appendHistory(undo_, HistoryEntry{*workspace_, entry.description});
+    appendHistory(
+        undo_,
+        HistoryEntry{*workspace_, workspaceState_, entry.description});
     workspace_ = std::move(entry.workspace);
+    workspaceState_ = std::move(entry.state);
+    dirty_ = workspaceState_ != savedState_;
     ++revision_;
     revalidate();
     return true;
 }
 
-void WorkspaceStore::markSaved() { savedWorkspace_ = workspace_; }
+void WorkspaceStore::markSaved()
+{
+    savedWorkspace_ = workspace_;
+    savedState_ = workspaceState_;
+    dirty_ = false;
+}
 
 void WorkspaceStore::revalidate()
 {

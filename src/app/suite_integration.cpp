@@ -3,6 +3,7 @@
 #include "main_window.hpp"
 
 #include "regmap/core/project.hpp"
+#include "regmap/core/workspace_store.hpp"
 
 #include <suiteapp/protocol.h>
 #include <suiteapp/provider.h>
@@ -28,6 +29,8 @@ struct ProjectTarget {
     QString uri;
     QString projectPath;
     QString objectId;
+    QString registerId;
+    QString fieldId;
 
     [[nodiscard]] bool isValid() const
     {
@@ -61,16 +64,29 @@ ProjectTarget projectTarget(const QJsonObject& params)
 
     if (!target.uri.isEmpty()) {
         const QUrl uri(target.uri, QUrl::StrictMode);
-        if (uri.isValid()
-            && uri.scheme().compare(QStringLiteral("regmap"),
-                                    Qt::CaseInsensitive) == 0
-            && uri.host().compare(QStringLiteral("project"),
-                                  Qt::CaseInsensitive) == 0) {
+        if (uri.isValid() &&
+            uri.scheme().compare(QStringLiteral("regmap"),
+                                 Qt::CaseInsensitive) == 0) {
             const QUrlQuery query(uri);
             target.projectPath = query.queryItemValue(
                 QStringLiteral("file"), QUrl::FullyDecoded);
-            target.objectId = query.queryItemValue(
-                QStringLiteral("object"), QUrl::FullyDecoded);
+            if (uri.host().compare(QStringLiteral("project"),
+                                   Qt::CaseInsensitive) == 0) {
+                target.objectId = query.queryItemValue(
+                    QStringLiteral("object"), QUrl::FullyDecoded);
+            } else if (uri.host().compare(QStringLiteral("register"),
+                                          Qt::CaseInsensitive) == 0) {
+                target.registerId =
+                    uri.path(QUrl::FullyDecoded);
+                while (target.registerId.startsWith(QLatin1Char('/'))) {
+                    target.registerId.remove(0, 1);
+                }
+                target.fieldId = query.queryItemValue(
+                    QStringLiteral("field"), QUrl::FullyDecoded);
+                target.objectId = target.fieldId.isEmpty()
+                    ? target.registerId
+                    : target.fieldId;
+            }
         }
     }
 
@@ -82,6 +98,17 @@ ProjectTarget projectTarget(const QJsonObject& params)
     if (!arguments.value(QStringLiteral("objectId")).toString().isEmpty())
         target.objectId =
             arguments.value(QStringLiteral("objectId")).toString();
+    if (!arguments.value(QStringLiteral("registerId")).toString().isEmpty())
+        target.registerId =
+            arguments.value(QStringLiteral("registerId")).toString();
+    if (!arguments.value(QStringLiteral("fieldId")).toString().isEmpty())
+        target.fieldId =
+            arguments.value(QStringLiteral("fieldId")).toString();
+    if (!target.fieldId.isEmpty()) {
+        target.objectId = target.fieldId;
+    } else if (!target.registerId.isEmpty()) {
+        target.objectId = target.registerId;
+    }
     if (!target.projectPath.isEmpty())
         target.projectPath = QFileInfo(target.projectPath).absoluteFilePath();
     return target;
@@ -183,11 +210,39 @@ QJsonObject resolvedProject(const ProjectTarget& target,
     }
 
     const Workspace& workspace = *opened.workspace;
+    if (!target.registerId.isEmpty()) {
+        const Register* reg = regmap::findRegister(
+            workspace, target.registerId.toUtf8().toStdString());
+        if (reg == nullptr) {
+            if (failureReason) {
+                *failureReason =
+                    QStringLiteral("Register stable ID '%1' was not found")
+                        .arg(target.registerId);
+            }
+            return {};
+        }
+        if (!target.fieldId.isEmpty()) {
+            const auto field = findFieldObject(
+                reg->fields, target.fieldId, target.registerId);
+            if (!field.has_value() || field->kind != QStringLiteral("field")) {
+                if (failureReason) {
+                    *failureReason =
+                        QStringLiteral(
+                            "Field stable ID '%1' was not found under Register '%2'")
+                            .arg(target.fieldId, target.registerId);
+                }
+                return {};
+            }
+        }
+    }
     const std::optional<ObjectSummary> object =
         findObject(workspace, target.objectId);
     if (!object.has_value()) {
-        if (failureReason)
-            *failureReason = QStringLiteral("The requested register-map object was not found");
+        if (failureReason) {
+            *failureReason =
+                QStringLiteral("Stable ID '%1' was not found in the register map")
+                    .arg(target.objectId);
+        }
         return {};
     }
 
@@ -219,6 +274,8 @@ QJsonObject resolvedProject(const ProjectTarget& target,
         {QStringLiteral("filePath"), target.projectPath},
         {QStringLiteral("title"), fromUtf8(workspace.name)},
         {QStringLiteral("workspaceId"), fromUtf8(workspace.id)},
+        {QStringLiteral("registerId"), target.registerId},
+        {QStringLiteral("fieldId"), target.fieldId},
         {QStringLiteral("valid"), !opened.hasErrors()},
         {QStringLiteral("object"), objectJson},
         {QStringLiteral("addressSpaceCount"),
@@ -309,7 +366,8 @@ QJsonObject RegMapSuiteIntegration::processRequest(
     if (!target.isValid()) {
         return SuiteApp::errorResponse(
             request, QStringLiteral("invalid_resource"),
-            QStringLiteral("A regmap://project URI or projectPath is required"));
+            QStringLiteral(
+                "A regmap://project or regmap://register/<stable-id> URI with a project file is required"));
     }
 
     QString failureReason;

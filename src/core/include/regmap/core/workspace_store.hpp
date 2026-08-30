@@ -24,6 +24,7 @@ public:
     void reset(Workspace workspace);
 
     [[nodiscard]] const Workspace* workspace() const noexcept;
+    [[nodiscard]] const Workspace* savedWorkspace() const noexcept;
     [[nodiscard]] const std::vector<Diagnostic>& diagnostics() const noexcept;
     [[nodiscard]] bool dirty() const;
     [[nodiscard]] bool canUndo() const noexcept;
@@ -44,11 +45,15 @@ public:
 private:
     struct HistoryEntry {
         Workspace workspace;
+        std::string state;
         std::string description;
     };
 
     std::optional<Workspace> workspace_;
     std::optional<Workspace> savedWorkspace_;
+    std::string workspaceState_;
+    std::string savedState_;
+    bool dirty_{false};
     std::vector<Diagnostic> diagnostics_;
     std::vector<HistoryEntry> undo_;
     std::vector<HistoryEntry> redo_;

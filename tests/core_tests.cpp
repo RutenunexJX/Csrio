@@ -61,6 +61,7 @@ private slots:
     void normalizesFixedRegisterSlotsAndLegacyArrays();
     void derivesFieldResetsFromRegister();
     void tracksTransactionsAndStableIds();
+    void handlesLargeWorkspaceWithCachedSaveState();
     void squashesTransactionsIntoSingleUndoStep();
     void boundsTransactionHistory();
     void roundTripsManagedRtl();
@@ -1344,6 +1345,107 @@ void CoreTests::tracksTransactionsAndStableIds()
     QVERIFY(store.dirty());
     QCOMPARE(store.workspace()->addressSpaces.front().blocks.front().registers.front().id,
              savedLastId);
+}
+
+void CoreTests::handlesLargeWorkspaceWithCachedSaveState()
+{
+    constexpr std::size_t registerCount = 10'000;
+    regmap::Workspace workspace;
+    workspace.id = "large-workspace";
+    workspace.name = "Large Workspace";
+
+    regmap::AddressSpace page;
+    page.id = "space-main";
+    page.name = "Main";
+    page.addressWidth = 32;
+
+    regmap::RegisterBlock block;
+    block.id = "block-main";
+    block.name = "Main Block";
+    block.size = static_cast<std::uint64_t>(registerCount) * UINT64_C(4);
+    block.registers.reserve(registerCount);
+    for (std::size_t index = 0; index < registerCount; ++index) {
+        regmap::Register reg;
+        reg.id = "reg-" + std::to_string(index);
+        reg.name = "REGISTER_" + std::to_string(index);
+        reg.offset = static_cast<std::uint64_t>(index) * UINT64_C(4);
+        reg.width = 32;
+        reg.type = regmap::FieldType::structure;
+        reg.resetValue = regmap::UnsignedValue(0);
+
+        regmap::Field field;
+        field.id = "field-" + std::to_string(index);
+        field.name = "VALUE";
+        field.type = regmap::FieldType::boolean;
+        reg.fields.push_back(std::move(field));
+        block.registers.push_back(std::move(reg));
+    }
+    page.blocks.push_back(std::move(block));
+    workspace.addressSpaces.push_back(std::move(page));
+
+    const auto constructStarted = std::chrono::steady_clock::now();
+    regmap::WorkspaceStore store(std::move(workspace));
+    const auto constructFinished = std::chrono::steady_clock::now();
+    QVERIFY(store.workspace() != nullptr);
+    QVERIFY(store.savedWorkspace() != nullptr);
+    QCOMPARE(store.workspace()->addressSpaces.front().blocks.front().registers.size(),
+             registerCount);
+    QVERIFY(!store.dirty());
+
+    const auto dirtyStarted = std::chrono::steady_clock::now();
+    for (std::size_t iteration = 0; iteration < 100'000; ++iteration) {
+        QVERIFY(!store.dirty());
+    }
+    const auto dirtyFinished = std::chrono::steady_clock::now();
+
+    const auto editStarted = std::chrono::steady_clock::now();
+    QVERIFY(store.transact(
+        "Describe final register",
+        [](regmap::Workspace& candidate) {
+            candidate.addressSpaces.front()
+                .blocks.front()
+                .registers.back()
+                .description = "Edited in a large workspace";
+        }));
+    const auto editFinished = std::chrono::steady_clock::now();
+    QVERIFY(store.dirty());
+
+    const auto diffStarted = std::chrono::steady_clock::now();
+    const auto changes = regmap::diffWorkspaces(
+        *store.savedWorkspace(), *store.workspace());
+    const auto diffFinished = std::chrono::steady_clock::now();
+    QCOMPARE(changes.size(), std::size_t{1});
+    QCOMPARE(changes.front().id, std::string{"reg-9999"});
+
+    QVERIFY(store.undo());
+    QVERIFY(!store.dirty());
+    QVERIFY(store.redo());
+    QVERIFY(store.dirty());
+    store.markSaved();
+    QVERIFY(!store.dirty());
+    QCOMPARE(regmap::findRegister(*store.savedWorkspace(), "reg-9999")->description,
+             std::string{"Edited in a large workspace"});
+
+    const auto milliseconds = [](const auto begin, const auto end) {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(end - begin)
+            .count();
+    };
+    const auto constructMs = milliseconds(constructStarted, constructFinished);
+    const auto dirtyMs = milliseconds(dirtyStarted, dirtyFinished);
+    const auto editMs = milliseconds(editStarted, editFinished);
+    const auto diffMs = milliseconds(diffStarted, diffFinished);
+    qInfo().nospace()
+        << "large-map benchmark registers=" << registerCount
+        << " fields=" << registerCount
+        << " construct_ms=" << constructMs
+        << " dirty_100k_ms=" << dirtyMs
+        << " edit_ms=" << editMs
+        << " diff_ms=" << diffMs;
+
+    QVERIFY2(constructMs < 30'000, "10,000-register store construction regressed");
+    QVERIFY2(dirtyMs < 2'000, "Cached dirty-state checks regressed");
+    QVERIFY2(editMs < 30'000, "10,000-register atomic edit regressed");
+    QVERIFY2(diffMs < 30'000, "10,000-register structured diff regressed");
 }
 
 void CoreTests::squashesTransactionsIntoSingleUndoStep()

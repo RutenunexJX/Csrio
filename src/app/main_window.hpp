@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 class QAction;
@@ -64,6 +65,13 @@ private:
         fixedAddressRole,
         resultKeyRole,
         fieldDepthRole,
+        changeOriginRole,
+        changeKindRole,
+        inlineDiagnosticTextRole,
+        inlineOriginalToolTipRole,
+        inlineOriginalForegroundRole,
+        inlineOriginalIconRole,
+        inlineOriginalAccessibleRole,
     };
 
     ProjectController controller_;
@@ -222,6 +230,10 @@ private:
     bool modelEditInProgress_{false};
     bool refreshPending_{false};
     bool searchRefreshPending_{false};
+    std::string pendingIncrementalObjectId_;
+    std::string pendingIncrementalProperty_;
+    std::uint64_t fullTableRefreshCount_{0};
+    std::uint64_t incrementalTableRefreshCount_{0};
     bool committingActiveEditor_{false};
     bool activeEditorCommitRejected_{false};
     bool resultInteractionBlocked_{false};
@@ -249,6 +261,8 @@ private:
     bool suppressNextSearchReturn_{false};
     int generatedOutputsNeedingRetry_{0};
     int totalDiagnostics_{0};
+    std::unordered_map<std::string, std::vector<std::size_t>>
+        inlineDiagnosticIndex_;
     bool resultsPanelRequested_{false};
     bool resultsPanelAutoOpenedForProblems_{false};
     bool compactLayout_{false};
@@ -301,8 +315,13 @@ private:
     void openRecentProject(const QString& path);
     void requestProjectRefresh();
     void refreshProject();
+    [[nodiscard]] bool refreshIncrementalEdit();
     void updateContextBar();
     void refreshDiagnostics();
+    void rebuildInlineDiagnosticIndex();
+    void refreshInlineDiagnostics();
+    void applyInlineDiagnosticsToRow(
+        QStandardItemModel* model, int row, bool registerRow);
     void refreshGenerated();
     void updateOpenXlsxAction();
     void openGeneratedXlsx();

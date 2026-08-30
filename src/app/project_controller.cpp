@@ -315,6 +315,18 @@ const std::vector<regmap::ModelChange>& ProjectController::changes() const noexc
     return changes_;
 }
 
+const std::vector<regmap::ModelChange>&
+ProjectController::savedChanges() const noexcept
+{
+    return savedChanges_;
+}
+
+const std::vector<regmap::ModelChange>&
+ProjectController::externalChanges() const noexcept
+{
+    return externalChanges_;
+}
+
 const std::vector<regmap::MergeConflict>& ProjectController::conflicts() const noexcept
 {
     return conflicts_;
@@ -690,6 +702,8 @@ bool ProjectController::openProject(const QString& manifestPath)
     initialSyncChoicePending_ = false;
     artifacts_.clear();
     changes_.clear();
+    savedChanges_.clear();
+    externalChanges_.clear();
     conflicts_.clear();
     loadDiagnostics_.clear();
     syncDiagnostics_.clear();
@@ -756,9 +770,11 @@ void ProjectController::reloadImpl(
     if (loaded.manifest.has_value() && loaded.workspace.has_value()) {
         if (const auto* current = store_.workspace()) {
             changes_ = regmap::diffWorkspaces(*current, *loaded.workspace);
+            externalChanges_ = changes_;
         }
         manifest_ = std::move(loaded.manifest);
         store_.reset(std::move(*loaded.workspace));
+        rebuildSavedChanges();
         recoveryBaseWorkspace_ =
             *store_.workspace();
         acceptedManifestDigest_ =
@@ -777,6 +793,7 @@ void ProjectController::reloadImpl(
         emit diagnosticsChanged();
         emit generationChanged();
         emit conflictsChanged();
+        emit comparisonChanged();
         emit editStateChanged();
 
         if (externalProjectChangePending_) {
@@ -1027,8 +1044,10 @@ void ProjectController::synchronizeRtl(bool automatic, bool persistWhenClean)
         });
     if (modelChanged) {
         changes_ = regmap::diffWorkspaces(*baseline_, *store_.workspace());
+        rebuildSavedChanges();
         emit projectChanged();
         emit editStateChanged();
+        emit comparisonChanged();
     }
 
     if (persistWhenClean) {
@@ -1086,9 +1105,11 @@ void ProjectController::resolveConflicts(regmap::MergePreference preference)
         initialSyncChoicePending_ = false;
         conflicts_.clear();
         changes_ = regmap::diffWorkspaces(*baseline_, *store_.workspace());
+        rebuildSavedChanges();
         emit conflictsChanged();
         emit projectChanged();
         emit editStateChanged();
+        emit comparisonChanged();
         if (persistSynchronizedModel()) {
             emit syncStatusChanged(
                 QStringLiteral("Initial choice resolved; Workbench, RTL, and read-only outputs "
@@ -1122,9 +1143,11 @@ void ProjectController::resolveConflicts(regmap::MergePreference preference)
             "Resolve synchronization conflicts",
             [resolved](regmap::Workspace& workspace) { workspace = resolved; }));
     conflicts_.clear();
+    rebuildSavedChanges();
     emit conflictsChanged();
     emit projectChanged();
     emit editStateChanged();
+    emit comparisonChanged();
     if (persistSynchronizedModel()) {
         emit syncStatusChanged(
             QStringLiteral("Conflicts resolved; Workbench, RTL, and read-only outputs synchronized"));
@@ -1200,6 +1223,7 @@ bool ProjectController::persistSynchronizedModel(
 
     baseline_ = *store_.workspace();
     store_.markSaved();
+    rebuildSavedChanges();
     recoveryBaseWorkspace_ =
         *store_.workspace();
     recoveryDraftTimer_.stop();
@@ -1224,6 +1248,7 @@ bool ProjectController::persistSynchronizedModel(
     emit diagnosticsChanged();
     emit conflictsChanged();
     emit editStateChanged();
+    emit comparisonChanged();
     return !containsErrors(generationDiagnostics_);
 }
 
@@ -1377,6 +1402,7 @@ void ProjectController::notifyModelEdited()
     changes_ = baseline_ && store_.workspace()
         ? regmap::diffWorkspaces(*baseline_, *store_.workspace())
         : std::vector<regmap::ModelChange> {};
+    rebuildSavedChanges();
     if (store_.dirty()) {
         recoveryDraftTimer_.start();
     } else {
@@ -1389,6 +1415,7 @@ void ProjectController::notifyModelEdited()
     emit diagnosticsChanged();
     emit generationChanged();
     emit editStateChanged();
+    emit comparisonChanged();
     if (!store_.dirty()) {
         if (containsErrors(generationDiagnostics_)) {
             emit syncStatusChanged(
@@ -1420,6 +1447,34 @@ void ProjectController::notifyModelEdited()
                 : QStringLiteral(
                       "Model edited; save to merge with RTL and update outputs"));
     }
+}
+
+void ProjectController::rebuildSavedChanges()
+{
+    const auto* saved = store_.savedWorkspace();
+    const auto* current = store_.workspace();
+    savedChanges_ = saved != nullptr && current != nullptr
+        ? regmap::diffWorkspaces(*saved, *current)
+        : std::vector<regmap::ModelChange>{};
+}
+
+void ProjectController::refreshExternalChangesFromDisk()
+{
+    const auto* current = store_.workspace();
+    if (current == nullptr || manifestPath_.empty()) {
+        externalChanges_.clear();
+        emit comparisonChanged();
+        return;
+    }
+    const auto loaded = regmap::openProject(manifestPath_);
+    if (loaded.workspace.has_value() &&
+        loaded.workspace->id == current->id) {
+        externalChanges_ =
+            regmap::diffWorkspaces(*current, *loaded.workspace);
+    } else {
+        externalChanges_.clear();
+    }
+    emit comparisonChanged();
 }
 
 std::filesystem::path ProjectController::baselinePath() const
@@ -1656,6 +1711,7 @@ void ProjectController::checkPendingFiles()
         } else {
             setExternalProjectChangePending(
                 true);
+            refreshExternalChangesFromDisk();
             if (store_.dirty() ||
                 externalProjectReloadDeferred_) {
                 refreshWatchPaths();
