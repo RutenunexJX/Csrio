@@ -824,11 +824,11 @@ void AddressSpaceView::paintEvent(QPaintEvent* event)
             }
             const bool selectedBlock =
                 block.id == selectedBlockId_;
+            const QColor blockText =
+                WorkbenchTheme::contrastingText(fill);
             painter.setPen(
                 QPen(
-                    selectedBlock
-                        ? token.text
-                        : token.onAccent,
+                    blockText,
                     selectedBlock ? 2 : 1,
                     block.declaredExtent
                         ? Qt::SolidLine
@@ -840,7 +840,7 @@ void AddressSpaceView::paintEvent(QPaintEvent* event)
                 2);
             if (rectangle.width() >= 36 &&
                 rectangle.height() >= 12) {
-                painter.setPen(token.onAccent);
+                painter.setPen(blockText);
                 const QString labelText =
                     block.conflicting ||
                             block.outsidePageRange

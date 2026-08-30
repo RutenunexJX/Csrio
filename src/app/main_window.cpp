@@ -4241,6 +4241,8 @@ MainWindow::MainWindow(QWidget* parent)
 
 void MainWindow::buildUi()
 {
+    const WorkbenchTheme::DensityMetrics& density =
+        WorkbenchTheme::metrics();
     hierarchyModel_ = new QStandardItemModel(this);
     registerModel_ = new QStandardItemModel(this);
     fieldModel_ = new QStandardItemModel(this);
@@ -4292,12 +4294,16 @@ void MainWindow::buildUi()
         QSizePolicy::Expanding);
     auto* hierarchyLayout = new QVBoxLayout(hierarchyPanel);
     hierarchyLayout->setContentsMargins(0, 0, 0, 0);
-    hierarchyLayout->setSpacing(4);
+    hierarchyLayout->setSpacing(density.baseSpacing);
     auto* hierarchyHeader = new QWidget(hierarchyPanel);
     hierarchyHeader->setObjectName(QStringLiteral("hierarchyHeaderBar"));
     auto* hierarchyHeaderLayout = new QHBoxLayout(hierarchyHeader);
-    hierarchyHeaderLayout->setContentsMargins(8, 4, 6, 4);
-    hierarchyHeaderLayout->setSpacing(6);
+    hierarchyHeaderLayout->setContentsMargins(
+        density.panelHeaderHorizontalPadding,
+        density.panelHeaderVerticalPadding,
+        density.panelHeaderHorizontalPadding,
+        density.panelHeaderVerticalPadding);
+    hierarchyHeaderLayout->setSpacing(density.baseSpacing);
     auto* hierarchyTitle =
         new QLabel(QStringLiteral("Workspace"), hierarchyHeader);
     hierarchyTitle->setObjectName(QStringLiteral("hierarchyTitle"));
@@ -4635,12 +4641,16 @@ void MainWindow::buildUi()
         registerPanelPolicy);
     auto* registerLayout = new QVBoxLayout(registerPanel);
     registerLayout->setContentsMargins(0, 0, 0, 0);
-    registerLayout->setSpacing(6);
+    registerLayout->setSpacing(density.baseSpacing * 2);
     auto* contextBar = new QWidget(registerPanel);
     contextBar->setObjectName(QStringLiteral("registerContextBar"));
     auto* contextLayout = new QVBoxLayout(contextBar);
-    contextLayout->setContentsMargins(10, 5, 10, 5);
-    contextLayout->setSpacing(5);
+    contextLayout->setContentsMargins(
+        density.panelHeaderHorizontalPadding,
+        density.panelHeaderVerticalPadding,
+        density.panelHeaderHorizontalPadding,
+        density.panelHeaderVerticalPadding);
+    contextLayout->setSpacing(density.baseSpacing);
 
     auto* pageRow = new QHBoxLayout;
     pageRow->setContentsMargins(0, 0, 0, 0);
@@ -4698,8 +4708,11 @@ void MainWindow::buildUi()
     auto* registerToolsLayout =
         new QHBoxLayout(registerToolsBar);
     registerToolsLayout->setContentsMargins(
-        8, 3, 8, 3);
-    registerToolsLayout->setSpacing(6);
+        density.panelHeaderHorizontalPadding,
+        density.panelHeaderVerticalPadding,
+        density.panelHeaderHorizontalPadding,
+        density.panelHeaderVerticalPadding);
+    registerToolsLayout->setSpacing(density.baseSpacing);
     auto* registerToolsTitle =
         new QLabel(
             QStringLiteral("Registers"),
@@ -4748,11 +4761,15 @@ void MainWindow::buildUi()
         QStringLiteral("registerEmptyState"));
     auto* registerEmptyLayout =
         new QHBoxLayout(registerEmptyState_);
-    registerEmptyLayout->setContentsMargins(12, 8, 10, 8);
-    registerEmptyLayout->setSpacing(8);
+    registerEmptyLayout->setContentsMargins(
+        density.baseSpacing * 3,
+        density.baseSpacing * 2,
+        density.baseSpacing * 3,
+        density.baseSpacing * 2);
+    registerEmptyLayout->setSpacing(density.baseSpacing * 2);
     auto* registerEmptyText = new QVBoxLayout;
     registerEmptyText->setContentsMargins(0, 0, 0, 0);
-    registerEmptyText->setSpacing(1);
+    registerEmptyText->setSpacing(density.baseSpacing);
     registerEmptyTitleLabel_ =
         new QLabel(registerEmptyState_);
     registerEmptyTitleLabel_->setObjectName(
@@ -4780,6 +4797,12 @@ void MainWindow::buildUi()
         new QPushButton(registerEmptyState_);
     registerEmptyPrimaryButton_->setObjectName(
         QStringLiteral("registerEmptyPrimaryButton"));
+    registerEmptyTertiaryButton_->setMinimumHeight(
+        density.standardControlHeight);
+    registerEmptySecondaryButton_->setMinimumHeight(
+        density.standardControlHeight);
+    registerEmptyPrimaryButton_->setMinimumHeight(
+        density.primaryControlHeight);
     registerEmptyLayout->addWidget(
         registerEmptyTertiaryButton_);
     registerEmptyLayout->addWidget(
@@ -4795,8 +4818,11 @@ void MainWindow::buildUi()
     auto* registerFeedbackLayout =
         new QHBoxLayout(registerFeedbackBar_);
     registerFeedbackLayout->setContentsMargins(
-        10, 5, 6, 5);
-    registerFeedbackLayout->setSpacing(8);
+        density.panelHeaderHorizontalPadding,
+        density.panelHeaderVerticalPadding,
+        density.panelHeaderHorizontalPadding,
+        density.panelHeaderVerticalPadding);
+    registerFeedbackLayout->setSpacing(density.baseSpacing * 2);
     registerFeedbackLabel_ =
         new QLabel(registerFeedbackBar_);
     registerFeedbackLabel_->setObjectName(
@@ -5000,12 +5026,16 @@ void MainWindow::buildUi()
     auto* fieldPanel = fieldPanel_;
     auto* fieldLayout = new QVBoxLayout(fieldPanel);
     fieldLayout->setContentsMargins(0, 0, 0, 0);
-    fieldLayout->setSpacing(6);
+    fieldLayout->setSpacing(density.baseSpacing * 2);
     fieldHeaderBar_ = new QWidget(fieldPanel);
     fieldHeaderBar_->setObjectName(QStringLiteral("fieldHeaderBar"));
     auto* fieldHeaderLayout = new QHBoxLayout(fieldHeaderBar_);
-    fieldHeaderLayout->setContentsMargins(10, 5, 8, 5);
-    fieldHeaderLayout->setSpacing(8);
+    fieldHeaderLayout->setContentsMargins(
+        density.panelHeaderHorizontalPadding,
+        density.panelHeaderVerticalPadding,
+        density.panelHeaderHorizontalPadding,
+        density.panelHeaderVerticalPadding);
+    fieldHeaderLayout->setSpacing(density.baseSpacing * 2);
     fieldContextLabel_ = new QLabel(QStringLiteral("Fields"), fieldHeaderBar_);
     fieldContextLabel_->setObjectName(QStringLiteral("fieldContextLabel"));
     selectedFieldSummaryLabel_ =
@@ -5061,8 +5091,11 @@ void MainWindow::buildUi()
     auto* fieldFeedbackLayout =
         new QHBoxLayout(fieldFeedbackBar_);
     fieldFeedbackLayout->setContentsMargins(
-        10, 5, 6, 5);
-    fieldFeedbackLayout->setSpacing(8);
+        density.panelHeaderHorizontalPadding,
+        density.panelHeaderVerticalPadding,
+        density.panelHeaderHorizontalPadding,
+        density.panelHeaderVerticalPadding);
+    fieldFeedbackLayout->setSpacing(density.baseSpacing * 2);
     fieldFeedbackLabel_ =
         new QLabel(fieldFeedbackBar_);
     fieldFeedbackLabel_->setObjectName(
@@ -5092,7 +5125,7 @@ void MainWindow::buildUi()
         QSizePolicy::Expanding, QSizePolicy::Fixed);
     auto* enumLayout = new QVBoxLayout(enumPanel_);
     enumLayout->setContentsMargins(0, 0, 0, 0);
-    enumLayout->setSpacing(4);
+    enumLayout->setSpacing(density.baseSpacing);
     enumContextLabel_ = new QLabel(QStringLiteral("Enum Values"), enumPanel_);
     enumContextLabel_->setObjectName(QStringLiteral("contextTitle"));
     customizeBooleanValuesButton_ =
@@ -5119,7 +5152,7 @@ void MainWindow::buildUi()
         new QHBoxLayout;
     enumHeaderLayout->setContentsMargins(
         0, 0, 0, 0);
-    enumHeaderLayout->setSpacing(6);
+    enumHeaderLayout->setSpacing(density.baseSpacing);
     enumHeaderLayout->addWidget(
         enumContextLabel_);
     enumHeaderLayout->addStretch(1);
@@ -5321,7 +5354,7 @@ void MainWindow::buildUi()
     auto* problemsPanel = new QWidget(tabs_);
     auto* problemsLayout = new QVBoxLayout(problemsPanel);
     problemsLayout->setContentsMargins(0, 0, 0, 0);
-    problemsLayout->setSpacing(4);
+    problemsLayout->setSpacing(density.baseSpacing);
     problemsSummaryLabel_ = new QLabel(problemsPanel);
     problemsSummaryLabel_->setObjectName(
         QStringLiteral("problemsSummaryLabel"));
@@ -5338,8 +5371,11 @@ void MainWindow::buildUi()
     auto* diagnosticsToolbarLayout =
         new QHBoxLayout(diagnosticsToolbar);
     diagnosticsToolbarLayout->setContentsMargins(
-        8, 4, 8, 4);
-    diagnosticsToolbarLayout->setSpacing(6);
+        density.panelHeaderHorizontalPadding,
+        density.panelHeaderVerticalPadding,
+        density.panelHeaderHorizontalPadding,
+        density.panelHeaderVerticalPadding);
+    diagnosticsToolbarLayout->setSpacing(density.baseSpacing);
     diagnosticsToolbarLayout->addWidget(
         problemsSummaryLabel_, 1);
     diagnosticsSeverityFilter_ =
@@ -5381,9 +5417,13 @@ void MainWindow::buildUi()
     auto* generatedPanel = new QWidget(tabs_);
     auto* generatedLayout = new QVBoxLayout(generatedPanel);
     generatedLayout->setContentsMargins(0, 0, 0, 0);
-    generatedLayout->setSpacing(4);
+    generatedLayout->setSpacing(density.baseSpacing);
     auto* generatedActions = new QHBoxLayout;
-    generatedActions->setContentsMargins(6, 4, 6, 0);
+    generatedActions->setContentsMargins(
+        density.panelHeaderHorizontalPadding,
+        density.panelHeaderVerticalPadding,
+        density.panelHeaderHorizontalPadding,
+        0);
     generatedActions->addStretch();
     retryOutputsButton_ = new QPushButton(QStringLiteral("Retry outputs"), generatedPanel);
     retryOutputsButton_->setObjectName(QStringLiteral("retryOutputsButton"));
@@ -5396,7 +5436,7 @@ void MainWindow::buildUi()
     auto* diffPanel = new QWidget(tabs_);
     auto* diffLayout = new QVBoxLayout(diffPanel);
     diffLayout->setContentsMargins(0, 0, 0, 0);
-    diffLayout->setSpacing(4);
+    diffLayout->setSpacing(density.baseSpacing);
     externalDecisionBar_ = new QWidget(diffPanel);
     externalDecisionBar_->setObjectName(
         QStringLiteral("externalDecisionBar"));
@@ -5404,8 +5444,12 @@ void MainWindow::buildUi()
         QStringLiteral("External Disk and CLI change decisions"));
     auto* externalDecisionLayout =
         new QHBoxLayout(externalDecisionBar_);
-    externalDecisionLayout->setContentsMargins(8, 5, 8, 5);
-    externalDecisionLayout->setSpacing(4);
+    externalDecisionLayout->setContentsMargins(
+        density.panelHeaderHorizontalPadding,
+        density.panelHeaderVerticalPadding,
+        density.panelHeaderHorizontalPadding,
+        density.panelHeaderVerticalPadding);
+    externalDecisionLayout->setSpacing(density.baseSpacing);
     externalDecisionStatusLabel_ = new QLabel(externalDecisionBar_);
     externalDecisionStatusLabel_->setObjectName(
         QStringLiteral("externalDecisionStatusLabel"));
@@ -5420,6 +5464,8 @@ void MainWindow::buildUi()
         QStringLiteral("&Preview"), externalDecisionBar_);
     previewExternalButton_->setObjectName(
         QStringLiteral("previewExternalButton"));
+    previewExternalButton_->setAccessibleName(
+        QStringLiteral("Preview selected external changes"));
     previewExternalButton_->setShortcut(
         QKeySequence(QStringLiteral("Alt+P")));
     previewExternalButton_->setToolTip(
@@ -5429,6 +5475,8 @@ void MainWindow::buildUi()
         QStringLiteral("&Accept selected"), externalDecisionBar_);
     acceptExternalButton_->setObjectName(
         QStringLiteral("acceptExternalButton"));
+    acceptExternalButton_->setAccessibleName(
+        QStringLiteral("Accept selected external changes"));
     acceptExternalButton_->setShortcut(
         QKeySequence(QStringLiteral("Alt+A")));
     acceptExternalButton_->setToolTip(
@@ -5438,6 +5486,8 @@ void MainWindow::buildUi()
         QStringLiteral("&Reject selected"), externalDecisionBar_);
     rejectExternalButton_->setObjectName(
         QStringLiteral("rejectExternalButton"));
+    rejectExternalButton_->setAccessibleName(
+        QStringLiteral("Reject selected external changes"));
     rejectExternalButton_->setShortcut(
         QKeySequence(QStringLiteral("Alt+R")));
     rejectExternalButton_->setToolTip(
@@ -5447,6 +5497,8 @@ void MainWindow::buildUi()
         QStringLiteral("Accept all"), externalDecisionBar_);
     acceptAllExternalButton_->setObjectName(
         QStringLiteral("acceptAllExternalButton"));
+    acceptAllExternalButton_->setAccessibleName(
+        QStringLiteral("Accept all external changes"));
     acceptAllExternalButton_->setShortcut(
         QKeySequence(QStringLiteral("Ctrl+Alt+A")));
     acceptAllExternalButton_->setToolTip(
@@ -5456,6 +5508,8 @@ void MainWindow::buildUi()
         QStringLiteral("Reject all"), externalDecisionBar_);
     rejectAllExternalButton_->setObjectName(
         QStringLiteral("rejectAllExternalButton"));
+    rejectAllExternalButton_->setAccessibleName(
+        QStringLiteral("Reject all external changes"));
     rejectAllExternalButton_->setShortcut(
         QKeySequence(QStringLiteral("Ctrl+Alt+R")));
     rejectAllExternalButton_->setToolTip(
@@ -5465,7 +5519,8 @@ void MainWindow::buildUi()
          {previewExternalButton_, acceptExternalButton_,
           rejectExternalButton_, acceptAllExternalButton_,
           rejectAllExternalButton_}) {
-        button->setMinimumHeight(28);
+        button->setMinimumHeight(density.compactControlHeight);
+        button->setFocusPolicy(Qt::StrongFocus);
         externalDecisionLayout->addWidget(button);
     }
     externalDecisionBar_->setVisible(false);
@@ -5473,7 +5528,11 @@ void MainWindow::buildUi()
     conflictBar_ = new QWidget(diffPanel);
     conflictBar_->setObjectName(QStringLiteral("conflictBar"));
     auto* conflictLayout = new QHBoxLayout(conflictBar_);
-    conflictLayout->setContentsMargins(8, 5, 8, 5);
+    conflictLayout->setContentsMargins(
+        density.panelHeaderHorizontalPadding,
+        density.panelHeaderVerticalPadding,
+        density.panelHeaderHorizontalPadding,
+        density.panelHeaderVerticalPadding);
     conflictSummaryLabel_ = new QLabel(conflictBar_);
     conflictSummaryLabel_->setObjectName(QStringLiteral("conflictSummaryLabel"));
     conflictSummaryLabel_->setSizePolicy(
@@ -5511,7 +5570,7 @@ void MainWindow::buildUi()
     resultsSplitter_->setStretchFactor(0, 1);
     resultsSplitter_->setStretchFactor(1, 0);
     resultsSplitter_->setChildrenCollapsible(true);
-    resultsSplitter_->setHandleWidth(8);
+    resultsSplitter_->setHandleWidth(density.largeRadius);
     resultsSplitter_->handle(1)->setFocusPolicy(
         Qt::StrongFocus);
     resultsSplitter_->handle(1)->setAccessibleName(
@@ -5531,13 +5590,16 @@ void MainWindow::buildUi()
     auto* pageHeaderLayout =
         new QHBoxLayout(pageHeader_);
     pageHeaderLayout->setContentsMargins(
-        14, 8, 10, 8);
-    pageHeaderLayout->setSpacing(8);
+        density.baseSpacing * 3,
+        density.baseSpacing * 2,
+        density.baseSpacing * 2,
+        density.baseSpacing * 2);
+    pageHeaderLayout->setSpacing(density.baseSpacing * 2);
     auto* projectIdentityLayout =
         new QVBoxLayout;
     projectIdentityLayout->setContentsMargins(
         0, 0, 0, 0);
-    projectIdentityLayout->setSpacing(1);
+    projectIdentityLayout->setSpacing(density.baseSpacing);
     projectTitleLabel_ =
         new QLabel(
             QStringLiteral(
@@ -5607,6 +5669,8 @@ void MainWindow::buildUi()
     generateButton_->setText(
         QStringLiteral("Generate"));
     generateButton_->setMinimumWidth(88);
+    generateButton_->setMinimumHeight(
+        density.standardControlHeight);
     generateButton_->setToolButtonStyle(
         Qt::ToolButtonTextOnly);
     synchronizeButton_ =
@@ -5616,6 +5680,8 @@ void MainWindow::buildUi()
     synchronizeButton_->setText(
         QStringLiteral("Sync RTL"));
     synchronizeButton_->setMinimumWidth(86);
+    synchronizeButton_->setMinimumHeight(
+        density.primaryControlHeight);
     synchronizeButton_->setToolButtonStyle(
         Qt::ToolButtonTextOnly);
     saveSyncButton_ =
@@ -5625,6 +5691,8 @@ void MainWindow::buildUi()
     saveSyncButton_->setText(
         QStringLiteral("Save & Sync"));
     saveSyncButton_->setMinimumWidth(104);
+    saveSyncButton_->setMinimumHeight(
+        density.primaryControlHeight);
     saveSyncButton_->setToolButtonStyle(
         Qt::ToolButtonTextOnly);
     pageHeaderLayout->addWidget(
@@ -5644,8 +5712,11 @@ void MainWindow::buildUi()
     auto* canvasLayout =
         new QVBoxLayout(workbenchCanvas);
     canvasLayout->setContentsMargins(
-        8, 8, 8, 8);
-    canvasLayout->setSpacing(8);
+        density.baseSpacing * 2,
+        density.baseSpacing * 2,
+        density.baseSpacing * 2,
+        density.baseSpacing * 2);
+    canvasLayout->setSpacing(density.baseSpacing * 2);
     canvasLayout->addWidget(pageHeader_);
     canvasLayout->addWidget(
         resultsSplitter_, 1);

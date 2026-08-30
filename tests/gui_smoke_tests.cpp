@@ -1040,15 +1040,54 @@ void GuiSmokeTests::appliesWorkbookTheme()
              QColor(QStringLiteral("#FFFFFF")));
     QCOMPARE(light.focus,
              QColor(QStringLiteral("#0B73C9")));
+    QCOMPARE(light.accent,
+             QColor(QStringLiteral("#2F6FA3")));
+    QCOMPARE(light.warning,
+             light.diagnosticWarning);
+    QCOMPARE(light.error,
+             light.diagnosticError);
     QCOMPARE(dark.application,
              QColor(QStringLiteral("#111827")));
     QCOMPARE(dark.text,
              QColor(QStringLiteral("#E5EDF7")));
+    QCOMPARE(dark.accent,
+             QColor(QStringLiteral("#2D6F9F")));
     QVERIFY(light.canvas != dark.canvas);
     QVERIFY(light.diagnosticError !=
             light.diagnosticWarning);
     QVERIFY(dark.rtlSynced !=
             dark.rtlConflict);
+    for (const WorkbenchTheme::Tokens* semantic : {&light, &dark}) {
+        QVERIFY(WorkbenchTheme::contrastRatio(
+                    semantic->text, semantic->canvas) >= 4.5);
+        QVERIFY(WorkbenchTheme::contrastRatio(
+                    semantic->mutedText, semantic->canvas) >= 4.5);
+        QVERIFY(WorkbenchTheme::contrastRatio(
+                    semantic->onAccent, semantic->accent) >= 4.5);
+        QVERIFY(WorkbenchTheme::contrastRatio(
+                    semantic->focus, semantic->canvas) >= 3.0);
+        QVERIFY(WorkbenchTheme::contrastRatio(
+                    semantic->success, semantic->canvas) >= 3.0);
+        QVERIFY(WorkbenchTheme::contrastRatio(
+                    semantic->warning, semantic->canvas) >= 3.0);
+        QVERIFY(WorkbenchTheme::contrastRatio(
+                    semantic->error, semantic->canvas) >= 3.0);
+        for (const QColor& surface : semantic->bitfield) {
+            QVERIFY(WorkbenchTheme::contrastRatio(
+                        WorkbenchTheme::contrastingText(surface),
+                        surface) >= 4.5);
+        }
+        QVERIFY(WorkbenchTheme::contrastRatio(
+                    WorkbenchTheme::contrastingText(semantic->success),
+                    semantic->success) >= 4.5);
+    }
+    const auto& density = WorkbenchTheme::metrics();
+    QCOMPARE(density.baseSpacing, 4);
+    QCOMPARE(density.compactControlHeight, 28);
+    QCOMPARE(density.standardControlHeight, 32);
+    QCOMPARE(density.primaryControlHeight, 36);
+    QCOMPARE(density.smallRadius, 6);
+    QCOMPARE(density.largeRadius, 8);
     const QString lightSheet =
         WorkbenchTheme::styleSheet(
             WorkbenchTheme::Mode::light);
@@ -1067,6 +1106,26 @@ void GuiSmokeTests::appliesWorkbookTheme()
             "QAbstractItemView:focus")));
     QVERIFY(darkSheet.contains(
         QStringLiteral("#79C0FF")));
+    QVERIFY(darkSheet.contains(
+        QStringLiteral("#2D6F9F")));
+    QVERIFY(lightSheet.contains(
+        QStringLiteral("min-height: 36px")));
+    QVERIFY(lightSheet.contains(
+        QStringLiteral("QWidget#externalDecisionBar")));
+    QVERIFY(lightSheet.contains(
+        QStringLiteral(
+            "QLabel#externalDecisionStatusLabel[state=\"error\"]")));
+    const bool motionEnvironmentWasSet =
+        qEnvironmentVariableIsSet("QT_REDUCE_MOTION");
+    const QByteArray priorMotionEnvironment =
+        qgetenv("QT_REDUCE_MOTION");
+    QVERIFY(qputenv("QT_REDUCE_MOTION", QByteArrayLiteral("1")));
+    QVERIFY(WorkbenchTheme::reducedMotionEnabled());
+    if (motionEnvironmentWasSet) {
+        QVERIFY(qputenv("QT_REDUCE_MOTION", priorMotionEnvironment));
+    } else {
+        qunsetenv("QT_REDUCE_MOTION");
+    }
 }
 
 void GuiSmokeTests::structuresCompetitionShellResponsively()
@@ -1162,6 +1221,13 @@ void GuiSmokeTests::structuresCompetitionShellResponsively()
     QVERIFY(fields != nullptr);
     QVERIFY(summary != nullptr);
     QVERIFY(pageDescription != nullptr);
+    const auto& density = WorkbenchTheme::metrics();
+    QCOMPARE(generate->minimumHeight(),
+             density.standardControlHeight);
+    QCOMPARE(synchronize->minimumHeight(),
+             density.primaryControlHeight);
+    QCOMPARE(save->minimumHeight(),
+             density.primaryControlHeight);
     QCOMPARE(projectTitle->text(),
              QStringLiteral("GUI Workspace"));
     QVERIFY(projectPath->isVisible());
@@ -6452,6 +6518,14 @@ void GuiSmokeTests::decidesExternalChangesAtomicallyAndInvalidatesDigest()
     QVERIFY(accept != nullptr);
     QVERIFY(reject != nullptr);
     QVERIFY(rejectAll != nullptr);
+    QCOMPARE(preview->minimumHeight(),
+             WorkbenchTheme::metrics().compactControlHeight);
+    QCOMPARE(accept->minimumHeight(),
+             WorkbenchTheme::metrics().compactControlHeight);
+    QVERIFY(!preview->accessibleName().isEmpty());
+    QVERIFY(!accept->accessibleName().isEmpty());
+    QVERIFY(!reject->accessibleName().isEmpty());
+    QCOMPARE(preview->focusPolicy(), Qt::StrongFocus);
 
     QVERIFY(controller->editWorkspace(
         QStringLiteral("Local description retained"),

@@ -219,9 +219,7 @@ void BitfieldView::paintEvent(QPaintEvent* event)
                 8;
         if (labelFits) {
             painter.setPen(
-                color.lightness() < 145
-                    ? token.onAccent
-                    : token.text);
+                WorkbenchTheme::contrastingText(color));
             painter.drawText(fieldRect.adjusted(4, 2, -4, -2), Qt::AlignCenter, label);
         } else {
             legendFields.push_back(

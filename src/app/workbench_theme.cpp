@@ -8,8 +8,11 @@
 #include <QStringList>
 #include <QStyle>
 #include <QStyleFactory>
+#include <QStyleHints>
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <utility>
 
 namespace WorkbenchTheme {
@@ -17,6 +20,9 @@ namespace {
 
 constexpr auto themeSettingsKey = "ui/v2/theme";
 constexpr auto themeProperty = "regmapWorkbenchTheme";
+constexpr auto reducedMotionProperty = "regmapWorkbenchReducedMotion";
+
+constexpr DensityMetrics densityMetrics{};
 
 const Tokens lightTokens{
     QColor(QStringLiteral("#F3F6FA")),
@@ -34,6 +40,9 @@ const Tokens lightTokens{
     QColor(QStringLiteral("#DCEAF7")),
     QColor(QStringLiteral("#2F6FA3")),
     QColor(QStringLiteral("#0B73C9")),
+    QColor(QStringLiteral("#2F6FA3")),
+    QColor(QStringLiteral("#8A5A00")),
+    QColor(QStringLiteral("#B42318")),
     QColor(QStringLiteral("#B42318")),
     QColor(QStringLiteral("#8A5A00")),
     QColor(QStringLiteral("#385D8A")),
@@ -68,8 +77,11 @@ const Tokens darkTokens{
     QColor(QStringLiteral("#3B4A60")),
     QColor(QStringLiteral("#29364A")),
     QColor(QStringLiteral("#233F5D")),
-    QColor(QStringLiteral("#62A8E5")),
+    QColor(QStringLiteral("#2D6F9F")),
     QColor(QStringLiteral("#79C0FF")),
+    QColor(QStringLiteral("#2D6F9F")),
+    QColor(QStringLiteral("#F2C96D")),
+    QColor(QStringLiteral("#FF8A80")),
     QColor(QStringLiteral("#FF8A80")),
     QColor(QStringLiteral("#F2C96D")),
     QColor(QStringLiteral("#8DC5F4")),
@@ -100,11 +112,38 @@ void replaceToken(QString& sheet, const QString& name, const QColor& value)
     sheet.replace(QStringLiteral("{{%1}}").arg(name), css(value));
 }
 
+void replaceMetric(QString& sheet, const QString& name, const int value)
+{
+    sheet.replace(
+        QStringLiteral("{{%1}}").arg(name),
+        QString::number(value));
+}
+
+[[nodiscard]] double linearChannel(const int value)
+{
+    const double component = static_cast<double>(value) / 255.0;
+    return component <= 0.04045
+        ? component / 12.92
+        : std::pow((component + 0.055) / 1.055, 2.4);
+}
+
+[[nodiscard]] double relativeLuminance(const QColor& color)
+{
+    return 0.2126 * linearChannel(color.red()) +
+        0.7152 * linearChannel(color.green()) +
+        0.0722 * linearChannel(color.blue());
+}
+
 } // namespace
 
 const Tokens& tokens(const Mode mode)
 {
     return mode == Mode::dark ? darkTokens : lightTokens;
+}
+
+const DensityMetrics& metrics()
+{
+    return densityMetrics;
 }
 
 Mode currentMode()
@@ -124,13 +163,19 @@ const Tokens& currentTokens()
 
 Mode preferredMode()
 {
-    const QString saved = QSettings{}
-                              .value(QString::fromLatin1(themeSettingsKey),
-                                     QStringLiteral("light"))
-                              .toString()
-                              .trimmed()
-                              .toLower();
-    return saved == QStringLiteral("dark") ? Mode::dark : Mode::light;
+    const QSettings settings;
+    if (settings.contains(QString::fromLatin1(themeSettingsKey))) {
+        const QString saved = settings
+                                  .value(QString::fromLatin1(themeSettingsKey))
+                                  .toString()
+                                  .trimmed()
+                                  .toLower();
+        return saved == QStringLiteral("dark") ? Mode::dark : Mode::light;
+    }
+    return qApp != nullptr && qApp->styleHints() != nullptr &&
+            qApp->styleHints()->colorScheme() == Qt::ColorScheme::Dark
+        ? Mode::dark
+        : Mode::light;
 }
 
 QString modeName(const Mode mode)
@@ -147,7 +192,7 @@ QWidget#workbenchCanvas { background: {{application}}; }
 QWidget#pageHeader {
     background: {{raised}};
     border: 1px solid {{border}};
-    border-radius: 8px;
+    border-radius: {{radiusLarge}}px;
 }
 QLabel#projectTitleLabel { color: {{text}}; font-size: 14px; font-weight: 600; }
 QLabel#projectPathLabel, QLabel#selectedFieldSummaryLabel { color: {{muted}}; }
@@ -156,8 +201,8 @@ QLabel#registerSelectionLabel, QLabel#fieldSelectionLabel {
     color: {{info}};
     background: {{selection}};
     border: 1px solid {{border}};
-    border-radius: 10px;
-    padding: 3px 9px;
+    border-radius: {{radiusLarge}}px;
+    padding: {{space}}px {{space2}}px;
     font-weight: 600;
 }
 QLabel#fileStateBadge[state="saved"], QLabel#syncStateBadge[state="synced"],
@@ -168,51 +213,51 @@ QLabel#fileStateBadge[state="failed"], QLabel#syncStateBadge[state="blocked"],
 QLabel#syncStateBadge[state="conflict"], QLabel#syncStateBadge[state="partial"],
 QLabel#recoveryStateBadge[state="failed"] { color: {{error}}; }
 QToolButton#saveSyncButton, QToolButton#synchronizeButton {
-    min-height: 28px;
-    padding: 2px 12px;
+    min-height: {{primary}}px;
+    padding: 0 {{space3}}px;
     color: {{onAccent}};
-    background: {{selectionStrong}};
-    border: 1px solid {{selectionStrong}};
-    border-radius: 5px;
+    background: {{accent}};
+    border: 1px solid {{accent}};
+    border-radius: {{radiusSmall}}px;
     font-weight: 600;
 }
 QToolButton#saveSyncButton:hover, QToolButton#synchronizeButton:hover { border-color: {{focus}}; }
 QToolButton#generateButton {
-    min-height: 28px;
-    padding: 2px 12px;
+    min-height: {{standard}}px;
+    padding: 0 {{space3}}px;
     color: {{text}};
     background: {{panel}};
     border: 1px solid {{border}};
-    border-radius: 5px;
+    border-radius: {{radiusSmall}}px;
     font-weight: 600;
 }
 QMenuBar {
     background: {{header}};
     color: {{onAccent}};
     border-bottom: 1px solid {{border}};
-    padding: 1px 4px;
+    padding: 0 {{space}}px;
 }
-QMenuBar::item { background: transparent; padding: 5px 9px; }
+QMenuBar::item { background: transparent; padding: {{space}}px {{space2}}px; }
 QMenuBar::item:selected, QMenuBar::item:pressed { background: {{selectionStrong}}; }
-QMenu { background: {{raised}}; color: {{text}}; border: 1px solid {{border}}; padding: 4px; }
-QMenu::item { padding: 6px 28px 6px 10px; }
+QMenu { background: {{raised}}; color: {{text}}; border: 1px solid {{border}}; padding: {{space}}px; }
+QMenu::item { padding: {{space}}px {{compact}}px {{space}}px {{space2}}px; }
 QMenu::item:selected { background: {{selection}}; color: {{text}}; }
-QMenu::separator { height: 1px; background: {{divider}}; margin: 4px 8px; }
+QMenu::separator { height: 1px; background: {{divider}}; margin: {{space}}px {{space2}}px; }
 QToolBar {
     background: {{header}};
     border: none;
     border-bottom: 1px solid {{border}};
-    spacing: 4px;
-    padding: 4px 6px;
+    spacing: {{space}}px;
+    padding: {{space}}px {{space2}}px;
 }
-QToolBar::separator { width: 1px; background: {{border}}; margin: 4px; }
+QToolBar::separator { width: 1px; background: {{border}}; margin: {{space}}px; }
 QToolBar QToolButton {
-    min-height: 26px;
+    min-height: {{compact}}px;
     background: transparent;
     color: {{onAccent}};
     border: 1px solid transparent;
-    border-radius: 4px;
-    padding: 2px 8px;
+    border-radius: {{radiusSmall}}px;
+    padding: 0 {{space2}}px;
 }
 QToolBar QToolButton:hover { background: {{selectionStrong}}; border-color: {{focus}}; }
 QToolBar QToolButton:pressed, QToolBar QToolButton:checked { background: {{canvas}}; color: {{text}}; }
@@ -224,8 +269,8 @@ QToolBar QLineEdit#globalSearchEdit {
     background: {{input}};
     color: {{text}};
     border: 1px solid {{border}};
-    border-radius: 5px;
-    padding: 4px 8px;
+    border-radius: {{radiusSmall}}px;
+    padding: 0 {{space2}}px;
 }
 QToolBar QLabel#searchResultLabel { color: {{onAccent}}; min-width: 54px; padding: 0 3px; }
 QToolBar QToolButton#resultsToggleButton { border-color: {{border}}; }
@@ -236,7 +281,7 @@ QHeaderView::section {
     border-right: 1px solid {{border}};
     border-bottom: 1px solid {{border}};
     font-weight: 600;
-    padding: 7px 8px;
+    padding: {{space2}}px;
 }
 QTableCornerButton::section { background: {{header}}; border: none; }
 QTableView, QTreeView, QTreeWidget, QListWidget {
@@ -249,7 +294,7 @@ QTableView, QTreeView, QTreeWidget, QListWidget {
     selection-color: {{text}};
     outline: 0;
 }
-QAbstractItemView::item { padding: 4px 7px; border: none; }
+QAbstractItemView::item { padding: {{space}}px {{space2}}px; border: none; }
 QAbstractItemView::item:selected { background: {{selection}}; color: {{text}}; }
 QAbstractItemView::item:hover:!selected { background: {{panel}}; }
 QAbstractItemView:focus { border: 2px solid {{focus}}; }
@@ -257,7 +302,7 @@ QWidget#hierarchyPanel, QWidget#fieldPanel { background: {{canvas}}; }
 QWidget#hierarchyHeaderBar {
     background: {{header}};
     border: 1px solid {{header}};
-    border-radius: 5px 5px 0 0;
+    border-radius: {{radiusSmall}}px {{radiusSmall}}px 0 0;
 }
 QLabel#hierarchyTitle { color: {{onAccent}}; font-weight: 600; }
 QPushButton#hierarchyAddButton { background: {{raised}}; color: {{header}}; border-color: {{border}}; }
@@ -265,7 +310,7 @@ QWidget#registerContextBar, QWidget#fieldHeaderBar, QWidget#registerToolsBar,
 QWidget#diagnosticsToolbar {
     background: {{panel}};
     border: 1px solid {{border}};
-    border-radius: 5px;
+    border-radius: {{radiusSmall}}px;
 }
 QLabel#contextTitle, QLabel#fieldContextLabel, QLabel#registerToolsTitle {
     color: {{text}};
@@ -278,7 +323,7 @@ QLabel#searchResultLabel[state="empty"] { color: {{error}}; font-weight: 600; }
 QWidget#registerEmptyState {
     background: {{panel}};
     border: 1px dashed {{border}};
-    border-radius: 6px;
+    border-radius: {{radiusLarge}}px;
 }
 QLabel#registerEmptyTitle { color: {{text}}; font-weight: 600; }
 QLabel#registerEmptyHint { color: {{muted}}; }
@@ -286,23 +331,32 @@ QPushButton#registerEmptyPrimaryButton { background: {{selectionStrong}}; color:
 QWidget#registerFeedbackBar, QWidget#fieldFeedbackBar {
     background: {{panel}};
     border: 1px solid {{error}};
-    border-radius: 5px;
+    border-radius: {{radiusSmall}}px;
 }
 QLabel#registerFeedbackLabel, QLabel#fieldFeedbackLabel,
 QWidget#registerFeedbackBar QToolButton, QWidget#fieldFeedbackBar QToolButton { color: {{error}}; }
-QWidget#conflictBar { background: {{panel}}; border: 1px solid {{warning}}; border-radius: 5px; }
+QWidget#conflictBar, QWidget#externalDecisionBar {
+    background: {{panel}};
+    border: 1px solid {{warning}};
+    border-radius: {{radiusSmall}}px;
+}
 QLabel#conflictSummaryLabel { color: {{warning}}; font-weight: 600; }
+QLabel#externalDecisionStatusLabel[state="pending"],
+QLabel#externalDecisionStatusLabel[state="warning"] { color: {{warning}}; font-weight: 600; }
+QLabel#externalDecisionStatusLabel[state="error"] { color: {{error}}; font-weight: 600; }
+QLabel#externalDecisionStatusLabel[state="success"] { color: {{success}}; font-weight: 600; }
+QWidget#externalDecisionBar QPushButton { min-height: {{compact}}px; }
 QTabWidget::pane { background: {{canvas}}; border: 1px solid {{border}}; top: -1px; }
-QTabBar::tab { background: {{panel}}; color: {{muted}}; border: 1px solid {{border}}; border-bottom: none; padding: 7px 13px; }
+QTabBar::tab { background: {{panel}}; color: {{muted}}; border: 1px solid {{border}}; border-bottom: none; padding: {{space2}}px {{space3}}px; }
 QTabBar::tab:selected { background: {{header}}; color: {{onAccent}}; border-color: {{header}}; }
 QTabBar::tab:hover:!selected { background: {{selection}}; color: {{text}}; }
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit, QPlainTextEdit {
-    min-height: 24px;
+    min-height: {{compact}}px;
     background: {{input}};
     color: {{text}};
     border: 1px solid {{border}};
-    border-radius: 4px;
-    padding: 3px 7px;
+    border-radius: {{radiusSmall}}px;
+    padding: 0 {{space2}}px;
     selection-background-color: {{selection}};
     selection-color: {{text}};
 }
@@ -310,27 +364,29 @@ QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus,
 QTextEdit:focus, QPlainTextEdit:focus { border: 2px solid {{focus}}; }
 QLineEdit[readOnly="true"] { background: {{panel}}; color: {{muted}}; }
 QPushButton, QToolButton {
-    min-height: 26px;
+    min-height: {{standard}}px;
     background: {{panel}};
     color: {{text}};
     border: 1px solid {{border}};
-    border-radius: 4px;
-    padding: 2px 9px;
+    border-radius: {{radiusSmall}}px;
+    padding: 0 {{space2}}px;
 }
 QPushButton:hover, QToolButton:hover { background: {{selection}}; border-color: {{focus}}; }
 QPushButton:pressed, QToolButton:pressed { background: {{divider}}; }
+QPushButton:checked, QToolButton:checked { background: {{selection}}; border-color: {{accent}}; }
+QPushButton:disabled, QToolButton:disabled { color: {{muted}}; background: {{panel}}; border-color: {{divider}}; }
 QPushButton:focus, QToolButton:focus, QComboBox:focus { border: 2px solid {{focus}}; }
-QSplitter::handle { background: {{divider}}; border-radius: 2px; }
+QSplitter::handle { background: {{divider}}; border-radius: {{space}}px; }
 QSplitter::handle:hover, QSplitter::handle:focus { background: {{focus}}; }
 QSplitter::handle:horizontal { width: 8px; margin: 1px 2px; }
 QSplitter::handle:vertical { height: 8px; margin: 2px 1px; }
 QStatusBar { background: {{panel}}; color: {{muted}}; border-top: 1px solid {{border}}; }
 QStatusBar::item { border: none; }
-QStatusBar QLabel#activeContextLabel { color: {{info}}; padding: 2px 7px; }
-QToolTip { background: {{raised}}; color: {{text}}; border: 1px solid {{border}}; padding: 5px; }
+QStatusBar QLabel#activeContextLabel { color: {{info}}; padding: 0 {{space2}}px; }
+QToolTip { background: {{raised}}; color: {{text}}; border: 1px solid {{border}}; padding: {{space}}px; }
 )QSS");
 
-    const std::array<std::pair<QString, QColor>, 25> replacements{{
+    const std::array<std::pair<QString, QColor>, 26> replacements{{
         {QStringLiteral("application"), token.application},
         {QStringLiteral("canvas"), token.canvas},
         {QStringLiteral("panel"), token.panel},
@@ -346,8 +402,9 @@ QToolTip { background: {{raised}}; color: {{text}}; border: 1px solid {{border}}
         {QStringLiteral("selection"), token.selection},
         {QStringLiteral("selectionStrong"), token.selectionStrong},
         {QStringLiteral("focus"), token.focus},
-        {QStringLiteral("error"), token.diagnosticError},
-        {QStringLiteral("warning"), token.diagnosticWarning},
+        {QStringLiteral("accent"), token.accent},
+        {QStringLiteral("error"), token.error},
+        {QStringLiteral("warning"), token.warning},
         {QStringLiteral("info"), token.diagnosticInfo},
         {QStringLiteral("success"), token.success},
         {QStringLiteral("address"), token.address},
@@ -360,7 +417,67 @@ QToolTip { background: {{raised}}; color: {{text}}; border: 1px solid {{border}}
     for (const auto& [name, value] : replacements) {
         replaceToken(sheet, name, value);
     }
+    const std::array<std::pair<QString, int>, 9> metricReplacements{{
+        {QStringLiteral("space"), densityMetrics.baseSpacing},
+        {QStringLiteral("space2"), densityMetrics.baseSpacing * 2},
+        {QStringLiteral("space3"), densityMetrics.baseSpacing * 3},
+        {QStringLiteral("compact"), densityMetrics.compactControlHeight},
+        {QStringLiteral("standard"), densityMetrics.standardControlHeight},
+        {QStringLiteral("primary"), densityMetrics.primaryControlHeight},
+        {QStringLiteral("radiusSmall"), densityMetrics.smallRadius},
+        {QStringLiteral("radiusLarge"), densityMetrics.largeRadius},
+        {QStringLiteral("panelHeaderPadding"),
+         densityMetrics.panelHeaderHorizontalPadding},
+    }};
+    for (const auto& [name, value] : metricReplacements) {
+        replaceMetric(sheet, name, value);
+    }
     return sheet;
+}
+
+double contrastRatio(const QColor& foreground, const QColor& background)
+{
+    const double foregroundLuminance = relativeLuminance(foreground);
+    const double backgroundLuminance = relativeLuminance(background);
+    const double lighter = std::max(foregroundLuminance, backgroundLuminance);
+    const double darker = std::min(foregroundLuminance, backgroundLuminance);
+    return (lighter + 0.05) / (darker + 0.05);
+}
+
+QColor contrastingText(const QColor& background)
+{
+    const QColor light(QStringLiteral("#FFFFFF"));
+    const QColor dark(QStringLiteral("#000000"));
+    return contrastRatio(dark, background) >=
+            contrastRatio(light, background)
+        ? dark
+        : light;
+}
+
+bool reducedMotionEnabled()
+{
+    const QString environment = qEnvironmentVariable("QT_REDUCE_MOTION")
+                                    .trimmed()
+                                    .toLower();
+    if (!environment.isEmpty()) {
+        return environment == QStringLiteral("1") ||
+            environment == QStringLiteral("true") ||
+            environment == QStringLiteral("yes") ||
+            environment == QStringLiteral("on");
+    }
+    if (qApp != nullptr &&
+        qApp->property(reducedMotionProperty).isValid()) {
+        return qApp->property(reducedMotionProperty).toBool();
+    }
+#ifdef Q_OS_WIN
+    const QSettings accessibility(
+        QStringLiteral(
+            "HKEY_CURRENT_USER\\Control Panel\\Desktop\\WindowMetrics"),
+        QSettings::NativeFormat);
+    return accessibility.value(QStringLiteral("MinAnimate"), 1).toInt() == 0;
+#else
+    return false;
+#endif
 }
 
 void apply(QApplication& application)
@@ -417,6 +534,8 @@ void apply(QApplication& application, const Mode mode)
     application.setPalette(palette);
     application.setStyleSheet(styleSheet(mode));
     application.setProperty(themeProperty, modeName(mode));
+    application.setProperty(
+        reducedMotionProperty, reducedMotionEnabled());
 }
 
 void storePreference(const Mode mode)
