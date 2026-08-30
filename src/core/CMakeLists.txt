@@ -1,5 +1,6 @@
 add_library(
     regmap_core
+    src/external_changes.cpp
     src/generation.cpp
     src/manifest.cpp
     src/model.cpp

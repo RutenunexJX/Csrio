@@ -20,6 +20,23 @@ struct Snapshot {
     SourceLocation source;
 };
 
+[[nodiscard]] std::size_t snapshotDepth(
+    const std::map<ObjectId, Snapshot, std::less<>>& values,
+    const Snapshot& value)
+{
+    std::size_t depth = 0;
+    ObjectId parent = value.parent;
+    while (!parent.empty()) {
+        const auto found = values.find(parent);
+        if (found == values.end()) {
+            break;
+        }
+        ++depth;
+        parent = found->second.parent;
+    }
+    return depth;
+}
+
 void appendString(std::ostringstream& output, std::string_view value)
 {
     output << value.size() << ':' << value << ';';
@@ -163,6 +180,26 @@ void insertFieldSnapshots(std::map<ObjectId, Snapshot, std::less<>>& values,
     return result;
 }
 
+[[nodiscard]] ModelChange makeChange(
+    const ChangeKind kind,
+    const ObjectKind objectKind,
+    ObjectId id,
+    std::string name,
+    std::string summary,
+    SourceLocation beforeSource,
+    SourceLocation afterSource)
+{
+    ModelChange result;
+    result.change = kind;
+    result.objectKind = objectKind;
+    result.id = std::move(id);
+    result.name = std::move(name);
+    result.summary = std::move(summary);
+    result.beforeSource = std::move(beforeSource);
+    result.afterSource = std::move(afterSource);
+    return result;
+}
+
 } // namespace
 
 std::vector<ModelChange> diffWorkspaces(const Workspace& before, const Workspace& after)
@@ -177,20 +214,17 @@ std::vector<ModelChange> diffWorkspaces(const Workspace& before, const Workspace
         if (newIterator == newSnapshots.end() ||
             (oldIterator != oldSnapshots.end() && oldIterator->first < newIterator->first)) {
             const Snapshot& value = oldIterator->second;
-            result.push_back(ModelChange{ChangeKind::removed,
-                                         value.kind,
-                                         value.id,
-                                         value.name,
-                                         "Removed",
-                                         value.source,
-                                         {}});
+            result.push_back(makeChange(
+                ChangeKind::removed, value.kind, value.id, value.name,
+                "Removed", value.source, {}));
             ++oldIterator;
             continue;
         }
         if (oldIterator == oldSnapshots.end() || newIterator->first < oldIterator->first) {
             const Snapshot& value = newIterator->second;
-            result.push_back(ModelChange{
-                ChangeKind::added, value.kind, value.id, value.name, "Added", {}, value.source});
+            result.push_back(makeChange(
+                ChangeKind::added, value.kind, value.id, value.name,
+                "Added", {}, value.source));
             ++newIterator;
             continue;
         }
@@ -212,12 +246,33 @@ std::vector<ModelChange> diffWorkspaces(const Workspace& before, const Workspace
             } else {
                 summary = "Moved or reordered";
             }
-            result.push_back(ModelChange{
-                ChangeKind::modified, newValue.kind, newValue.id, newValue.name,
-                std::move(summary), oldValue.source, newValue.source});
+            result.push_back(makeChange(
+                ChangeKind::modified, newValue.kind, newValue.id,
+                newValue.name, std::move(summary), oldValue.source,
+                newValue.source));
         }
         ++oldIterator;
         ++newIterator;
+    }
+    for (auto& change : result) {
+        const auto oldValue = oldSnapshots.find(change.id);
+        const auto newValue = newSnapshots.find(change.id);
+        if (oldValue != oldSnapshots.end()) {
+            change.beforeParentId = oldValue->second.parent;
+            change.beforeOrder = oldValue->second.order;
+            change.beforeDepth = snapshotDepth(oldSnapshots, oldValue->second);
+        }
+        if (newValue != newSnapshots.end()) {
+            change.afterParentId = newValue->second.parent;
+            change.afterOrder = newValue->second.order;
+            change.afterDepth = snapshotDepth(newSnapshots, newValue->second);
+        }
+        change.stableId = "external:" +
+            std::string(toString(change.objectKind)) + ':' + change.id;
+        if (!change.afterParentId.empty() &&
+            !oldSnapshots.contains(change.afterParentId)) {
+            change.dependencies.push_back(change.afterParentId);
+        }
     }
     return result;
 }

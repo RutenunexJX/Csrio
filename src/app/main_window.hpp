@@ -51,6 +51,8 @@ public:
     bool openStartupProjectPath(
         const QString& path,
         const QString& selectedObjectId = {});
+    [[nodiscard]] const regmap::Workspace* currentWorkspaceForSuite(
+        const QString& projectPath) const;
 
 private:
     enum DataRole {
@@ -72,6 +74,8 @@ private:
         inlineOriginalForegroundRole,
         inlineOriginalIconRole,
         inlineOriginalAccessibleRole,
+        externalChangeIdRole,
+        externalGenerationRole,
     };
 
     ProjectController controller_;
@@ -155,6 +159,14 @@ private:
     QLabel* conflictSummaryLabel_{nullptr};
     QPushButton* keepWorkbenchButton_{nullptr};
     QPushButton* useRtlButton_{nullptr};
+    QWidget* externalDecisionBar_{nullptr};
+    QLabel* externalDecisionStatusLabel_{nullptr};
+    QPushButton* previewExternalButton_{nullptr};
+    QPushButton* acceptExternalButton_{nullptr};
+    QPushButton* rejectExternalButton_{nullptr};
+    QPushButton* acceptAllExternalButton_{nullptr};
+    QPushButton* rejectAllExternalButton_{nullptr};
+    std::uint64_t presentedExternalGeneration_{0};
 
     QStandardItemModel* hierarchyModel_{nullptr};
     QStandardItemModel* registerModel_{nullptr};
@@ -326,6 +338,14 @@ private:
     void updateOpenXlsxAction();
     void openGeneratedXlsx();
     void refreshDiff();
+    void updateExternalDecisionBar();
+    [[nodiscard]] std::vector<std::string>
+    selectedExternalChangeIds() const;
+    [[nodiscard]] std::vector<std::string>
+    allExternalChangeIds() const;
+    void previewExternalSelection(bool all);
+    void acceptExternalSelection(bool all);
+    void rejectExternalSelection(bool all);
     void setResultsPanelRequested(bool requested);
     void updateBottomPanelVisibility();
     void updateSyncPresentation(const QString& message = {});

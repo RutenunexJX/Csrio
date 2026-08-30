@@ -3,6 +3,7 @@
 #include "main_window.hpp"
 
 #include "regmap/core/project.hpp"
+#include "regmap/core/validation.hpp"
 #include "regmap/core/workspace_store.hpp"
 
 #include <suiteapp/protocol.h>
@@ -16,6 +17,7 @@
 #include <QUrlQuery>
 
 #include <filesystem>
+#include <algorithm>
 #include <optional>
 
 namespace regmap::workbench {
@@ -196,11 +198,13 @@ QJsonObject diagnosticJson(const Diagnostic& diagnostic)
 }
 
 QJsonObject resolvedProject(const ProjectTarget& target,
+                            const Workspace* currentWorkspace,
                             QString* failureReason = nullptr)
 {
-    const ProjectOpenResult opened = openProject(
-        std::filesystem::path(target.projectPath.toStdWString()));
-    if (!opened.workspace.has_value()) {
+    const ProjectOpenResult opened = currentWorkspace == nullptr
+        ? openProject(std::filesystem::path(target.projectPath.toStdWString()))
+        : ProjectOpenResult{};
+    if (currentWorkspace == nullptr && !opened.workspace.has_value()) {
         if (failureReason) {
             *failureReason = opened.diagnostics.empty()
                 ? QStringLiteral("The register-map project could not be opened")
@@ -209,7 +213,17 @@ QJsonObject resolvedProject(const ProjectTarget& target,
         return {};
     }
 
-    const Workspace& workspace = *opened.workspace;
+    const Workspace& workspace = currentWorkspace == nullptr
+        ? *opened.workspace
+        : *currentWorkspace;
+    const std::vector<Diagnostic> currentDiagnostics =
+        currentWorkspace == nullptr
+        ? std::vector<Diagnostic>{}
+        : validateWorkspace(workspace);
+    const std::vector<Diagnostic>& modelDiagnostics =
+        currentWorkspace == nullptr
+        ? opened.diagnostics
+        : currentDiagnostics;
     if (!target.registerId.isEmpty()) {
         const Register* reg = regmap::findRegister(
             workspace, target.registerId.toUtf8().toStdString());
@@ -259,7 +273,7 @@ QJsonObject resolvedProject(const ProjectTarget& target,
     }
 
     QJsonArray diagnostics;
-    for (const Diagnostic& diagnostic : opened.diagnostics)
+    for (const Diagnostic& diagnostic : modelDiagnostics)
         diagnostics.append(diagnosticJson(diagnostic));
     const QJsonObject objectJson{
         {QStringLiteral("id"), object->id},
@@ -276,7 +290,12 @@ QJsonObject resolvedProject(const ProjectTarget& target,
         {QStringLiteral("workspaceId"), fromUtf8(workspace.id)},
         {QStringLiteral("registerId"), target.registerId},
         {QStringLiteral("fieldId"), target.fieldId},
-        {QStringLiteral("valid"), !opened.hasErrors()},
+        {QStringLiteral("valid"),
+         std::ranges::none_of(
+             modelDiagnostics,
+             [](const Diagnostic& diagnostic) {
+                 return diagnostic.severity == DiagnosticSeverity::error;
+             })},
         {QStringLiteral("object"), objectJson},
         {QStringLiteral("addressSpaceCount"),
          static_cast<int>(workspace.addressSpaces.size())},
@@ -371,7 +390,11 @@ QJsonObject RegMapSuiteIntegration::processRequest(
     }
 
     QString failureReason;
-    const QJsonObject model = resolvedProject(target, &failureReason);
+    const Workspace* currentWorkspace = window_ == nullptr
+        ? nullptr
+        : window_->currentWorkspaceForSuite(target.projectPath);
+    const QJsonObject model = resolvedProject(
+        target, currentWorkspace, &failureReason);
     if (model.isEmpty()) {
         return SuiteApp::errorResponse(
             request, QStringLiteral("resource_open_failed"), failureReason);

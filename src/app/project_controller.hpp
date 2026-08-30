@@ -1,6 +1,7 @@
 #pragma once
 
 #include "regmap/core/diagnostic.hpp"
+#include "regmap/core/external_changes.hpp"
 #include "regmap/core/generation.hpp"
 #include "regmap/core/manifest.hpp"
 #include "regmap/core/model.hpp"
@@ -18,8 +19,10 @@
 #include <QTimer>
 
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <set>
 #include <utility>
 #include <vector>
 
@@ -67,6 +70,21 @@ public:
     recoveryDraftInfo() const;
     [[nodiscard]] QDateTime recoveryDraftModified() const;
     [[nodiscard]] bool hasExternalProjectChange() const noexcept;
+    [[nodiscard]] std::uint64_t externalChangeGeneration() const noexcept;
+    [[nodiscard]] QString externalChangeDigest() const;
+    [[nodiscard]] QString externalChangeStatus() const;
+    [[nodiscard]] std::size_t rejectedExternalChangeCount() const noexcept;
+    [[nodiscard]] regmap::WorkspaceChangePlan previewExternalChanges(
+        const std::vector<std::string>& changeIds,
+        std::uint64_t generation) const;
+    bool acceptExternalChanges(
+        const std::vector<std::string>& changeIds,
+        std::uint64_t generation,
+        QString* failureReason = nullptr);
+    bool rejectExternalChanges(
+        const std::vector<std::string>& changeIds,
+        std::uint64_t generation,
+        QString* failureReason = nullptr);
     bool restoreRecoveryDraft(
         regmap::MergePreference conflictPreference =
             regmap::MergePreference::workbench);
@@ -133,6 +151,11 @@ private:
     std::vector<regmap::ModelChange> changes_;
     std::vector<regmap::ModelChange> savedChanges_;
     std::vector<regmap::ModelChange> externalChanges_;
+    std::optional<regmap::Workspace> externalWorkspace_;
+    QByteArray externalManifestDigest_;
+    std::uint64_t externalChangeGeneration_{0};
+    std::set<std::string, std::less<>> rejectedExternalChangeIds_;
+    QString externalChangeStatus_;
     std::vector<regmap::MergeConflict> conflicts_;
     std::optional<regmap::Workspace> baseline_;
     std::optional<regmap::Workspace> recoveryBaseWorkspace_;
@@ -150,6 +173,8 @@ private:
     void refreshWatchPaths();
     void notifyModelEdited();
     void rebuildSavedChanges();
+    void rebuildExternalChanges();
+    void clearExternalComparison();
     void refreshExternalChangesFromDisk();
     void initializeSynchronization();
     void synchronizeRtl(bool automatic, bool persistWhenClean);

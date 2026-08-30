@@ -1,4 +1,5 @@
 #include "regmap/core/generation.hpp"
+#include "regmap/core/external_changes.hpp"
 #include "regmap/core/manifest.hpp"
 #include "regmap/core/model.hpp"
 #include "regmap/core/model_tokens.hpp"
@@ -78,6 +79,7 @@ private slots:
     void reportsGeneratedIdentifierCollisions();
     void sanitizesXlsxWorksheetNames();
     void diffsByStableId();
+    void plansExternalChangesWithDependenciesAndValidation();
 };
 
 namespace {
@@ -2759,6 +2761,143 @@ void CoreTests::diffsByStableId()
     QVERIFY(parentChanges.front().change == regmap::ChangeKind::modified);
     QCOMPARE(parentChanges.front().id, std::string("register-secondary"));
     QCOMPARE(parentChanges.front().summary, std::string("Moved or reordered"));
+}
+
+void CoreTests::plansExternalChangesWithDependenciesAndValidation()
+{
+    const regmap::Workspace current = stableWorkspace();
+    regmap::Workspace external = current;
+
+    regmap::AddressSpace page;
+    page.id = "space-external";
+    page.name = "External";
+    page.baseAddress = UINT64_C(0x20000000);
+    page.addressWidth = 32;
+    regmap::RegisterBlock block;
+    block.id = "block-external";
+    block.name = "External Block";
+    block.size = UINT64_C(0x100);
+    regmap::Register reg;
+    reg.id = "reg-external";
+    reg.name = "EXTERNAL";
+    reg.type = regmap::FieldType::structure;
+    reg.resetValue = regmap::UnsignedValue(0);
+    regmap::Field field;
+    field.id = "field-external";
+    field.name = "MODE";
+    field.type = regmap::FieldType::enumeration;
+    regmap::EnumValue enumValue;
+    enumValue.id = "enum-external-zero";
+    enumValue.name = "ZERO";
+    enumValue.value = regmap::UnsignedValue(0);
+    field.enumValues.push_back(enumValue);
+    reg.fields.push_back(field);
+    block.registers.push_back(reg);
+    page.blocks.push_back(block);
+    external.addressSpaces.push_back(page);
+    const auto externalDiagnostics = regmap::validateWorkspace(external);
+    QVERIFY(std::ranges::none_of(
+        externalDiagnostics,
+        [](const regmap::Diagnostic& diagnostic) {
+            return diagnostic.severity == regmap::DiagnosticSeverity::error;
+        }));
+
+    const auto additions = regmap::diffWorkspaces(current, external);
+    const auto leaf = std::ranges::find(
+        additions, std::string{"enum-external-zero"},
+        &regmap::ModelChange::id);
+    QVERIFY(leaf != additions.end());
+    QVERIFY(!leaf->stableId.empty());
+    QCOMPARE(leaf->afterParentId, std::string{"field-external"});
+    QVERIFY(!leaf->dependencies.empty());
+
+    regmap::Workspace partiallyPresent = current;
+    regmap::AddressSpace partialPage = page;
+    partialPage.name = "Locally created placeholder";
+    partialPage.blocks.clear();
+    partiallyPresent.addressSpaces.push_back(std::move(partialPage));
+    const auto reclassified = regmap::diffWorkspaces(
+        partiallyPresent, external);
+    const auto reclassifiedPage = std::ranges::find(
+        reclassified, std::string{"space-external"},
+        &regmap::ModelChange::id);
+    const auto addedPage = std::ranges::find(
+        additions, std::string{"space-external"},
+        &regmap::ModelChange::id);
+    QVERIFY(reclassifiedPage != reclassified.end());
+    QVERIFY(addedPage != additions.end());
+    QVERIFY(reclassifiedPage->change == regmap::ChangeKind::modified);
+    QVERIFY(addedPage->change == regmap::ChangeKind::added);
+    QCOMPARE(reclassifiedPage->stableId, addedPage->stableId);
+
+    const regmap::WorkspaceChangePlan additionPlan =
+        regmap::planWorkspaceChanges(
+            current, external, {leaf->stableId});
+    QVERIFY2(additionPlan.valid(),
+             additionPlan.diagnostics.empty()
+                 ? "Dependency plan did not produce a workspace"
+                 : additionPlan.diagnostics.front().message.c_str());
+    QCOMPARE(additionPlan.changes.size(), std::size_t{5});
+    QVERIFY(regmap::findAddressSpace(*additionPlan.workspace,
+                                     "space-external") != nullptr);
+    QVERIFY(regmap::findRegisterBlock(*additionPlan.workspace,
+                                      "block-external") != nullptr);
+    QVERIFY(regmap::findRegister(*additionPlan.workspace,
+                                 "reg-external") != nullptr);
+    QVERIFY(regmap::findField(*additionPlan.workspace,
+                              "field-external") != nullptr);
+    QVERIFY(regmap::findEnumValue(*additionPlan.workspace,
+                                  "enum-external-zero") != nullptr);
+
+    regmap::WorkspaceStore store(current);
+    const regmap::Workspace accepted = *additionPlan.workspace;
+    QVERIFY(store.transact(
+        "Accept external dependency tree",
+        [accepted](regmap::Workspace& workspace) {
+            workspace = accepted;
+        }));
+    QCOMPARE(store.undoDepth(), std::size_t{1});
+    QVERIFY(regmap::findRegister(*store.workspace(), "reg-external") != nullptr);
+    QVERIFY(store.undo());
+    QVERIFY(regmap::findRegister(*store.workspace(), "reg-external") == nullptr);
+    QVERIFY(store.redo());
+    QVERIFY(regmap::findRegister(*store.workspace(), "reg-external") != nullptr);
+
+    regmap::Workspace removed = current;
+    QVERIFY(regmap::removeObject(removed, "block-control"));
+    const auto removals = regmap::diffWorkspaces(current, removed);
+    const auto removedBlock = std::ranges::find(
+        removals, std::string{"block-control"},
+        &regmap::ModelChange::id);
+    QVERIFY(removedBlock != removals.end());
+    const regmap::WorkspaceChangePlan removalPlan =
+        regmap::planWorkspaceChanges(
+            current, removed, {removedBlock->stableId});
+    QVERIFY(removalPlan.valid());
+    QVERIFY(removalPlan.changes.size() > std::size_t{1});
+    QVERIFY(regmap::findRegisterBlock(*removalPlan.workspace,
+                                      "block-control") == nullptr);
+
+    regmap::Workspace invalid = current;
+    regmap::Register* invalidStatus =
+        regmap::findRegister(invalid, "reg-status");
+    QVERIFY(invalidStatus != nullptr);
+    invalidStatus->offset = 0;
+    const auto invalidChanges = regmap::diffWorkspaces(current, invalid);
+    const auto invalidRegister = std::ranges::find(
+        invalidChanges, std::string{"reg-status"},
+        &regmap::ModelChange::id);
+    QVERIFY(invalidRegister != invalidChanges.end());
+    const regmap::WorkspaceChangePlan invalidPlan =
+        regmap::planWorkspaceChanges(
+            current, invalid, {invalidRegister->stableId});
+    QVERIFY(!invalidPlan.valid());
+    QVERIFY(std::ranges::any_of(
+        invalidPlan.diagnostics,
+        [](const regmap::Diagnostic& diagnostic) {
+            return diagnostic.code == "RM3024" &&
+                diagnostic.severity == regmap::DiagnosticSeverity::error;
+        }));
 }
 
 QTEST_MAIN(CoreTests)

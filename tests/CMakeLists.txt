@@ -101,6 +101,16 @@ if(TARGET RegMap::WorkbenchUi)
                 REGMAP_GUI_TEST_HAS_CLI=1
         )
     endif()
+    if(SuiteApp_FOUND)
+        target_link_libraries(
+            regmap_gui_tests
+            PRIVATE SuiteApp::suiteapp
+        )
+        target_compile_definitions(
+            regmap_gui_tests
+            PRIVATE REGMAP_GUI_TEST_HAS_SUITEAPP=1
+        )
+    endif()
     if(TARGET regmap_workbench)
         add_dependencies(
             regmap_gui_tests

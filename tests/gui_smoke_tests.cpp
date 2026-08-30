@@ -5,6 +5,11 @@
 #include "startup_options.hpp"
 #include "workbench_theme.hpp"
 
+#ifdef REGMAP_GUI_TEST_HAS_SUITEAPP
+#include "suite_integration.hpp"
+#include <suiteapp/protocol.h>
+#endif
+
 #ifdef REGMAP_GUI_TEST_HAS_CLI
 #include "cli_app.hpp"
 #endif
@@ -85,6 +90,7 @@
 #include <QToolButton>
 #include <QTreeView>
 #include <QUrl>
+#include <QUrlQuery>
 
 #ifdef Q_OS_WIN
 #include <qt_windows.h>
@@ -175,6 +181,7 @@ private slots:
     void reloadsProjectWithoutLosingFieldWorkspaceContext();
     void confirmsDiscardBeforeReloadingDirtyProject();
     void protectsWorkbenchAndCliProjectChanges();
+    void decidesExternalChangesAtomicallyAndInvalidatesDigest();
     void protectsUnsavedChangesWhenClosing();
     void confirmsUnsavedChangesBeforeReplacingProject();
     void preflightsActiveEditorBeforeProjectChoosers();
@@ -6038,11 +6045,15 @@ void GuiSmokeTests::protectsWorkbenchAndCliProjectChanges()
                 : std::string{};
         };
 
-    // A clean Workbench follows an external regmapc-style atomic project save.
+    // A clean Workbench also pauses for per-change decisions; watcher events
+    // never replace the model before an explicit Reload or Accept.
     QVERIFY(
         saveExternalPageName(
             "External Clean"));
-    QTRY_COMPARE_WITH_TIMEOUT(
+    QTRY_VERIFY_WITH_TIMEOUT(
+        controller->hasExternalProjectChange(),
+        6000);
+    QCOMPARE(
         hierarchyIndexByObjectId(
             hierarchy->model(),
             QStringLiteral(
@@ -6050,12 +6061,26 @@ void GuiSmokeTests::protectsWorkbenchAndCliProjectChanges()
             .data()
             .toString(),
         QStringLiteral(
-            "External Clean"),
-        6000);
+            "Main"));
     QVERIFY(!controller->isDirty());
-    QVERIFY(
-        !controller->
-             hasExternalProjectChange());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        [&] {
+            for (int row = 0; row < diff->model()->rowCount(); ++row) {
+                if (diff->model()->index(row, 6).data().toString() ==
+                    QStringLiteral("Disk / CLI apply")) {
+                    return true;
+                }
+            }
+            return false;
+        }(),
+        2000);
+    controller->reload();
+    QTRY_VERIFY_WITH_TIMEOUT(!controller->hasExternalProjectChange(), 4000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        hierarchyIndexByObjectId(
+            hierarchy->model(), QStringLiteral("space-main"))
+            .data().toString(),
+        QStringLiteral("External Clean"), 3000);
 
     // Text that has not yet left the active cell editor is local work too.
     // Even an invalid value must stay visible until the user commits or
@@ -6389,6 +6414,334 @@ void GuiSmokeTests::protectsWorkbenchAndCliProjectChanges()
 
     makeGeneratedFilesWritable(
         directory.path());
+}
+
+void GuiSmokeTests::decidesExternalChangesAtomicallyAndInvalidatesDigest()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest =
+        directory.filePath(QStringLiteral("project.regmap.yaml"));
+    createTwoRegisterProject(manifest);
+
+    MainWindow window;
+    window.resize(1200, 760);
+    window.show();
+    QVERIFY(window.openProjectPath(manifest));
+    QTest::qWait(50);
+
+    auto* controller = window.findChild<ProjectController*>();
+    auto* diff = window.findChild<QTableView*>(QStringLiteral("diffView"));
+    auto* decisionBar =
+        window.findChild<QWidget*>(QStringLiteral("externalDecisionBar"));
+    auto* decisionStatus =
+        window.findChild<QLabel*>(QStringLiteral("externalDecisionStatusLabel"));
+    auto* preview =
+        window.findChild<QPushButton*>(QStringLiteral("previewExternalButton"));
+    auto* accept =
+        window.findChild<QPushButton*>(QStringLiteral("acceptExternalButton"));
+    auto* reject =
+        window.findChild<QPushButton*>(QStringLiteral("rejectExternalButton"));
+    auto* rejectAll =
+        window.findChild<QPushButton*>(QStringLiteral("rejectAllExternalButton"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(diff != nullptr);
+    QVERIFY(decisionBar != nullptr);
+    QVERIFY(decisionStatus != nullptr);
+    QVERIFY(preview != nullptr);
+    QVERIFY(accept != nullptr);
+    QVERIFY(reject != nullptr);
+    QVERIFY(rejectAll != nullptr);
+
+    QVERIFY(controller->editWorkspace(
+        QStringLiteral("Local description retained"),
+        [](regmap::Workspace& workspace) {
+            regmap::findRegister(workspace, "reg-status")->description =
+                "Local unsaved description";
+        }));
+    const std::size_t localUndoDepth = controller->undoDepth();
+
+    const auto saveExternal = [&](const std::function<void(regmap::Workspace&)>& mutate) {
+        auto project = regmap::openProject(
+            std::filesystem::path(manifest.toStdWString()));
+        if (!project.manifest || !project.workspace) {
+            return false;
+        }
+        mutate(*project.workspace);
+        const auto diagnostics = regmap::saveProjectFile(
+            *project.manifest, *project.workspace);
+        return std::ranges::none_of(
+            diagnostics,
+            [](const regmap::Diagnostic& diagnostic) {
+                return diagnostic.severity ==
+                    regmap::DiagnosticSeverity::error;
+            });
+    };
+
+    QVERIFY(saveExternal([](regmap::Workspace& workspace) {
+        workspace.name = "Disk Workspace One";
+        workspace.addressSpaces.front().name = "Disk Page One";
+        QVERIFY(regmap::removeObject(workspace, "reg-control"));
+        QVERIFY(regmap::removeObject(workspace, "field-ready"));
+
+        regmap::AddressSpace page;
+        page.id = "space-external";
+        page.name = "External Page";
+        page.baseAddress = UINT64_C(0x20000000);
+        page.addressWidth = 32;
+        regmap::RegisterBlock block;
+        block.id = "block-external";
+        block.name = "External Block";
+        block.size = UINT64_C(0x100);
+        regmap::Register reg;
+        reg.id = "reg-external";
+        reg.name = "EXTERNAL";
+        reg.type = regmap::FieldType::structure;
+        reg.resetValue = regmap::UnsignedValue(0);
+        regmap::Field field;
+        field.id = "field-external";
+        field.name = "MODE";
+        field.type = regmap::FieldType::enumeration;
+        regmap::EnumValue value;
+        value.id = "enum-external-zero";
+        value.name = "ZERO";
+        value.value = regmap::UnsignedValue(0);
+        field.enumValues.push_back(value);
+        reg.fields.push_back(field);
+        block.registers.push_back(reg);
+        page.blocks.push_back(block);
+        workspace.addressSpaces.push_back(page);
+    }));
+
+    QTRY_VERIFY_WITH_TIMEOUT(controller->hasExternalProjectChange(), 6000);
+    QTRY_VERIFY_WITH_TIMEOUT(decisionBar->isVisible(), 3000);
+    QVERIFY(controller->externalChangeGeneration() > 0);
+    QVERIFY(!controller->externalChangeDigest().isEmpty());
+    QCOMPARE(controller->workspace()->addressSpaces.front().name,
+             std::string{"Main"});
+    QCOMPARE(regmap::findRegister(*controller->workspace(), "reg-status")
+                 ->description,
+             std::string{"Local unsaved description"});
+
+    const auto externalRow = [diff](const QString& objectId) {
+        for (int row = 0; row < diff->model()->rowCount(); ++row) {
+            if (diff->model()->index(row, 6).data().toString() ==
+                    QStringLiteral("Disk / CLI apply") &&
+                diff->model()->index(row, 3).data().toString() == objectId) {
+                return row;
+            }
+        }
+        return -1;
+    };
+    const auto selectExternal = [diff, &externalRow](const QString& objectId) {
+        const int row = externalRow(objectId);
+        if (row < 0) return false;
+        const QModelIndex index = diff->model()->index(row, 0);
+        diff->selectionModel()->select(
+            index,
+            QItemSelectionModel::ClearAndSelect |
+                QItemSelectionModel::Rows);
+        diff->selectionModel()->setCurrentIndex(
+            index, QItemSelectionModel::NoUpdate);
+        return true;
+    };
+
+    QTRY_VERIFY_WITH_TIMEOUT(
+        selectExternal(QStringLiteral("space-main")), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(preview->isEnabled(), 2000);
+    QTest::mouseClick(preview, Qt::LeftButton);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        decisionStatus->text().contains(QStringLiteral("Preview passed")),
+        2000);
+    QTest::mouseClick(accept, Qt::LeftButton);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        controller->workspace()->addressSpaces.front().name,
+        std::string{"Disk Page One"}, 2000);
+    QCOMPARE(controller->undoDepth(), localUndoDepth + 1U);
+    QCOMPARE(regmap::findRegister(*controller->workspace(), "reg-status")
+                 ->description,
+             std::string{"Local unsaved description"});
+    controller->undo();
+    QTRY_COMPARE_WITH_TIMEOUT(
+        controller->workspace()->addressSpaces.front().name,
+        std::string{"Main"}, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        externalRow(QStringLiteral("space-main")) >= 0, 2000);
+    controller->redo();
+    QTRY_COMPARE_WITH_TIMEOUT(
+        controller->workspace()->addressSpaces.front().name,
+        std::string{"Disk Page One"}, 2000);
+
+    QTRY_VERIFY_WITH_TIMEOUT(
+        selectExternal(QStringLiteral("enum-external-zero")), 3000);
+    QTest::mouseClick(preview, Qt::LeftButton);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        decisionStatus->text().contains(
+            QStringLiteral("dependency change(s) included")),
+        2000);
+    QTest::mouseClick(accept, Qt::LeftButton);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findEnumValue(*controller->workspace(),
+                              "enum-external-zero") != nullptr,
+        2000);
+    QVERIFY(regmap::findAddressSpace(*controller->workspace(),
+                                     "space-external") != nullptr);
+
+    QTRY_VERIFY_WITH_TIMEOUT(
+        selectExternal(QStringLiteral("reg-control")), 3000);
+    QTest::mouseClick(reject, Qt::LeftButton);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        externalRow(QStringLiteral("reg-control")) < 0, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        selectExternal(QStringLiteral("field-ready")), 3000);
+    QTest::mouseClick(reject, Qt::LeftButton);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        externalRow(QStringLiteral("field-ready")) < 0, 2000);
+    QVERIFY(regmap::findRegister(*controller->workspace(),
+                                 "reg-control") != nullptr);
+    QVERIFY(regmap::findField(*controller->workspace(),
+                              "field-ready") != nullptr);
+
+#ifdef REGMAP_GUI_TEST_HAS_SUITEAPP
+    regmap::workbench::RegMapSuiteIntegration integration(&window);
+    const auto resolveDeepLink =
+        [&](const QString& registerId, const QString& fieldId = QString{}) {
+            QUrl uri;
+            uri.setScheme(QStringLiteral("regmap"));
+            uri.setHost(QStringLiteral("register"));
+            uri.setPath(QStringLiteral("/") + registerId);
+            QUrlQuery query;
+            query.addQueryItem(QStringLiteral("file"), manifest);
+            if (!fieldId.isEmpty()) {
+                query.addQueryItem(QStringLiteral("field"), fieldId);
+            }
+            uri.setQuery(query);
+            return integration.processRequestForTesting(
+                SuiteApp::makeRequest(
+                    QStringLiteral("resource.resolve"),
+                    {{QStringLiteral("uri"), uri.toString()}}));
+        };
+    QVERIFY(resolveDeepLink(QStringLiteral("reg-control"))
+                .value(QStringLiteral("ok")).toBool());
+    QVERIFY(resolveDeepLink(QStringLiteral("reg-status"),
+                            QStringLiteral("field-ready"))
+                .value(QStringLiteral("ok")).toBool());
+#endif
+
+    const std::uint64_t firstGeneration =
+        controller->externalChangeGeneration();
+    QVERIFY(!controller->externalChanges().empty());
+    const std::vector<std::string> staleDecisionIds{
+        controller->externalChanges().front().stableId};
+    QVERIFY(saveExternal([](regmap::Workspace& workspace) {
+        workspace.name = "Disk Workspace Two";
+    }));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        controller->externalChangeGeneration() > firstGeneration, 6000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        controller->rejectedExternalChangeCount(), std::size_t{0}, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        externalRow(QStringLiteral("reg-control")) >= 0, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        externalRow(QStringLiteral("field-ready")) >= 0, 3000);
+    const regmap::WorkspaceChangePlan stalePreview =
+        controller->previewExternalChanges(
+            staleDecisionIds, firstGeneration);
+    QVERIFY(!stalePreview.valid());
+    QVERIFY(std::ranges::any_of(
+        stalePreview.diagnostics,
+        [](const regmap::Diagnostic& diagnostic) {
+            return diagnostic.code == "RM5402" &&
+                diagnostic.severity == regmap::DiagnosticSeverity::error;
+        }));
+    QString staleFailure;
+    QVERIFY(!controller->rejectExternalChanges(
+        staleDecisionIds, firstGeneration, &staleFailure));
+    QVERIFY(staleFailure.contains(
+        QStringLiteral("revision changed"), Qt::CaseInsensitive));
+
+    const auto acceptRemoval = [&](const QString& objectId) {
+        if (!selectExternal(objectId)) return false;
+        bool dialogSeen = false;
+        QTimer::singleShot(0, &window, [&] {
+            auto* dialog = qobject_cast<QMessageBox*>(
+                QApplication::activeModalWidget());
+            if (dialog == nullptr) return;
+            auto* confirm = dialog->findChild<QPushButton*>(
+                QStringLiteral("confirmExternalAcceptButton"));
+            dialogSeen = confirm != nullptr &&
+                dialog->informativeText().contains(
+                    QStringLiteral("not written"), Qt::CaseInsensitive);
+            if (confirm != nullptr) {
+                QTest::mouseClick(confirm, Qt::LeftButton);
+            }
+        });
+        QTest::mouseClick(accept, Qt::LeftButton);
+        return dialogSeen;
+    };
+    QVERIFY(acceptRemoval(QStringLiteral("field-ready")));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findField(*controller->workspace(), "field-ready") == nullptr,
+        2000);
+    controller->undo();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findField(*controller->workspace(), "field-ready") != nullptr,
+        2000);
+    controller->redo();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findField(*controller->workspace(), "field-ready") == nullptr,
+        2000);
+    QVERIFY(acceptRemoval(QStringLiteral("reg-control")));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        regmap::findRegister(*controller->workspace(), "reg-control") == nullptr,
+        2000);
+
+#ifdef REGMAP_GUI_TEST_HAS_SUITEAPP
+    const QJsonObject missingRegister =
+        resolveDeepLink(QStringLiteral("reg-control"));
+    QVERIFY(!missingRegister.value(QStringLiteral("ok")).toBool());
+    QVERIFY(QJsonDocument(missingRegister)
+                .toJson(QJsonDocument::Compact)
+                .contains("reg-control"));
+    const QJsonObject missingField =
+        resolveDeepLink(QStringLiteral("reg-status"),
+                        QStringLiteral("field-ready"));
+    QVERIFY(!missingField.value(QStringLiteral("ok")).toBool());
+    QVERIFY(QJsonDocument(missingField)
+                .toJson(QJsonDocument::Compact)
+                .contains("field-ready"));
+#endif
+
+    QTRY_VERIFY_WITH_TIMEOUT(
+        selectExternal(QStringLiteral("gui-workspace")), 3000);
+    QTest::mouseClick(reject, Qt::LeftButton);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        controller->rejectedExternalChangeCount() >= std::size_t{1}, 2000);
+    QVERIFY(externalRow(QStringLiteral("gui-workspace")) < 0);
+    QCOMPARE(controller->workspace()->name,
+             std::string{"GUI Workspace"});
+    QTest::mouseClick(rejectAll, Qt::LeftButton);
+    QTRY_VERIFY_WITH_TIMEOUT(controller->externalChanges().empty(), 2000);
+    QVERIFY(decisionStatus->text().contains(
+        QStringLiteral("rejected"), Qt::CaseInsensitive));
+
+    QFile invalidFile(manifest);
+    QVERIFY(invalidFile.open(
+        QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate));
+    QCOMPARE(invalidFile.write("schema_version: invalid\n"),
+             qint64{24});
+    invalidFile.close();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        controller->externalChangeStatus().contains(
+            QStringLiteral("invalid"), Qt::CaseInsensitive),
+        6000);
+    QVERIFY(controller->workspace() != nullptr);
+    QCOMPARE(regmap::findRegister(*controller->workspace(), "reg-status")
+                 ->description,
+             std::string{"Local unsaved description"});
+    QVERIFY(!accept->isEnabled());
+
+    makeGeneratedFilesWritable(directory.path());
 }
 
 void GuiSmokeTests::protectsUnsavedChangesWhenClosing()

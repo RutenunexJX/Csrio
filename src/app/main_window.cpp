@@ -5397,6 +5397,79 @@ void MainWindow::buildUi()
     auto* diffLayout = new QVBoxLayout(diffPanel);
     diffLayout->setContentsMargins(0, 0, 0, 0);
     diffLayout->setSpacing(4);
+    externalDecisionBar_ = new QWidget(diffPanel);
+    externalDecisionBar_->setObjectName(
+        QStringLiteral("externalDecisionBar"));
+    externalDecisionBar_->setAccessibleName(
+        QStringLiteral("External Disk and CLI change decisions"));
+    auto* externalDecisionLayout =
+        new QHBoxLayout(externalDecisionBar_);
+    externalDecisionLayout->setContentsMargins(8, 5, 8, 5);
+    externalDecisionLayout->setSpacing(4);
+    externalDecisionStatusLabel_ = new QLabel(externalDecisionBar_);
+    externalDecisionStatusLabel_->setObjectName(
+        QStringLiteral("externalDecisionStatusLabel"));
+    externalDecisionStatusLabel_->setWordWrap(true);
+    externalDecisionStatusLabel_->setSizePolicy(
+        QSizePolicy::Ignored, QSizePolicy::Preferred);
+    externalDecisionStatusLabel_->setAccessibleName(
+        QStringLiteral("External change decision status"));
+    externalDecisionLayout->addWidget(
+        externalDecisionStatusLabel_, 1);
+    previewExternalButton_ = new QPushButton(
+        QStringLiteral("&Preview"), externalDecisionBar_);
+    previewExternalButton_->setObjectName(
+        QStringLiteral("previewExternalButton"));
+    previewExternalButton_->setShortcut(
+        QKeySequence(QStringLiteral("Alt+P")));
+    previewExternalButton_->setToolTip(
+        QStringLiteral(
+            "Validate the selected external changes and show dependency expansion. Shortcut: Alt+P."));
+    acceptExternalButton_ = new QPushButton(
+        QStringLiteral("&Accept selected"), externalDecisionBar_);
+    acceptExternalButton_->setObjectName(
+        QStringLiteral("acceptExternalButton"));
+    acceptExternalButton_->setShortcut(
+        QKeySequence(QStringLiteral("Alt+A")));
+    acceptExternalButton_->setToolTip(
+        QStringLiteral(
+            "Apply selected Disk / CLI changes as one undoable Workbench edit without writing disk. Shortcut: Alt+A."));
+    rejectExternalButton_ = new QPushButton(
+        QStringLiteral("&Reject selected"), externalDecisionBar_);
+    rejectExternalButton_->setObjectName(
+        QStringLiteral("rejectExternalButton"));
+    rejectExternalButton_->setShortcut(
+        QKeySequence(QStringLiteral("Alt+R")));
+    rejectExternalButton_->setToolTip(
+        QStringLiteral(
+            "Keep Workbench values for the selected changes in this observed disk revision. Shortcut: Alt+R."));
+    acceptAllExternalButton_ = new QPushButton(
+        QStringLiteral("Accept all"), externalDecisionBar_);
+    acceptAllExternalButton_->setObjectName(
+        QStringLiteral("acceptAllExternalButton"));
+    acceptAllExternalButton_->setShortcut(
+        QKeySequence(QStringLiteral("Ctrl+Alt+A")));
+    acceptAllExternalButton_->setToolTip(
+        QStringLiteral(
+            "Validate and apply every pending Disk / CLI change as one undoable Workbench edit."));
+    rejectAllExternalButton_ = new QPushButton(
+        QStringLiteral("Reject all"), externalDecisionBar_);
+    rejectAllExternalButton_->setObjectName(
+        QStringLiteral("rejectAllExternalButton"));
+    rejectAllExternalButton_->setShortcut(
+        QKeySequence(QStringLiteral("Ctrl+Alt+R")));
+    rejectAllExternalButton_->setToolTip(
+        QStringLiteral(
+            "Keep all current Workbench values for this observed disk revision."));
+    for (QPushButton* button :
+         {previewExternalButton_, acceptExternalButton_,
+          rejectExternalButton_, acceptAllExternalButton_,
+          rejectAllExternalButton_}) {
+        button->setMinimumHeight(28);
+        externalDecisionLayout->addWidget(button);
+    }
+    externalDecisionBar_->setVisible(false);
+    diffLayout->addWidget(externalDecisionBar_);
     conflictBar_ = new QWidget(diffPanel);
     conflictBar_->setObjectName(QStringLiteral("conflictBar"));
     auto* conflictLayout = new QHBoxLayout(conflictBar_);
@@ -6983,6 +7056,8 @@ void MainWindow::connectSignals()
                 }
             }
             updateEditActions();
+            updateExternalDecisionBar();
+            updateBottomPanelVisibility();
             updateSyncPresentation();
         });
     connect(
@@ -7660,6 +7735,20 @@ void MainWindow::connectSignals()
             this, &MainWindow::showGeneratedContextMenu);
     connect(diffView_, &QWidget::customContextMenuRequested,
             this, &MainWindow::showDiffContextMenu);
+    connect(previewExternalButton_, &QPushButton::clicked,
+            this, [this] { previewExternalSelection(false); });
+    connect(acceptExternalButton_, &QPushButton::clicked,
+            this, [this] { acceptExternalSelection(false); });
+    connect(rejectExternalButton_, &QPushButton::clicked,
+            this, [this] { rejectExternalSelection(false); });
+    connect(acceptAllExternalButton_, &QPushButton::clicked,
+            this, [this] { acceptExternalSelection(true); });
+    connect(rejectAllExternalButton_, &QPushButton::clicked,
+            this, [this] { rejectExternalSelection(true); });
+    connect(diffView_->selectionModel(),
+            &QItemSelectionModel::selectionChanged,
+            this,
+            [this] { updateExternalDecisionBar(); });
     for (QTableView* resultView :
          {problemsView_,
           generatedView_,
@@ -9315,6 +9404,22 @@ bool MainWindow::openStartupProjectPath(
             .arg(selectedObjectId),
         10000);
     return true;
+}
+
+const regmap::Workspace* MainWindow::currentWorkspaceForSuite(
+    const QString& projectPath) const
+{
+    if (controller_.workspace() == nullptr ||
+        controller_.manifestPath().empty()) {
+        return nullptr;
+    }
+    const QString requested = QDir::cleanPath(
+        QFileInfo(projectPath).absoluteFilePath());
+    const QString current = QDir::cleanPath(
+        QFileInfo(fromPath(controller_.manifestPath())).absoluteFilePath());
+    return requested.compare(current, Qt::CaseInsensitive) == 0
+        ? controller_.workspace()
+        : nullptr;
 }
 
 void MainWindow::reportProjectOpenFailure()
@@ -12032,7 +12137,7 @@ void MainWindow::refreshDiff()
         {QStringLiteral("Change"), QStringLiteral("Object Type"),
          QStringLiteral("Name"), QStringLiteral("Stable ID"),
          QStringLiteral("Summary"), QStringLiteral("Source"),
-         QStringLiteral("Origin")});
+         QStringLiteral("Origin"), QStringLiteral("Revision")});
     std::set<QString> displayedChanges;
     const auto appendChanges =
         [this, &displayedChanges](
@@ -12060,21 +12165,45 @@ void MainWindow::refreshDiff()
                 kind->setData(
                     static_cast<int>(change.change), changeKindRole);
                 kind->setData(fromUtf8(change.id), objectIdRole);
+                kind->setData(fromUtf8(change.stableId),
+                              externalChangeIdRole);
                 kind->setData(
-                    QStringLiteral("change:%1:%2:%3")
+                    QVariant::fromValue<qulonglong>(
+                        originKey == QStringLiteral("external")
+                            ? controller_.externalChangeGeneration()
+                            : 0),
+                    externalGenerationRole);
+                kind->setData(
+                    QStringLiteral("change:%1:%2:%3:%4")
                         .arg(originKey,
                              fromUtf8(regmap::toString(change.objectKind)),
-                             fromUtf8(change.id)),
+                             fromUtf8(change.id),
+                             originKey == QStringLiteral("external")
+                                 ? QString::number(
+                                       controller_.externalChangeGeneration())
+                                 : QStringLiteral("0")),
                     resultKeyRole);
                 const auto& source = change.afterSource.empty()
                     ? change.beforeSource
                     : change.afterSource;
+                QString summary = fromUtf8(change.summary);
+                if (!change.dependencies.empty()) {
+                    summary += QStringLiteral(" · %1 required parent change(s)")
+                                   .arg(change.dependencies.size());
+                }
+                const QString revision =
+                    originKey == QStringLiteral("external")
+                    ? QStringLiteral("g%1 · %2")
+                          .arg(controller_.externalChangeGeneration())
+                          .arg(controller_.externalChangeDigest().left(10))
+                    : QStringLiteral("—");
                 diffModel_->appendRow(
                     {kind,
                      item(fromUtf8(regmap::toString(change.objectKind))),
                      item(fromUtf8(change.name)), item(fromUtf8(change.id)),
-                     leftItem(fromUtf8(change.summary)),
-                     leftItem(sourceText(source)), leftItem(origin)});
+                     leftItem(summary),
+                     leftItem(sourceText(source)), leftItem(origin),
+                     leftItem(revision)});
             }
         };
     appendChanges(
@@ -12117,7 +12246,8 @@ void MainWindow::refreshDiff()
                                leftItem(controller_.manifest() == nullptr
                                             ? QString{}
                                             : fromPath(controller_.manifest()->rtl.path.resolved)),
-                               leftItem(QStringLiteral("Managed RTL"))});
+                               leftItem(QStringLiteral("Managed RTL")),
+                               leftItem(QStringLiteral("—"))});
     }
     diffView_->resizeColumnsToContents();
     diffView_->setColumnHidden(
@@ -12146,6 +12276,9 @@ void MainWindow::refreshDiff()
     diffHeader->setSectionResizeMode(
         6,
         QHeaderView::ResizeToContents);
+    diffHeader->setSectionResizeMode(
+        7,
+        QHeaderView::ResizeToContents);
     if (sameProject) {
         restoreResultSelection(
             diffView_,
@@ -12169,8 +12302,242 @@ void MainWindow::refreshDiff()
         tabs_->setCurrentIndex(2);
         resultsPanelRequested_ = true;
     }
+    const bool firstExternalPresentation =
+        controller_.hasExternalProjectChange() &&
+        controller_.externalChangeGeneration() != 0 &&
+        controller_.externalChangeGeneration() !=
+            presentedExternalGeneration_;
+    updateExternalDecisionBar();
+    if (controller_.hasExternalProjectChange()) {
+        resultsPanelRequested_ = true;
+    }
     updateBottomPanelVisibility();
+    if (firstExternalPresentation) {
+        tabs_->setCurrentIndex(2);
+        presentedExternalGeneration_ =
+            controller_.externalChangeGeneration();
+    }
     updateSyncPresentation();
+}
+
+std::vector<std::string> MainWindow::selectedExternalChangeIds() const
+{
+    std::set<int> rows;
+    if (diffView_ != nullptr && diffView_->selectionModel() != nullptr) {
+        for (const QModelIndex& index :
+             diffView_->selectionModel()->selectedIndexes()) {
+            rows.insert(index.row());
+        }
+        if (rows.empty() && diffView_->currentIndex().isValid()) {
+            rows.insert(diffView_->currentIndex().row());
+        }
+    }
+    std::vector<std::string> result;
+    for (const int row : rows) {
+        const QModelIndex identity = diffModel_->index(row, 0);
+        if (identity.data(changeOriginRole).toString() !=
+            QStringLiteral("external")) {
+            continue;
+        }
+        const std::string stableId = identity.data(externalChangeIdRole)
+            .toString().toUtf8().toStdString();
+        if (!stableId.empty()) {
+            result.push_back(stableId);
+        }
+    }
+    return result;
+}
+
+std::vector<std::string> MainWindow::allExternalChangeIds() const
+{
+    std::vector<std::string> result;
+    result.reserve(controller_.externalChanges().size());
+    for (const regmap::ModelChange& change : controller_.externalChanges()) {
+        result.push_back(change.stableId);
+    }
+    return result;
+}
+
+void MainWindow::updateExternalDecisionBar()
+{
+    if (externalDecisionBar_ == nullptr) {
+        return;
+    }
+    const bool pending = controller_.hasExternalProjectChange();
+    externalDecisionBar_->setVisible(pending);
+    if (!pending) {
+        return;
+    }
+    const QString status = controller_.externalChangeStatus().isEmpty()
+        ? QStringLiteral(
+              "Disk / CLI revision detected; review changes before Save or Reload")
+        : controller_.externalChangeStatus();
+    externalDecisionStatusLabel_->setText(status);
+    const bool invalid = status.contains(
+        QStringLiteral("invalid"), Qt::CaseInsensitive);
+    const bool blocked = controller_.hasConflicts() ||
+        controller_.requiresInitialSyncChoice();
+    externalDecisionStatusLabel_->setProperty(
+        "state", invalid ? QStringLiteral("error")
+                          : blocked ? QStringLiteral("warning")
+                                    : QStringLiteral("pending"));
+    externalDecisionStatusLabel_->style()->unpolish(
+        externalDecisionStatusLabel_);
+    externalDecisionStatusLabel_->style()->polish(
+        externalDecisionStatusLabel_);
+    const bool hasChanges = !controller_.externalChanges().empty();
+    const bool hasSelection = !selectedExternalChangeIds().empty();
+    previewExternalButton_->setEnabled(hasSelection && !invalid);
+    acceptExternalButton_->setEnabled(
+        hasSelection && !invalid && !blocked);
+    rejectExternalButton_->setEnabled(hasSelection && !invalid);
+    acceptAllExternalButton_->setEnabled(
+        hasChanges && !invalid && !blocked);
+    rejectAllExternalButton_->setEnabled(hasChanges && !invalid);
+}
+
+void MainWindow::previewExternalSelection(const bool all)
+{
+    if (!commitActiveEditor()) {
+        externalDecisionStatusLabel_->setProperty(
+            "state", QStringLiteral("error"));
+        externalDecisionStatusLabel_->setText(
+            QStringLiteral(
+                "Preview paused: finish or cancel the active invalid editor; no model or disk value changed"));
+        return;
+    }
+    const std::vector<std::string> requested =
+        all ? allExternalChangeIds() : selectedExternalChangeIds();
+    if (requested.empty()) {
+        externalDecisionStatusLabel_->setProperty(
+            "state", QStringLiteral("warning"));
+        externalDecisionStatusLabel_->setText(
+            QStringLiteral("Select at least one Disk / CLI diff row"));
+        return;
+    }
+    const regmap::WorkspaceChangePlan plan =
+        controller_.previewExternalChanges(
+            requested, controller_.externalChangeGeneration());
+    const auto error = std::ranges::find_if(
+        plan.diagnostics,
+        [](const regmap::Diagnostic& diagnostic) {
+            return diagnostic.severity ==
+                regmap::DiagnosticSeverity::error;
+        });
+    if (!plan.valid()) {
+        externalDecisionStatusLabel_->setProperty(
+            "state", QStringLiteral("error"));
+        externalDecisionStatusLabel_->setText(
+            error == plan.diagnostics.end()
+                ? QStringLiteral("External change preview failed")
+                : QStringLiteral("Preview blocked: %1")
+                      .arg(fromUtf8(error->message)));
+        return;
+    }
+    const std::size_t dependencyCount =
+        plan.changes.size() > requested.size()
+        ? plan.changes.size() - requested.size()
+        : 0;
+    const std::size_t warnings = static_cast<std::size_t>(std::ranges::count_if(
+        plan.diagnostics,
+        [](const regmap::Diagnostic& diagnostic) {
+            return diagnostic.severity ==
+                regmap::DiagnosticSeverity::warning;
+        }));
+    externalDecisionStatusLabel_->setProperty(
+        "state", warnings == 0 ? QStringLiteral("success")
+                                : QStringLiteral("warning"));
+    externalDecisionStatusLabel_->setText(
+        QStringLiteral(
+            "Preview passed: %1 selected, %2 dependency change(s) included, %3 warning(s); Accept is one undoable edit and does not write disk")
+            .arg(requested.size())
+            .arg(dependencyCount)
+            .arg(warnings));
+}
+
+void MainWindow::acceptExternalSelection(const bool all)
+{
+    if (!commitActiveEditor()) {
+        updateExternalDecisionBar();
+        statusBar()->showMessage(
+            QStringLiteral(
+                "External Accept paused: active editor value is invalid and was retained"),
+            6000);
+        return;
+    }
+    const std::vector<std::string> requested =
+        all ? allExternalChangeIds() : selectedExternalChangeIds();
+    const regmap::WorkspaceChangePlan preview =
+        controller_.previewExternalChanges(
+            requested, controller_.externalChangeGeneration());
+    if (!preview.valid()) {
+        previewExternalSelection(all);
+        return;
+    }
+    const std::size_t removals = static_cast<std::size_t>(std::ranges::count_if(
+        preview.changes,
+        [](const regmap::ModelChange& change) {
+            return change.change == regmap::ChangeKind::removed;
+        }));
+    if (removals > 0) {
+        QMessageBox dialog(QMessageBox::Warning,
+                           QStringLiteral("Accept External Removals"),
+                           QStringLiteral(
+                               "Accept %1 external change(s), including %2 removal(s)?")
+                               .arg(preview.changes.size())
+                               .arg(removals),
+                           QMessageBox::Cancel,
+                           this);
+        dialog.setInformativeText(
+            QStringLiteral(
+                "Dependencies are included and validation passed. Workbench changes in one undoable step; the project file is not written until an explicit Save choice."));
+        QPushButton* accept = dialog.addButton(
+            QStringLiteral("Accept into Workbench"), QMessageBox::AcceptRole);
+        accept->setObjectName(
+            QStringLiteral("confirmExternalAcceptButton"));
+        dialog.setDefaultButton(QMessageBox::Cancel);
+        dialog.exec();
+        if (dialog.clickedButton() != accept) {
+            externalDecisionStatusLabel_->setText(
+                QStringLiteral(
+                    "External Accept canceled; Workbench and disk are unchanged"));
+            return;
+        }
+    }
+    QString failure;
+    if (!controller_.acceptExternalChanges(
+            requested, controller_.externalChangeGeneration(), &failure)) {
+        externalDecisionStatusLabel_->setProperty(
+            "state", QStringLiteral("error"));
+        externalDecisionStatusLabel_->setText(
+            QStringLiteral("Accept blocked: %1").arg(failure));
+        return;
+    }
+    updateExternalDecisionBar();
+}
+
+void MainWindow::rejectExternalSelection(const bool all)
+{
+    if (!commitActiveEditor()) {
+        updateExternalDecisionBar();
+        statusBar()->showMessage(
+            QStringLiteral(
+                "External Reject paused: active editor value is invalid and was retained"),
+            6000);
+        return;
+    }
+    const std::vector<std::string> requested =
+        all ? allExternalChangeIds() : selectedExternalChangeIds();
+    QString failure;
+    if (!controller_.rejectExternalChanges(
+            requested, controller_.externalChangeGeneration(), &failure)) {
+        externalDecisionStatusLabel_->setProperty(
+            "state", QStringLiteral("error"));
+        externalDecisionStatusLabel_->setText(
+            QStringLiteral("Reject blocked: %1").arg(failure));
+        return;
+    }
+    updateExternalDecisionBar();
 }
 
 void MainWindow::activateProblemIndex(
@@ -12712,6 +13079,42 @@ void MainWindow::showDiffContextMenu(
     locate->setObjectName(
         QStringLiteral(
             "locateDiffContextAction"));
+    QAction* previewExternal = nullptr;
+    QAction* acceptExternal = nullptr;
+    QAction* rejectExternal = nullptr;
+    QAction* acceptAllExternal = nullptr;
+    QAction* rejectAllExternal = nullptr;
+    const bool external =
+        diffModel_->index(index.row(), 0)
+            .data(changeOriginRole)
+            .toString() == QStringLiteral("external");
+    if (external) {
+        menu.addSeparator();
+        previewExternal = menu.addAction(
+            QStringLiteral("Preview External Selection"));
+        previewExternal->setObjectName(
+            QStringLiteral("previewExternalContextAction"));
+        acceptExternal = menu.addAction(
+            QStringLiteral("Accept External Selection"));
+        acceptExternal->setObjectName(
+            QStringLiteral("acceptExternalContextAction"));
+        rejectExternal = menu.addAction(
+            QStringLiteral("Reject External Selection"));
+        rejectExternal->setObjectName(
+            QStringLiteral("rejectExternalContextAction"));
+        acceptAllExternal = menu.addAction(
+            QStringLiteral("Accept All External Changes"));
+        acceptAllExternal->setObjectName(
+            QStringLiteral("acceptAllExternalContextAction"));
+        rejectAllExternal = menu.addAction(
+            QStringLiteral("Reject All External Changes"));
+        rejectAllExternal->setObjectName(
+            QStringLiteral("rejectAllExternalContextAction"));
+        const bool acceptEnabled = !controller_.hasConflicts() &&
+            !controller_.requiresInitialSyncChoice();
+        acceptExternal->setEnabled(acceptEnabled);
+        acceptAllExternal->setEnabled(acceptEnabled);
+    }
     menu.addSeparator();
     menu.addAction(copyAction_);
     menu.addAction(pasteAction_);
@@ -12724,6 +13127,16 @@ void MainWindow::showDiffContextMenu(
     updateEditActions();
     if (chosen == locate) {
         activateDiffIndex(index);
+    } else if (chosen == previewExternal) {
+        previewExternalSelection(false);
+    } else if (chosen == acceptExternal) {
+        acceptExternalSelection(false);
+    } else if (chosen == rejectExternal) {
+        rejectExternalSelection(false);
+    } else if (chosen == acceptAllExternal) {
+        acceptExternalSelection(true);
+    } else if (chosen == rejectAllExternal) {
+        rejectExternalSelection(true);
     }
 }
 
@@ -12750,7 +13163,8 @@ void MainWindow::updateBottomPanelVisibility()
 {
     const bool showProblems = totalDiagnostics_ > 0;
     const bool showGenerated = generatedModel_->rowCount() > 0;
-    const bool showDiff = diffModel_->rowCount() > 0;
+    const bool showDiff = diffModel_->rowCount() > 0 ||
+        controller_.hasExternalProjectChange();
     tabs_->setTabVisible(0, showProblems);
     tabs_->setTabVisible(1, showGenerated);
     tabs_->setTabVisible(2, showDiff);

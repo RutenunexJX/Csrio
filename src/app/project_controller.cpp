@@ -435,6 +435,136 @@ bool ProjectController::hasExternalProjectChange() const noexcept
     return externalProjectChangePending_;
 }
 
+std::uint64_t ProjectController::externalChangeGeneration() const noexcept
+{
+    return externalChangeGeneration_;
+}
+
+QString ProjectController::externalChangeDigest() const
+{
+    return QString::fromLatin1(externalManifestDigest_.toHex());
+}
+
+QString ProjectController::externalChangeStatus() const
+{
+    return externalChangeStatus_;
+}
+
+std::size_t ProjectController::rejectedExternalChangeCount() const noexcept
+{
+    return rejectedExternalChangeIds_.size();
+}
+
+regmap::WorkspaceChangePlan ProjectController::previewExternalChanges(
+    const std::vector<std::string>& changeIds,
+    const std::uint64_t generation) const
+{
+    regmap::WorkspaceChangePlan unavailable;
+    const auto fail = [&unavailable](std::string message) {
+        unavailable.diagnostics.push_back(
+            regmap::Diagnostic{
+                "RM5402", regmap::DiagnosticSeverity::error,
+                std::move(message), {}, {}});
+        return unavailable;
+    };
+    const auto* current = store_.workspace();
+    if (current == nullptr || !externalWorkspace_.has_value()) {
+        return fail("No valid external project revision is available.");
+    }
+    if (generation != externalChangeGeneration_ ||
+        externalManifestDigest_.isEmpty() ||
+        fileDigest(manifestPath_) != externalManifestDigest_) {
+        return fail("The external project revision changed; refresh the diff before deciding.");
+    }
+    if (!conflicts_.empty() || initialSyncChoicePending_) {
+        return fail("Resolve managed RTL conflicts before accepting disk or CLI changes.");
+    }
+    return regmap::planWorkspaceChanges(
+        *current, *externalWorkspace_, changeIds);
+}
+
+bool ProjectController::acceptExternalChanges(
+    const std::vector<std::string>& changeIds,
+    const std::uint64_t generation,
+    QString* failureReason)
+{
+    const regmap::WorkspaceChangePlan plan =
+        previewExternalChanges(changeIds, generation);
+    if (!plan.valid()) {
+        if (failureReason != nullptr) {
+            const auto error = std::ranges::find_if(
+                plan.diagnostics,
+                [](const regmap::Diagnostic& diagnostic) {
+                    return diagnostic.severity ==
+                        regmap::DiagnosticSeverity::error;
+                });
+            *failureReason = error == plan.diagnostics.end()
+                ? QStringLiteral("The external change preview failed")
+                : fromUtf8(error->message);
+        }
+        return false;
+    }
+    const regmap::Workspace candidate = *plan.workspace;
+    const std::size_t appliedCount = plan.changes.size();
+    const bool changed = editWorkspace(
+        QStringLiteral("Accept %1 external change(s)").arg(appliedCount),
+        [candidate](regmap::Workspace& workspace) {
+            workspace = candidate;
+        });
+    if (!changed) {
+        if (failureReason != nullptr) {
+            *failureReason = QStringLiteral(
+                "The selected external changes are already present in Workbench");
+        }
+        return false;
+    }
+    externalChangeStatus_ = QStringLiteral(
+        "Accepted %1 external change(s) into one undoable Workbench edit; disk is unchanged")
+        .arg(appliedCount);
+    emit syncStatusChanged(externalChangeStatus_);
+    emit externalProjectChangeChanged();
+    return true;
+}
+
+bool ProjectController::rejectExternalChanges(
+    const std::vector<std::string>& changeIds,
+    const std::uint64_t generation,
+    QString* failureReason)
+{
+    const auto* current = store_.workspace();
+    if (current == nullptr || !externalWorkspace_.has_value() ||
+        generation != externalChangeGeneration_ ||
+        externalManifestDigest_.isEmpty() ||
+        fileDigest(manifestPath_) != externalManifestDigest_) {
+        if (failureReason != nullptr) {
+            *failureReason = QStringLiteral(
+                "The external project revision changed; refresh the diff before deciding");
+        }
+        return false;
+    }
+    const regmap::WorkspaceChangePlan plan = regmap::planWorkspaceChanges(
+        *current, *externalWorkspace_, changeIds);
+    if (plan.changes.empty()) {
+        if (failureReason != nullptr) {
+            *failureReason = QStringLiteral(
+                "No current external changes were selected");
+        }
+        return false;
+    }
+    for (const regmap::ModelChange& change : plan.changes) {
+        rejectedExternalChangeIds_.insert(change.stableId);
+    }
+    rebuildExternalChanges();
+    externalChangeStatus_ = QStringLiteral(
+        "Rejected %1 external change(s) for disk revision %2; Workbench and disk are unchanged")
+        .arg(plan.changes.size())
+        .arg(QString::fromLatin1(externalManifestDigest_.toHex().left(10)));
+    emit comparisonChanged();
+    emit externalProjectChangeChanged();
+    emit syncStatusChanged(externalChangeStatus_);
+    return true;
+}
+
 void ProjectController::deferExternalProjectReload()
 {
     if (externalProjectChangePending_) {
@@ -704,6 +834,11 @@ bool ProjectController::openProject(const QString& manifestPath)
     changes_.clear();
     savedChanges_.clear();
     externalChanges_.clear();
+    externalWorkspace_.reset();
+    externalManifestDigest_.clear();
+    externalChangeGeneration_ = 0;
+    rejectedExternalChangeIds_.clear();
+    externalChangeStatus_.clear();
     conflicts_.clear();
     loadDiagnostics_.clear();
     syncDiagnostics_.clear();
@@ -770,10 +905,10 @@ void ProjectController::reloadImpl(
     if (loaded.manifest.has_value() && loaded.workspace.has_value()) {
         if (const auto* current = store_.workspace()) {
             changes_ = regmap::diffWorkspaces(*current, *loaded.workspace);
-            externalChanges_ = changes_;
         }
         manifest_ = std::move(loaded.manifest);
         store_.reset(std::move(*loaded.workspace));
+        clearExternalComparison();
         rebuildSavedChanges();
         recoveryBaseWorkspace_ =
             *store_.workspace();
@@ -783,6 +918,9 @@ void ProjectController::reloadImpl(
             true;
         setExternalProjectChangePending(
             manifestChangedOnDisk());
+        if (externalProjectChangePending_) {
+            refreshExternalChangesFromDisk();
+        }
         lastAcceptedModelWasValid_ = true;
         artifacts_.clear();
         generationDiagnostics_.clear();
@@ -1200,6 +1338,7 @@ bool ProjectController::persistSynchronizedModel(
             true;
         setExternalProjectChangePending(
             false);
+        clearExternalComparison();
     }
     if (!containsErrors(syncDiagnostics_)) {
         appendDiagnostics(
@@ -1403,6 +1542,7 @@ void ProjectController::notifyModelEdited()
         ? regmap::diffWorkspaces(*baseline_, *store_.workspace())
         : std::vector<regmap::ModelChange> {};
     rebuildSavedChanges();
+    rebuildExternalChanges();
     if (store_.dirty()) {
         recoveryDraftTimer_.start();
     } else {
@@ -1458,23 +1598,75 @@ void ProjectController::rebuildSavedChanges()
         : std::vector<regmap::ModelChange>{};
 }
 
+void ProjectController::rebuildExternalChanges()
+{
+    const auto* current = store_.workspace();
+    if (current == nullptr || !externalWorkspace_.has_value() ||
+        externalWorkspace_->id != current->id) {
+        externalChanges_.clear();
+        return;
+    }
+    externalChanges_ = regmap::diffWorkspaces(*current, *externalWorkspace_);
+    std::erase_if(
+        externalChanges_,
+        [this](const regmap::ModelChange& change) {
+            return rejectedExternalChangeIds_.contains(change.stableId);
+        });
+    const QString revision = QString::fromLatin1(
+        externalManifestDigest_.toHex().left(10));
+    if (externalChanges_.empty() && !rejectedExternalChangeIds_.empty()) {
+        externalChangeStatus_ = QStringLiteral(
+            "All observed external changes are rejected for disk revision %1; Save remains paused")
+            .arg(revision);
+    } else if (externalChanges_.empty()) {
+        externalChangeStatus_ = QStringLiteral(
+            "Workbench matches disk revision %1; Save or Reload completes the reconciliation")
+            .arg(revision);
+    } else {
+        externalChangeStatus_ = QStringLiteral(
+            "%1 external change(s) pending for disk revision %2; %3 rejected")
+            .arg(externalChanges_.size())
+            .arg(revision)
+            .arg(rejectedExternalChangeIds_.size());
+    }
+}
+
+void ProjectController::clearExternalComparison()
+{
+    externalChanges_.clear();
+    externalWorkspace_.reset();
+    externalManifestDigest_.clear();
+    rejectedExternalChangeIds_.clear();
+    externalChangeStatus_.clear();
+}
+
 void ProjectController::refreshExternalChangesFromDisk()
 {
     const auto* current = store_.workspace();
     if (current == nullptr || manifestPath_.empty()) {
-        externalChanges_.clear();
+        clearExternalComparison();
         emit comparisonChanged();
         return;
+    }
+    const QByteArray digest = fileDigest(manifestPath_);
+    if (digest != externalManifestDigest_) {
+        externalManifestDigest_ = digest;
+        ++externalChangeGeneration_;
+        rejectedExternalChangeIds_.clear();
     }
     const auto loaded = regmap::openProject(manifestPath_);
     if (loaded.workspace.has_value() &&
         loaded.workspace->id == current->id) {
-        externalChanges_ =
-            regmap::diffWorkspaces(*current, *loaded.workspace);
+        externalWorkspace_ = *loaded.workspace;
+        rebuildExternalChanges();
     } else {
+        externalWorkspace_.reset();
         externalChanges_.clear();
+        externalChangeStatus_ = QStringLiteral(
+            "The observed external project revision is invalid; Accept and Reject are unavailable");
     }
     emit comparisonChanged();
+    emit externalProjectChangeChanged();
 }
 
 std::filesystem::path ProjectController::baselinePath() const
@@ -1707,26 +1899,23 @@ void ProjectController::checkPendingFiles()
         if (!manifestChangedOnDisk()) {
             setExternalProjectChangePending(
                 false);
+            clearExternalComparison();
+            emit comparisonChanged();
             refreshWatchPaths();
         } else {
             setExternalProjectChangePending(
                 true);
             refreshExternalChangesFromDisk();
-            if (store_.dirty() ||
-                externalProjectReloadDeferred_) {
-                refreshWatchPaths();
-                emit syncStatusChanged(
-                    store_.dirty()
-                        ? QStringLiteral(
-                              "Project changed on disk; unsaved Workbench edits were "
-                              "retained and Save & Sync is paused until you choose a version")
-                        : QStringLiteral(
-                              "Project changed on disk; the active Workbench editor "
-                              "was retained and automatic reload was paused"));
-            } else {
-                reloadImpl(
-                    true);
-            }
+            refreshWatchPaths();
+            emit syncStatusChanged(
+                store_.dirty()
+                    ? QStringLiteral(
+                          "Project changed on disk; unsaved Workbench edits were retained and per-change decisions are available")
+                    : externalProjectReloadDeferred_
+                    ? QStringLiteral(
+                          "Project changed on disk; the active Workbench editor was retained and per-change decisions are available")
+                    : QStringLiteral(
+                          "Project changed on disk; review and Accept or Reject each Disk / CLI change"));
         }
         return;
     }

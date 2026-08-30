@@ -344,12 +344,17 @@ contracts.
   and never shift existing objects. Block/Register/Field moves accept `placement: "auto"` to
   select the corresponding free destination range while preserving all stable IDs; the response
   returns the final Base, Offset, or LSB/MSB directly.
-- Workbench watches the project manifest as well as generated outputs. A clean session reloads a
-  valid external `regmapc` save automatically. If Workbench has unsaved edits, both versions are
-  retained, the sync badge shows that saving is paused, and ordinary Save & Sync cannot overwrite
-  the external change. The user must explicitly reload the disk version or choose the destructive
-  Workbench overwrite action. Text still being typed in an active cell or property editor also
-  pauses automatic reload, including values that have not yet passed validation.
+- Workbench watches the project manifest as well as generated outputs. Every valid external
+  `regmapc` or disk revision is retained as a SHA-256-identified, generation-tagged comparison;
+  it never replaces even a clean Workbench model automatically. The Diff panel can preview and
+  Accept or Reject selected changes or all changes. Accept expands required Page/Block/Register/
+  Field/Enum dependencies, validates the complete candidate, and applies one undoable Workbench
+  transaction without writing disk. Reject keeps Workbench values only for the observed digest;
+  a newer disk revision invalidates those decisions and presents its changes again. Save & Sync
+  remains paused until the user explicitly reloads the disk version or confirms the destructive
+  Workbench overwrite action.
+  Active editors, unsaved edits, invalid external files, and managed RTL conflicts remain visible
+  and are never silently replaced.
 - Problems rows navigate to their Workbench object before falling back to source navigation.
   `F8` and `Shift+F8` move to the next or previous Problem from anywhere in the window,
   reopen the Results area when needed, and wrap at either end. A successful location reports
