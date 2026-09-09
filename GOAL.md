@@ -1,14 +1,9 @@
-# RegMapWorkbench Current Goal
+# RegMapWorkbench Goal
 
-Status: completed
+Current version: `0.3.0`.
 
-Date: 2026-08-25
+Maintain a focused register-map editor with one validated model, managed RTL synchronization and generated
+XLSX/C/Markdown views. External disk changes use explicit decisions and must not silently overwrite local work.
+UI state consumes core facts and stable identities rather than maintaining another model.
 
-The competition workbench UI defined in
-[`UI_IMPLEMENTATION_PLAN.md`](UI_IMPLEMENTATION_PLAN.md) was delivered in
-commit `2d68a6e` while preserving all existing project, validation, RTL sync,
-generation, merge, CLI, and suite integration contracts. Debug and Release
-CTest each passed 4/4, including 166 GUI assertions. Sixteen deterministic
-screenshots cover light/dark, 960x720 and 1440x900, and 100/125/150/200% DPI
-scaling. The implementation was independently committed and pushed; packaging
-was not run and no package was generated.
+Current behavior is documented in [README](README.md) and [architecture](docs/architecture.md).

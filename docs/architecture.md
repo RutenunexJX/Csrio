@@ -125,3 +125,21 @@ is not replaced, so its timestamp and an existing read handle remain undisturbed
 - User-owned RTL outside the managed markers remains untouched.
 - Multi-file persistence is recoverable rather than globally atomic: if a later file write
   fails, the unchanged baseline makes the next synchronization recompute the pending changes.
+
+
+## External disk decisions
+
+Disk/CLI manifest changes are compared as stable, dependency-aware items. Selected or all changes can be
+accepted or rejected after validation. Accept applies one undoable WorkspaceStore transaction; reject keeps
+the Workbench value and records the decision against the observed disk digest. New disk revisions invalidate
+old decisions. Parent/child changes cannot leave dangling objects. Neither decision silently overwrites disk.
+This workflow is distinct from the managed RTL three-way merge described above.
+
+## Workbench presentation
+
+The shell separates address/project navigation, register table, bitfield/details and diagnostics/RTL sync.
+Selection is linked by stable identity. Text-backed status communicates dirty/sync/conflict and diagnostics;
+color alone is insufficient. Technical addresses and values use aligned monospace presentation.
+Bit spans are proportional, with a legend when labels do not fit. Keyboard and pointer selection use the same
+model state. Bounded splitter persistence and light/dark semantic colors retain useful content at compact sizes.
+UI refresh and asynchronous completion preserve the last valid model and reject stale results.

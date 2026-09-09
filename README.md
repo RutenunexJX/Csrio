@@ -1,5 +1,7 @@
 # Register Map Workbench
 
+Current version: `0.3.0`.
+
 Register Map Workbench is a standalone Qt desktop application for FPGA and SystemVerilog
 register-map development. Workbench, guarded `regmapc` property patches, and a controlled region
 in SystemVerilog RTL operate on one internal model, which produces read-only XLSX, C header, and
@@ -683,8 +685,8 @@ The package target uses Qt's deployment API to collect the Qt plugins, MinGW run
 runtime dependencies required by the built executable. It writes these files under `out`:
 
 ```text
-RegMapWorkbench-0.1.0-win64-<git-revision>[-dirty|-source-unknown].zip
-RegMapWorkbench-0.1.0-win64-<git-revision>[-dirty|-source-unknown].zip.sha256
+RegMapWorkbench-<version>-win64-<git-revision>[-dirty|-source-unknown].zip
+RegMapWorkbench-<version>-win64-<git-revision>[-dirty|-source-unknown].zip.sha256
 ```
 
 The archive contains `RegMapWorkbench.exe`, `regmapc.exe`, `README.md`, `docs/cli.md`,

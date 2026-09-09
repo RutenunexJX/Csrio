@@ -34,7 +34,7 @@ underscores are allowed. Unknown (`x`), high-impedance (`z`), and wildcard digit
 Text and token properties are held in the `properties` object of the corresponding
 `RMW:OBJECT` JSON comment. Numeric `localparam` values take precedence over the duplicated JSON
 property during parsing. Register and field types, register initial/reset values, tags, reserved
-state, numeric range bounds, field reset domains, and recursive field-parent relationships are
+state, numeric range bounds, and recursive field-parent relationships are
 synchronized through the same stable-ID object graph.
 
 The managed region is a synchronization representation, not a protocol implementation. Register
