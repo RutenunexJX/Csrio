@@ -1222,12 +1222,15 @@ void GuiSmokeTests::structuresCompetitionShellResponsively()
     QVERIFY(summary != nullptr);
     QVERIFY(pageDescription != nullptr);
     const auto& density = WorkbenchTheme::metrics();
-    QCOMPARE(generate->minimumHeight(),
-             density.standardControlHeight);
-    QCOMPARE(synchronize->minimumHeight(),
-             density.primaryControlHeight);
-    QCOMPARE(save->minimumHeight(),
-             density.primaryControlHeight);
+    // QSS min-height excludes the border; verify the rendered control bounds.
+    QVERIFY(generate->height() >= density.standardControlHeight);
+    QVERIFY(synchronize->height() >= density.primaryControlHeight);
+    QVERIFY(save->height() >= density.primaryControlHeight);
+    for (auto* button : {generate, synchronize, save}) {
+        QVERIFY(button->height() >= button->minimumSizeHint().height());
+        QVERIFY(button->width() >= button->minimumSizeHint().width());
+        QVERIFY(pageHeader->rect().contains(QRect(button->mapTo(pageHeader, QPoint()), button->size())));
+    }
     QCOMPARE(projectTitle->text(),
              QStringLiteral("GUI Workspace"));
     QVERIFY(projectPath->isVisible());
@@ -1852,7 +1855,7 @@ void GuiSmokeTests::parsesStartupProjectArguments()
     QVERIFY(
         versionOutput.contains(
             QStringLiteral(
-                "Register Map Workbench 0.2.0")));
+                "Register Map Workbench " REGMAP_EXPECTED_VERSION)));
 
     const auto [errorFinished,
                 errorExit,
@@ -6518,10 +6521,13 @@ void GuiSmokeTests::decidesExternalChangesAtomicallyAndInvalidatesDigest()
     QVERIFY(accept != nullptr);
     QVERIFY(reject != nullptr);
     QVERIFY(rejectAll != nullptr);
-    QCOMPARE(preview->minimumHeight(),
-             WorkbenchTheme::metrics().compactControlHeight);
-    QCOMPARE(accept->minimumHeight(),
-             WorkbenchTheme::metrics().compactControlHeight);
+    for (auto* button : {preview, accept}) {
+        QVERIFY(button->minimumHeight() >= WorkbenchTheme::metrics().compactControlHeight);
+        if (button->isVisible()) {
+            QVERIFY(button->height() >= button->minimumSizeHint().height());
+            QVERIFY(button->width() >= button->minimumSizeHint().width());
+        }
+    }
     QVERIFY(!preview->accessibleName().isEmpty());
     QVERIFY(!accept->accessibleName().isEmpty());
     QVERIFY(!reject->accessibleName().isEmpty());
@@ -16141,6 +16147,16 @@ void GuiSmokeTests::insertsRegisterBetweenRows()
     QCOMPARE(registers->model()->index(2, 1).data().toString(), QStringLiteral("0x8"));
     QCOMPARE(registers->model()->index(3, 0).data().toString(), QStringLiteral("+"));
 
+    // beginRegisterRename queues editor creation; wait before changing the fixture.
+    const auto renameEditor = [registers]() -> QLineEdit* {
+        for (auto* editor : registers->findChildren<QLineEdit*>()) {
+            if (editor->isVisible()) return editor;
+        }
+        return nullptr;
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(renameEditor() != nullptr, 1000);
+    QTest::keyClick(renameEditor(), Qt::Key_Escape);
+    QTRY_VERIFY_WITH_TIMEOUT(renameEditor() == nullptr, 1000);
     QVERIFY(controller->editWorkspace(
         QStringLiteral("Make room for another insertion"),
         [](regmap::Workspace& workspace) {
@@ -16153,14 +16169,18 @@ void GuiSmokeTests::insertsRegisterBetweenRows()
     QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
 
     const QModelIndex shiftedControl = registers->model()->index(2, 0);
+    registers->scrollTo(shiftedControl, QAbstractItemView::EnsureVisible);
+    QCoreApplication::processEvents();
     const QRect shiftedControlRectangle = registers->visualRect(shiftedControl);
     QVERIFY(shiftedControlRectangle.isValid());
     QTest::mouseMove(
         registers->viewport(),
         registers->visualRect(registers->model()->index(1, 0)).center());
     const QPoint secondInsertionPoint(18, shiftedControlRectangle.top());
+    QVERIFY(registers->viewport()->rect().contains(secondInsertionPoint));
     QTest::mouseMove(registers->viewport(), secondInsertionPoint);
     QTest::qWait(20);
+    QCOMPARE(registers->viewport()->cursor().shape(), Qt::PointingHandCursor);
     QTest::mouseClick(registers->viewport(), Qt::LeftButton, Qt::NoModifier,
                       secondInsertionPoint);
 
@@ -16173,14 +16193,9 @@ void GuiSmokeTests::insertsRegisterBetweenRows()
     QCOMPARE(registers->model()->index(4, 0).data().toString(), QStringLiteral("+"));
     QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
 
-    for (auto* editor :
-         registers->findChildren<QLineEdit*>()) {
-        if (editor->isVisible()) {
-            QTest::keyClick(
-                editor, Qt::Key_Escape);
-            break;
-        }
-    }
+    QTRY_VERIFY_WITH_TIMEOUT(renameEditor() != nullptr, 1000);
+    QTest::keyClick(renameEditor(), Qt::Key_Escape);
+    QTRY_VERIFY_WITH_TIMEOUT(renameEditor() == nullptr, 1000);
     QVERIFY(controller->editWorkspace(
         QStringLiteral(
             "Fix following Register"),
@@ -16201,6 +16216,8 @@ void GuiSmokeTests::insertsRegisterBetweenRows()
     QCoreApplication::processEvents();
     const QModelIndex fixedControl =
         registers->model()->index(3, 0);
+    registers->scrollTo(fixedControl, QAbstractItemView::EnsureVisible);
+    QCoreApplication::processEvents();
     const QRect fixedControlRectangle =
         registers->visualRect(
             fixedControl);
@@ -16213,10 +16230,12 @@ void GuiSmokeTests::insertsRegisterBetweenRows()
             .center());
     const QPoint blockedInsertionPoint(
         18, fixedControlRectangle.top());
+    QVERIFY(registers->viewport()->rect().contains(blockedInsertionPoint));
     QTest::mouseMove(
         registers->viewport(),
         blockedInsertionPoint);
     QTest::qWait(20);
+    QCOMPARE(registers->viewport()->cursor().shape(), Qt::PointingHandCursor);
     const std::size_t fixedUndoDepth =
         controller->undoDepth();
     QTest::mouseClick(
@@ -16260,6 +16279,8 @@ void GuiSmokeTests::insertsRegisterBetweenRows()
     QCoreApplication::processEvents();
     const QModelIndex gappedControl =
         registers->model()->index(3, 0);
+    registers->scrollTo(gappedControl, QAbstractItemView::EnsureVisible);
+    QCoreApplication::processEvents();
     const QRect gappedControlRectangle =
         registers->visualRect(
             gappedControl);
@@ -16272,10 +16293,12 @@ void GuiSmokeTests::insertsRegisterBetweenRows()
             .center());
     const QPoint gapInsertionPoint(
         18, gappedControlRectangle.top());
+    QVERIFY(registers->viewport()->rect().contains(gapInsertionPoint));
     QTest::mouseMove(
         registers->viewport(),
         gapInsertionPoint);
     QTest::qWait(20);
+    QCOMPARE(registers->viewport()->cursor().shape(), Qt::PointingHandCursor);
     QTest::mouseClick(
         registers->viewport(),
         Qt::LeftButton, Qt::NoModifier,

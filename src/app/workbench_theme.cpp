@@ -1,4 +1,5 @@
 #include "workbench_theme.hpp"
+#include "suiteui_adapter.hpp"
 
 #include <QApplication>
 #include <QFont>
@@ -183,9 +184,45 @@ QString modeName(const Mode mode)
     return mode == Mode::dark ? QStringLiteral("dark") : QStringLiteral("light");
 }
 
-QString styleSheet(const Mode mode)
+static QString styleSheetImpl(const Mode mode, bool sdkControls)
 {
     const Tokens& token = tokens(mode);
+    const QString headerButtons = sdkControls ? QString() : QStringLiteral(R"QSS(
+QToolButton#saveSyncButton, QToolButton#synchronizeButton {
+    min-height: {{primary}}px;
+    padding: 0 {{space3}}px;
+    color: {{onAccent}};
+    background: {{accent}};
+    border: 1px solid {{accent}};
+    border-radius: {{radiusSmall}}px;
+    font-weight: 600;
+}
+QToolButton#saveSyncButton:hover, QToolButton#synchronizeButton:hover { border-color: {{focus}}; }
+QToolButton#generateButton {
+    min-height: {{standard}}px;
+    padding: 0 {{space3}}px;
+    color: {{text}};
+    background: {{panel}};
+    border: 1px solid {{border}};
+    border-radius: {{radiusSmall}}px;
+    font-weight: 600;
+}
+)QSS");
+    const QString controls = sdkControls ? QString() : QStringLiteral(R"QSS(
+QPushButton, QToolButton {
+    min-height: {{standard}}px;
+    background: {{panel}};
+    color: {{text}};
+    border: 1px solid {{border}};
+    border-radius: {{radiusSmall}}px;
+    padding: 0 {{space2}}px;
+}
+QPushButton:hover, QToolButton:hover { background: {{selection}}; border-color: {{focus}}; }
+QPushButton:pressed, QToolButton:pressed { background: {{divider}}; }
+QPushButton:checked, QToolButton:checked { background: {{selection}}; border-color: {{accent}}; }
+QPushButton:disabled, QToolButton:disabled { color: {{muted}}; background: {{panel}}; border-color: {{divider}}; }
+QPushButton:focus, QToolButton:focus, QComboBox:focus { border: 2px solid {{focus}}; }
+)QSS");
     QString sheet = QStringLiteral(R"QSS(
 QMainWindow, QDialog { background: {{application}}; color: {{text}}; }
 QWidget#workbenchCanvas { background: {{application}}; }
@@ -212,25 +249,7 @@ QLabel#fileStateBadge[state="loading"], QLabel#syncStateBadge[state="busy"] { co
 QLabel#fileStateBadge[state="failed"], QLabel#syncStateBadge[state="blocked"],
 QLabel#syncStateBadge[state="conflict"], QLabel#syncStateBadge[state="partial"],
 QLabel#recoveryStateBadge[state="failed"] { color: {{error}}; }
-QToolButton#saveSyncButton, QToolButton#synchronizeButton {
-    min-height: {{primary}}px;
-    padding: 0 {{space3}}px;
-    color: {{onAccent}};
-    background: {{accent}};
-    border: 1px solid {{accent}};
-    border-radius: {{radiusSmall}}px;
-    font-weight: 600;
-}
-QToolButton#saveSyncButton:hover, QToolButton#synchronizeButton:hover { border-color: {{focus}}; }
-QToolButton#generateButton {
-    min-height: {{standard}}px;
-    padding: 0 {{space3}}px;
-    color: {{text}};
-    background: {{panel}};
-    border: 1px solid {{border}};
-    border-radius: {{radiusSmall}}px;
-    font-weight: 600;
-}
+{{headerButtons}}
 QMenuBar {
     background: {{header}};
     color: {{onAccent}};
@@ -363,19 +382,7 @@ QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit, QPlainTextEdit {
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus,
 QTextEdit:focus, QPlainTextEdit:focus { border: 2px solid {{focus}}; }
 QLineEdit[readOnly="true"] { background: {{panel}}; color: {{muted}}; }
-QPushButton, QToolButton {
-    min-height: {{standard}}px;
-    background: {{panel}};
-    color: {{text}};
-    border: 1px solid {{border}};
-    border-radius: {{radiusSmall}}px;
-    padding: 0 {{space2}}px;
-}
-QPushButton:hover, QToolButton:hover { background: {{selection}}; border-color: {{focus}}; }
-QPushButton:pressed, QToolButton:pressed { background: {{divider}}; }
-QPushButton:checked, QToolButton:checked { background: {{selection}}; border-color: {{accent}}; }
-QPushButton:disabled, QToolButton:disabled { color: {{muted}}; background: {{panel}}; border-color: {{divider}}; }
-QPushButton:focus, QToolButton:focus, QComboBox:focus { border: 2px solid {{focus}}; }
+{{controls}}
 QSplitter::handle { background: {{divider}}; border-radius: {{space}}px; }
 QSplitter::handle:hover, QSplitter::handle:focus { background: {{focus}}; }
 QSplitter::handle:horizontal { width: 8px; margin: 1px 2px; }
@@ -386,6 +393,8 @@ QStatusBar QLabel#activeContextLabel { color: {{info}}; padding: 0 {{space2}}px;
 QToolTip { background: {{raised}}; color: {{text}}; border: 1px solid {{border}}; padding: {{space}}px; }
 )QSS");
 
+    sheet.replace(QStringLiteral("{{headerButtons}}"), headerButtons);
+    sheet.replace(QStringLiteral("{{controls}}"), controls);
     const std::array<std::pair<QString, QColor>, 26> replacements{{
         {QStringLiteral("application"), token.application},
         {QStringLiteral("canvas"), token.canvas},
@@ -434,6 +443,8 @@ QToolTip { background: {{raised}}; color: {{text}}; border: 1px solid {{border}}
     }
     return sheet;
 }
+
+QString styleSheet(const Mode mode) { return styleSheetImpl(mode, false); }
 
 double contrastRatio(const QColor& foreground, const QColor& background)
 {
@@ -487,7 +498,10 @@ void apply(QApplication& application)
 
 void apply(QApplication& application, const Mode mode)
 {
-    if (application.style() == nullptr ||
+    QStyle* backend = nullptr;
+    if (RegMapSuiteUi::enabled()) {
+        backend = RegMapSuiteUi::install(application);
+    } else if (application.style() == nullptr ||
         application.style()->objectName().compare(
             QStringLiteral("fusion"), Qt::CaseInsensitive) != 0) {
         if (QStyle* style = QStyleFactory::create(QStringLiteral("Fusion"))) {
@@ -532,7 +546,8 @@ void apply(QApplication& application, const Mode mode)
     palette.setColor(QPalette::Disabled, QPalette::Text, token.mutedText);
     palette.setColor(QPalette::Disabled, QPalette::ButtonText, token.mutedText);
     application.setPalette(palette);
-    application.setStyleSheet(styleSheet(mode));
+    if (backend) RegMapSuiteUi::update(backend, mode);
+    application.setStyleSheet(styleSheetImpl(mode, backend != nullptr));
     application.setProperty(themeProperty, modeName(mode));
     application.setProperty(
         reducedMotionProperty, reducedMotionEnabled());

@@ -5635,6 +5635,7 @@ void MainWindow::buildUi()
             pageHeader_);
     fileStateLabel_->setObjectName(
         QStringLiteral("fileStateBadge"));
+    fileStateLabel_->setWordWrap(true);
     fileStateLabel_->setSizePolicy(
         QSizePolicy::Fixed,
         QSizePolicy::Preferred);
@@ -5651,6 +5652,7 @@ void MainWindow::buildUi()
             pageHeader_);
     syncStateLabel_->setObjectName(
         QStringLiteral("syncStateBadge"));
+    syncStateLabel_->setWordWrap(true);
     syncStateLabel_->setSizePolicy(
         QSizePolicy::Fixed,
         QSizePolicy::Preferred);

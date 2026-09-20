@@ -19,6 +19,8 @@ add_library(
     table_selection_utils.hpp
     workbench_theme.cpp
     workbench_theme.hpp
+    suiteui_adapter.cpp
+    suiteui_adapter.hpp
 )
 add_library(RegMap::WorkbenchUi ALIAS regmap_workbench_ui)
 if(SuiteApp_FOUND)
@@ -32,6 +34,11 @@ if(SuiteApp_FOUND)
 endif()
 set_target_properties(regmap_workbench_ui PROPERTIES AUTOMOC ON)
 target_link_libraries(regmap_workbench_ui PUBLIC RegMap::Core Qt6::Widgets)
+if(REGMAP_ENABLE_SUITEUI)
+    target_link_libraries(regmap_workbench_ui PRIVATE SuiteUi::Controls)
+    target_compile_definitions(regmap_workbench_ui PRIVATE REGMAP_ENABLE_SUITEUI=1)
+    suiteui_install_notices(DESTINATION licenses/SuiteUi)
+endif()
 target_include_directories(regmap_workbench_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_features(regmap_workbench_ui PUBLIC cxx_std_20)
 regmap_enable_warnings(regmap_workbench_ui)

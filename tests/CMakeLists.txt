@@ -124,6 +124,8 @@ if(TARGET RegMap::WorkbenchUi)
         )
     endif()
     target_compile_features(regmap_gui_tests PRIVATE cxx_std_20)
+    target_compile_definitions(regmap_gui_tests PRIVATE
+        REGMAP_TEST_UI_INITIALIZATION REGMAP_EXPECTED_VERSION="${PROJECT_VERSION}")
     regmap_enable_warnings(regmap_gui_tests)
     add_test(
         NAME regmap_gui_tests
@@ -191,4 +193,22 @@ if(TARGET RegMap::WorkbenchUi)
                     "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>"
         )
     endif()
+endif()
+
+foreach(target regmap_gui_tests regmap_core_tests regmap_cli_tests regmap_suiteapp_integration_test)
+    if(TARGET ${target})
+        target_sources(${target} PRIVATE test_profile.cpp)
+    endif()
+endforeach()
+if(REGMAP_BUILD_APP)
+    qt_add_executable(regmap_suiteui_control_test suiteui_controls_test.cpp)
+    set_target_properties(regmap_suiteui_control_test PROPERTIES AUTOMOC ON)
+    target_link_libraries(regmap_suiteui_control_test PRIVATE RegMap::WorkbenchUi Qt6::Test)
+    target_compile_definitions(regmap_suiteui_control_test PRIVATE
+        REGMAP_TEST_SUITEUI_ENABLED=$<BOOL:${REGMAP_ENABLE_SUITEUI}>)
+    add_test(NAME regmap_suiteui_controls COMMAND regmap_suiteui_control_test
+        -o "${CMAKE_CURRENT_BINARY_DIR}/regmap_suiteui_controls.log,txt")
+    set_tests_properties(regmap_suiteui_controls PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 endif()
