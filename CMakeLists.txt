@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.24)
 
 project(
     RegMapWorkbench
-    VERSION 0.3.1
+    VERSION 0.3.2
     DESCRIPTION "Register map workbench for FPGA and SystemVerilog development"
     LANGUAGES CXX
 )
@@ -14,7 +14,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(REGMAP_BUILD_APP "Build the Qt desktop application" ON)
 option(REGMAP_BUILD_CLI "Build the regmapc command-line interface" ON)
 option(REGMAP_BUILD_TESTS "Build unit tests" ON)
-option(REGMAP_ENABLE_SUITEUI "Use the pinned optional SuiteUi control renderer" OFF)
+option(REGMAP_ENABLE_SUITEUI "Use the pinned SuiteUi control renderer by default" ON)
 
 if(WIN32 AND REGMAP_BUILD_APP)
     set(CMAKE_INSTALL_BINDIR "." CACHE STRING "Runtime installation directory" FORCE)

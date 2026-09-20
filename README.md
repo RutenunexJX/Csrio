@@ -1,6 +1,6 @@
 # Register Map Workbench
 
-Current version: `0.3.1`.
+Current version: `0.3.2`.
 
 Register Map Workbench is a standalone Qt desktop application for FPGA and SystemVerilog
 register-map development. Workbench, guarded `regmapc` property patches, and a controlled region
@@ -700,9 +700,10 @@ schema versions before a host opens a project.
 The checked-in [minimal project](examples/minimal/.regmap.yaml) is a complete schema-version-2
 example.
 
-### Optional SuiteUi controls
+### Default SuiteUi controls
 
-The default build retains Fusion/QSS. Set `REGMAP_ENABLE_SUITEUI=ON` and point
+Since 0.3.2, the default build and formal package use SuiteUi. `REGMAP_ENABLE_SUITEUI`
+defaults to ON; existing CMake caches need an explicit ON override. Point
 `SuiteUi_DIR` at an installed `SuiteUi 0.1.0` package (`lib/cmake/SuiteUi`) to use
 the independently built control renderer. The version is exact; Qt/compiler and
 configuration must match the SDK's build-info.json. The CLI/core targets do not
@@ -713,7 +714,9 @@ Use `REGMAP_UI_STYLE=classic` when starting an SDK-enabled build for a local
 comparison. To remove the dependency, configure `REGMAP_ENABLE_SUITEUI=OFF` and
 rebuild. Theme preferences and project data require no migration. Runtime packages
 from SDK-enabled builds include `licenses/SuiteUi` with the SDK/backend/font
-notices and provenance. SDK integration does not replace the published package.
+notices and provenance. `REGMAP_UI_STYLE=classic` keeps the original Fusion/QSS
+controls available without replacing the executable. Native cross-DPI and frame-pacing
+validation limits are unchanged by this default switch.
 
 Tests use temporary settings and apply the actual theme before GUI cases.
 `REGMAP_TEST_THEME=light|dark`, `QT_SCALE_FACTOR`, `QT_REDUCE_MOTION` and

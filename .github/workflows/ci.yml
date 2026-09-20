@@ -24,6 +24,7 @@ jobs:
           cache: true
 
       - name: Configure
+        # This MSVC job has no matching SuiteUi SDK; exercise the explicit fallback.
         run: >-
           cmake -S . -B build
           -G "Visual Studio 17 2022"
@@ -31,6 +32,7 @@ jobs:
           -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR"
           -DREGMAP_BUILD_APP=ON
           -DREGMAP_BUILD_TESTS=ON
+          -DREGMAP_ENABLE_SUITEUI=OFF
 
       - name: Build
         run: cmake --build build --config Debug --parallel
