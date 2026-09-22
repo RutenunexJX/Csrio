@@ -5,6 +5,7 @@
 #include "source_navigation.hpp"
 #include "table_selection_utils.hpp"
 #include "workbench_theme.hpp"
+#include "workbench_controls.hpp"
 
 #include "regmap/core/model_tokens.hpp"
 #include "regmap/core/serialization.hpp"
@@ -100,6 +101,7 @@
 #include <functional>
 #include <iterator>
 #include <limits>
+#include <memory>
 #include <numeric>
 #include <optional>
 #include <set>
@@ -844,14 +846,65 @@ parseNumericRangeText(const QString& value)
 
 [[nodiscard]] QFont monospaceFont()
 {
-    QFont font = QFontDatabase::systemFont(
-        QFontDatabase::FixedFont);
-    const qreal pointSize =
-        QApplication::font().pointSizeF();
-    if (pointSize > 0.0) {
-        font.setPointSizeF(pointSize);
+    return WorkbenchTheme::monospaceFont();
+}
+
+class PanelScrollArea final : public QScrollArea {
+public:
+    using QScrollArea::QScrollArea;
+    QSize sizeHint() const override
+    {
+        // QScrollArea caches the initial hint, before project-dependent sections
+        // appear. Recompute it so an unconstrained pane does not hide its map.
+        if (!widget()) return QScrollArea::sizeHint();
+        QSize hint = widget()->sizeHint();
+        hint.rwidth() += 2 * frameWidth();
+        hint.rheight() += 2 * frameWidth();
+        if (widget()->minimumSizeHint().width() > viewport()->width())
+            hint.rheight() += horizontalScrollBar()->sizeHint().height();
+        return hint;
     }
-    return font;
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override
+    {
+        const bool result = QScrollArea::eventFilter(watched, event);
+        if (watched == widget() && (event->type() == QEvent::LayoutRequest ||
+                                   event->type() == QEvent::Resize))
+            updateGeometry();
+        return result;
+    }
+};
+
+void makePanelScrollable(QWidget* panel, const QString& name, QWidget* pinnedTable = nullptr)
+{
+    if (pinnedTable) panel->layout()->removeWidget(pinnedTable);
+    auto* content = new QWidget;
+    content->setObjectName(name + QStringLiteral("Content"));
+    content->setLayout(panel->layout());
+    content->layout()->setSizeConstraint(QLayout::SetMinimumSize);
+    auto* scroll = new PanelScrollArea(panel);
+    scroll->setObjectName(name);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setWidgetResizable(true);
+    scroll->setWidget(content);
+    WorkbenchControls::styleScrollArea(scroll);
+    QObject::connect(qApp, &QApplication::focusChanged, scroll,
+        [scroll](QWidget*, QWidget* focused) {
+            if (focused && scroll->widget() && scroll->widget()->isAncestorOf(focused))
+                scroll->ensureWidgetVisible(focused, 8, 8);
+        });
+    scroll->setAccessibleName(name == QStringLiteral("registerPanelScroll")
+                                 ? QStringLiteral("Register workspace scroll area")
+                                 : QStringLiteral("Field workspace scroll area"));
+    auto* layout = new QVBoxLayout(panel);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(WorkbenchTheme::metrics().baseSpacing);
+    layout->addWidget(scroll);
+    if (pinnedTable) {
+        scroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustToContents);
+        scroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
+        layout->addWidget(pinnedTable, 1);
+    }
 }
 
 [[nodiscard]] QStandardItem* addRowItem(const QString& text, int addRole)
@@ -1557,7 +1610,7 @@ public:
     {
         Q_UNUSED(option)
         Q_UNUSED(index)
-        auto* editor = new QComboBox(parent);
+        auto* editor = WorkbenchControls::cellComboBox(parent);
         editor->setObjectName(QStringLiteral("fieldAccessEditor"));
         editor->setEditable(false);
         editor->addItems({QStringLiteral("NONE"), QStringLiteral("RO"),
@@ -1567,8 +1620,13 @@ public:
         auto* delegate = const_cast<AccessItemDelegate*>(this);
         connect(editor, QOverload<int>::of(&QComboBox::activated), editor,
                 [delegate, editor] {
-                    Q_EMIT delegate->commitData(editor);
-                    Q_EMIT delegate->closeEditor(editor);
+                    const QPointer<QComboBox> guardedEditor(editor);
+                    editor->hidePopup();
+                    QTimer::singleShot(0, delegate, [delegate, guardedEditor] {
+                        if (!guardedEditor || !guardedEditor->isVisible()) return;
+                        Q_EMIT delegate->commitData(guardedEditor.data());
+                        if (guardedEditor) Q_EMIT delegate->closeEditor(guardedEditor.data());
+                    });
                 });
         return editor;
     }
@@ -1602,33 +1660,6 @@ public:
     }
 };
 
-class TypeEditorComboBox final : public QComboBox {
-public:
-    using QComboBox::QComboBox;
-
-    void showPopup() override
-    {
-        setProperty("typePopupAutoOpened", true);
-        if (QApplication::platformName() == QLatin1String("offscreen")) {
-            return;
-        }
-        QComboBox::showPopup();
-    }
-
-protected:
-    void showEvent(QShowEvent* event) override
-    {
-        QComboBox::showEvent(event);
-        QTimer::singleShot(
-            0, this,
-            [this] {
-                if (isVisible()) {
-                    showPopup();
-                }
-            });
-    }
-};
-
 class TypeItemDelegate final : public QStyledItemDelegate {
 public:
     explicit TypeItemDelegate(
@@ -1645,7 +1676,7 @@ public:
     {
         Q_UNUSED(option)
         Q_UNUSED(index)
-        auto* editor = new TypeEditorComboBox(parent);
+        auto* editor = WorkbenchControls::cellComboBox(parent, true);
         editor->setObjectName(QStringLiteral("typeEditor"));
         editor->setEditable(true);
         editor->setInsertPolicy(QComboBox::NoInsert);
@@ -4223,6 +4254,8 @@ MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
     , controller_(this)
 {
+    setStatusBar(WorkbenchControls::statusBar(this));
+    windowChrome_ = WorkbenchControls::installWindowChrome(this);
     buildUi();
     buildActions();
     connectSignals();
@@ -4308,15 +4341,15 @@ void MainWindow::buildUi()
         new QLabel(QStringLiteral("Workspace"), hierarchyHeader);
     hierarchyTitle->setObjectName(QStringLiteral("hierarchyTitle"));
     hierarchyTitle->setToolTip(QStringLiteral("Workspace / Pages / Blocks"));
-    hierarchyAddButton_ = new QPushButton(QStringLiteral("+ Page"), hierarchyHeader);
+    hierarchyAddButton_ = WorkbenchControls::pushButton(QStringLiteral("+ Page"), hierarchyHeader);
     hierarchyAddButton_->setObjectName(QStringLiteral("hierarchyAddButton"));
     hierarchyAddButton_->setEnabled(false);
-    favoriteToggleButton_ = new QToolButton(hierarchyHeader);
+    favoriteToggleButton_ = WorkbenchControls::toolButton(hierarchyHeader);
     favoriteToggleButton_->setObjectName(QStringLiteral("favoriteToggleButton"));
     favoriteToggleButton_->setText(QStringLiteral("\u2606"));
     favoriteToggleButton_->setEnabled(false);
     favoriteToggleButton_->setToolTip(QStringLiteral("Add the active Page, Block, or Register to Favorites"));
-    quickNavigationButton_ = new QToolButton(hierarchyHeader);
+    quickNavigationButton_ = WorkbenchControls::toolButton(hierarchyHeader);
     quickNavigationButton_->setObjectName(QStringLiteral("quickNavigationButton"));
     quickNavigationButton_->setText(QStringLiteral("Navigate"));
     quickNavigationButton_->setToolTip(
@@ -4324,7 +4357,7 @@ void MainWindow::buildUi()
             "Open Favorites and recent objects (Ctrl+K)"));
     quickNavigationButton_->setPopupMode(QToolButton::InstantPopup);
     quickNavigationButton_->setEnabled(false);
-    quickNavigationMenu_ = new QMenu(quickNavigationButton_);
+    quickNavigationMenu_ = WorkbenchControls::menu(quickNavigationButton_);
     quickNavigationMenu_->setObjectName(QStringLiteral("quickNavigationMenu"));
     quickNavigationButton_->setMenu(quickNavigationMenu_);
     auto* quickNavigationShortcut =
@@ -4501,7 +4534,7 @@ void MainWindow::buildUi()
 
     pageContextLabel_ = new QLabel(QStringLiteral("Page: —"), this);
     pageContextLabel_->setObjectName(QStringLiteral("contextTitle"));
-    pageBaseEdit_ = new QLineEdit(this);
+    pageBaseEdit_ = WorkbenchControls::lineEdit(this);
     pageBaseEdit_->setObjectName(QStringLiteral("pageBaseEdit"));
     pageBaseEdit_->setPlaceholderText(QStringLiteral("0x00000000"));
     pageBaseEdit_->setAccessibleName(QStringLiteral("Page base address"));
@@ -4509,7 +4542,8 @@ void MainWindow::buildUi()
         QStringLiteral(
             "Absolute base address of this Page. Enter a 64-bit unsigned decimal value or 0x-prefixed hexadecimal."));
     pageBaseEdit_->setMaximumWidth(120);
-    pageWidthEdit_ = new QLineEdit(this);
+    pageBaseEdit_->setMinimumWidth(110);
+    pageWidthEdit_ = WorkbenchControls::lineEdit(this);
     pageWidthEdit_->setObjectName(QStringLiteral("pageWidthEdit"));
     pageWidthEdit_->setPlaceholderText(QStringLiteral("32"));
     pageWidthEdit_->setAccessibleName(QStringLiteral("Page address width in bits"));
@@ -4517,7 +4551,8 @@ void MainWindow::buildUi()
         QStringLiteral(
             "Address width in bits for this Page. Enter a decimal value from 1 to 64."));
     pageWidthEdit_->setMaximumWidth(90);
-    pageDescriptionEdit_ = new QLineEdit(this);
+    pageWidthEdit_->setMinimumWidth(40);
+    pageDescriptionEdit_ = WorkbenchControls::lineEdit(this);
     pageDescriptionEdit_->setObjectName(QStringLiteral("pageDescriptionEdit"));
     pageDescriptionEdit_->setPlaceholderText(QStringLiteral("Optional page description"));
     pageDescriptionEdit_->setAccessibleName(QStringLiteral("Page description"));
@@ -4525,7 +4560,7 @@ void MainWindow::buildUi()
 
     blockContextLabel_ = new QLabel(QStringLiteral("Block: —"), this);
     blockContextLabel_->setObjectName(QStringLiteral("contextTitle"));
-    blockBaseEdit_ = new QLineEdit(this);
+    blockBaseEdit_ = WorkbenchControls::lineEdit(this);
     blockBaseEdit_->setObjectName(QStringLiteral("blockBaseEdit"));
     blockBaseEdit_->setPlaceholderText(QStringLiteral("0x0000"));
     blockBaseEdit_->setAccessibleName(QStringLiteral("Block base offset"));
@@ -4533,7 +4568,8 @@ void MainWindow::buildUi()
         QStringLiteral(
             "Base offset of this Block relative to its Page. Enter a 64-bit unsigned decimal value or 0x-prefixed hexadecimal."));
     blockBaseEdit_->setMaximumWidth(120);
-    blockSizeEdit_ = new QLineEdit(this);
+    blockBaseEdit_->setMinimumWidth(80);
+    blockSizeEdit_ = WorkbenchControls::lineEdit(this);
     blockSizeEdit_->setObjectName(QStringLiteral("blockSizeEdit"));
     blockSizeEdit_->setPlaceholderText(QStringLiteral("0x1000"));
     blockSizeEdit_->setAccessibleName(QStringLiteral("Block size in bytes"));
@@ -4541,13 +4577,14 @@ void MainWindow::buildUi()
         QStringLiteral(
             "Reserved address span of this Block in bytes. Enter a positive decimal value or 0x-prefixed hexadecimal; clear to leave the size unspecified."));
     blockSizeEdit_->setMaximumWidth(120);
-    blockDescriptionEdit_ = new QLineEdit(this);
+    blockSizeEdit_->setMinimumWidth(80);
+    blockDescriptionEdit_ = WorkbenchControls::lineEdit(this);
     blockDescriptionEdit_->setObjectName(QStringLiteral("blockDescriptionEdit"));
     blockDescriptionEdit_->setPlaceholderText(QStringLiteral("Optional block description"));
     blockDescriptionEdit_->setAccessibleName(QStringLiteral("Block description"));
     blockDescriptionEdit_->setMinimumWidth(170);
 
-    tagFilter_ = new QComboBox(this);
+    tagFilter_ = WorkbenchControls::comboBox(this);
     tagFilter_->setObjectName(QStringLiteral("tagFilter"));
     tagFilter_->setAccessibleName(
         QStringLiteral(
@@ -4599,7 +4636,7 @@ void MainWindow::buildUi()
                 ->installEventFilter(this);
         }
     }
-    clearTagFilterButton_ = new QToolButton(this);
+    clearTagFilterButton_ = WorkbenchControls::toolButton(this);
     clearTagFilterButton_->setObjectName(QStringLiteral("clearTagFilterButton"));
     clearTagFilterButton_->setText(QStringLiteral("Clear"));
     clearTagFilterButton_->setAccessibleName(
@@ -4614,7 +4651,7 @@ void MainWindow::buildUi()
         QStringLiteral("registerSelectionLabel"));
     registerSelectionLabel_->setVisible(false);
     registerBatchEditButton_ =
-        new QToolButton(this);
+        WorkbenchControls::toolButton(this);
     registerBatchEditButton_->setObjectName(
         QStringLiteral(
             "registerBatchEditButton"));
@@ -4655,9 +4692,13 @@ void MainWindow::buildUi()
     auto* pageRow = new QHBoxLayout;
     pageRow->setContentsMargins(0, 0, 0, 0);
     pageRow->addWidget(pageContextLabel_);
-    pageRow->addWidget(new QLabel(QStringLiteral("Base Address"), contextBar));
+    auto* baseCaption = new QLabel(QStringLiteral("Base"), contextBar);
+    baseCaption->setToolTip(QStringLiteral("Page base address"));
+    pageRow->addWidget(baseCaption);
     pageRow->addWidget(pageBaseEdit_);
-    pageRow->addWidget(new QLabel(QStringLiteral("Address Width (bits)"), contextBar));
+    auto* widthCaption = new QLabel(QStringLiteral("Bits"), contextBar);
+    widthCaption->setToolTip(QStringLiteral("Page address width in bits"));
+    pageRow->addWidget(widthCaption);
     pageRow->addWidget(pageWidthEdit_);
     pageDescriptionLabel_ =
         new QLabel(
@@ -4671,9 +4712,13 @@ void MainWindow::buildUi()
     auto* blockRow = new QHBoxLayout;
     blockRow->setContentsMargins(0, 0, 0, 0);
     blockRow->addWidget(blockContextLabel_);
-    blockRow->addWidget(new QLabel(QStringLiteral("Base Offset"), contextBar));
+    auto* offsetCaption = new QLabel(QStringLiteral("Offset"), contextBar);
+    offsetCaption->setToolTip(QStringLiteral("Block base offset"));
+    blockRow->addWidget(offsetCaption);
     blockRow->addWidget(blockBaseEdit_);
-    blockRow->addWidget(new QLabel(QStringLiteral("Size (bytes)"), contextBar));
+    auto* sizeCaption = new QLabel(QStringLiteral("Bytes"), contextBar);
+    sizeCaption->setToolTip(QStringLiteral("Block size in bytes"));
+    blockRow->addWidget(sizeCaption);
     blockRow->addWidget(blockSizeEdit_);
     blockDescriptionLabel_ =
         new QLabel(
@@ -4786,15 +4831,15 @@ void MainWindow::buildUi()
     registerEmptyLayout->addLayout(
         registerEmptyText, 1);
     registerEmptyTertiaryButton_ =
-        new QPushButton(registerEmptyState_);
+        WorkbenchControls::pushButton(registerEmptyState_);
     registerEmptyTertiaryButton_->setObjectName(
         QStringLiteral("registerEmptyTertiaryButton"));
     registerEmptySecondaryButton_ =
-        new QPushButton(registerEmptyState_);
+        WorkbenchControls::pushButton(registerEmptyState_);
     registerEmptySecondaryButton_->setObjectName(
         QStringLiteral("registerEmptySecondaryButton"));
     registerEmptyPrimaryButton_ =
-        new QPushButton(registerEmptyState_);
+        WorkbenchControls::pushButton(registerEmptyState_);
     registerEmptyPrimaryButton_->setObjectName(
         QStringLiteral("registerEmptyPrimaryButton"));
     registerEmptyTertiaryButton_->setMinimumHeight(
@@ -4831,7 +4876,7 @@ void MainWindow::buildUi()
     registerFeedbackLabel_->setTextInteractionFlags(
         Qt::TextSelectableByMouse);
     auto* dismissRegisterFeedback =
-        new QToolButton(registerFeedbackBar_);
+        WorkbenchControls::toolButton(registerFeedbackBar_);
     dismissRegisterFeedback->setText(
         QStringLiteral("Close"));
     dismissRegisterFeedback->setToolTip(
@@ -4860,6 +4905,7 @@ void MainWindow::buildUi()
     fieldView_->setObjectName(QStringLiteral("fieldView"));
     fieldView_->setModel(fieldModel_);
     regmap::ui::configureDataTable(fieldView_);
+    fieldView_->setMinimumHeight(104);
     regmap::ui::configureRowSelectionGutter(fieldView_);
     fieldView_->setItemDelegate(
         new WorkbenchItemDelegate(
@@ -5057,7 +5103,7 @@ void MainWindow::buildUi()
         QStringLiteral("fieldSelectionLabel"));
     fieldSelectionLabel_->setVisible(false);
     fieldBatchEditButton_ =
-        new QToolButton(
+        WorkbenchControls::toolButton(
             fieldHeaderBar_);
     fieldBatchEditButton_->setObjectName(
         QStringLiteral(
@@ -5073,7 +5119,7 @@ void MainWindow::buildUi()
             "Batch edit selected Fields"));
     fieldBatchEditButton_->setVisible(
         false);
-    closeFieldsButton_ = new QPushButton(QStringLiteral("Close Details"), fieldHeaderBar_);
+    closeFieldsButton_ = WorkbenchControls::pushButton(QStringLiteral("Close Details"), fieldHeaderBar_);
     closeFieldsButton_->setObjectName(QStringLiteral("closeFieldsButton"));
     closeFieldsButton_->setToolTip(QStringLiteral("Close the Register details workspace"));
     closeFieldsButton_->setAutoDefault(false);
@@ -5104,7 +5150,7 @@ void MainWindow::buildUi()
     fieldFeedbackLabel_->setTextInteractionFlags(
         Qt::TextSelectableByMouse);
     auto* dismissFieldFeedback =
-        new QToolButton(fieldFeedbackBar_);
+        WorkbenchControls::toolButton(fieldFeedbackBar_);
     dismissFieldFeedback->setText(
         QStringLiteral("Close"));
     dismissFieldFeedback->setToolTip(
@@ -5129,7 +5175,7 @@ void MainWindow::buildUi()
     enumContextLabel_ = new QLabel(QStringLiteral("Enum Values"), enumPanel_);
     enumContextLabel_->setObjectName(QStringLiteral("contextTitle"));
     customizeBooleanValuesButton_ =
-        new QToolButton(enumPanel_);
+        WorkbenchControls::toolButton(enumPanel_);
     customizeBooleanValuesButton_->setObjectName(
         QStringLiteral(
             "customizeBooleanValuesButton"));
@@ -5229,6 +5275,11 @@ void MainWindow::buildUi()
     fieldLayout->addWidget(fieldView_, 1);
     fieldLayout->addWidget(enumPanel_, 0, Qt::AlignTop);
 
+    if (WorkbenchControls::backend() == WorkbenchControls::Backend::ela) {
+        makePanelScrollable(registerPanel, QStringLiteral("registerPanelScroll"), registerView_);
+        makePanelScrollable(fieldPanel, QStringLiteral("fieldPanelScroll"));
+    }
+
     editorSplitter_ = new QSplitter(Qt::Vertical, this);
     editorSplitter_->setObjectName(
         QStringLiteral("editorSplitter"));
@@ -5266,7 +5317,7 @@ void MainWindow::buildUi()
             "Resize Workspace navigation"));
     workspaceSplitter_->setSizes({230, 1260});
 
-    problemsView_ = new QTableView(this);
+    problemsView_ = WorkbenchControls::resultTable(this);
     problemsView_->setObjectName(QStringLiteral("problemsView"));
     problemsView_->setModel(problemsModel_);
     regmap::ui::configureDataTable(problemsView_);
@@ -5277,7 +5328,7 @@ void MainWindow::buildUi()
     problemsView_->setToolTip(
         QStringLiteral(
             "Double-click or press Enter to locate the affected object. Use F8 / Shift+F8 to move between Problems. Right-click for result actions."));
-    generatedView_ = new QTableView(this);
+    generatedView_ = WorkbenchControls::resultTable(this);
     generatedView_->setObjectName(QStringLiteral("generatedView"));
     generatedView_->setModel(generatedModel_);
     regmap::ui::configureDataTable(generatedView_);
@@ -5287,7 +5338,7 @@ void MainWindow::buildUi()
     generatedView_->setToolTip(
         QStringLiteral(
             "Double-click or press Enter to open a file. Right-click for path actions."));
-    diffView_ = new QTableView(this);
+    diffView_ = WorkbenchControls::resultTable(this);
     diffView_->setObjectName(QStringLiteral("diffView"));
     diffView_->setModel(diffModel_);
     regmap::ui::configureDataTable(diffView_);
@@ -5302,6 +5353,7 @@ void MainWindow::buildUi()
          {problemsView_,
           generatedView_,
           diffView_}) {
+        resultView->setEditTriggers(QAbstractItemView::NoEditTriggers);
         resultView
             ->installEventFilter(this);
         resultView->viewport()
@@ -5348,7 +5400,7 @@ void MainWindow::buildUi()
     hierarchyView_
         ->installEventFilter(this);
 
-    tabs_ = new QTabWidget(this);
+    tabs_ = WorkbenchControls::tabWidget(this);
     tabs_->setObjectName(QStringLiteral("resultTabs"));
     tabs_->setDocumentMode(true);
     auto* problemsPanel = new QWidget(tabs_);
@@ -5379,7 +5431,7 @@ void MainWindow::buildUi()
     diagnosticsToolbarLayout->addWidget(
         problemsSummaryLabel_, 1);
     diagnosticsSeverityFilter_ =
-        new QComboBox(diagnosticsToolbar);
+        WorkbenchControls::comboBox(diagnosticsToolbar);
     diagnosticsSeverityFilter_->setObjectName(
         QStringLiteral(
             "diagnosticsSeverityFilter"));
@@ -5392,7 +5444,7 @@ void MainWindow::buildUi()
          QStringLiteral("Warnings"),
          QStringLiteral("Information")});
     diagnosticsFilterEdit_ =
-        new QLineEdit(diagnosticsToolbar);
+        WorkbenchControls::lineEdit(diagnosticsToolbar);
     diagnosticsFilterEdit_->setObjectName(
         QStringLiteral(
             "diagnosticsFilterEdit"));
@@ -5425,7 +5477,7 @@ void MainWindow::buildUi()
         density.panelHeaderHorizontalPadding,
         0);
     generatedActions->addStretch();
-    retryOutputsButton_ = new QPushButton(QStringLiteral("Retry outputs"), generatedPanel);
+    retryOutputsButton_ = WorkbenchControls::pushButton(QStringLiteral("Retry outputs"), generatedPanel);
     retryOutputsButton_->setObjectName(QStringLiteral("retryOutputsButton"));
     retryOutputsButton_->installEventFilter(this);
     retryOutputsButton_->setVisible(false);
@@ -5460,7 +5512,7 @@ void MainWindow::buildUi()
         QStringLiteral("External change decision status"));
     externalDecisionLayout->addWidget(
         externalDecisionStatusLabel_, 1);
-    previewExternalButton_ = new QPushButton(
+    previewExternalButton_ = WorkbenchControls::pushButton(
         QStringLiteral("&Preview"), externalDecisionBar_);
     previewExternalButton_->setObjectName(
         QStringLiteral("previewExternalButton"));
@@ -5471,7 +5523,7 @@ void MainWindow::buildUi()
     previewExternalButton_->setToolTip(
         QStringLiteral(
             "Validate the selected external changes and show dependency expansion. Shortcut: Alt+P."));
-    acceptExternalButton_ = new QPushButton(
+    acceptExternalButton_ = WorkbenchControls::pushButton(
         QStringLiteral("&Accept selected"), externalDecisionBar_);
     acceptExternalButton_->setObjectName(
         QStringLiteral("acceptExternalButton"));
@@ -5482,7 +5534,7 @@ void MainWindow::buildUi()
     acceptExternalButton_->setToolTip(
         QStringLiteral(
             "Apply selected Disk / CLI changes as one undoable Workbench edit without writing disk. Shortcut: Alt+A."));
-    rejectExternalButton_ = new QPushButton(
+    rejectExternalButton_ = WorkbenchControls::pushButton(
         QStringLiteral("&Reject selected"), externalDecisionBar_);
     rejectExternalButton_->setObjectName(
         QStringLiteral("rejectExternalButton"));
@@ -5493,7 +5545,7 @@ void MainWindow::buildUi()
     rejectExternalButton_->setToolTip(
         QStringLiteral(
             "Keep Workbench values for the selected changes in this observed disk revision. Shortcut: Alt+R."));
-    acceptAllExternalButton_ = new QPushButton(
+    acceptAllExternalButton_ = WorkbenchControls::pushButton(
         QStringLiteral("Accept all"), externalDecisionBar_);
     acceptAllExternalButton_->setObjectName(
         QStringLiteral("acceptAllExternalButton"));
@@ -5504,7 +5556,7 @@ void MainWindow::buildUi()
     acceptAllExternalButton_->setToolTip(
         QStringLiteral(
             "Validate and apply every pending Disk / CLI change as one undoable Workbench edit."));
-    rejectAllExternalButton_ = new QPushButton(
+    rejectAllExternalButton_ = WorkbenchControls::pushButton(
         QStringLiteral("Reject all"), externalDecisionBar_);
     rejectAllExternalButton_->setObjectName(
         QStringLiteral("rejectAllExternalButton"));
@@ -5540,12 +5592,12 @@ void MainWindow::buildUi()
         QSizePolicy::Preferred);
     conflictLayout->addWidget(conflictSummaryLabel_, 1);
     keepWorkbenchButton_ =
-        new QPushButton(QStringLiteral("Keep Workbench changes"), conflictBar_);
+        WorkbenchControls::pushButton(QStringLiteral("Keep Workbench changes"), conflictBar_);
     keepWorkbenchButton_->setObjectName(QStringLiteral("keepWorkbenchButton"));
     keepWorkbenchButton_->setToolTip(
         QStringLiteral("Use Workbench values for every listed conflict, then synchronize."));
     conflictLayout->addWidget(keepWorkbenchButton_);
-    useRtlButton_ = new QPushButton(QStringLiteral("Use RTL changes"), conflictBar_);
+    useRtlButton_ = WorkbenchControls::pushButton(QStringLiteral("Use RTL changes"), conflictBar_);
     useRtlButton_->setObjectName(QStringLiteral("useRtlButton"));
     useRtlButton_->setToolTip(
         QStringLiteral("Use RTL values for every listed conflict, then synchronize."));
@@ -5665,7 +5717,7 @@ void MainWindow::buildUi()
         syncStateLabel_);
 
     generateButton_ =
-        new QToolButton(pageHeader_);
+        WorkbenchControls::toolButton(pageHeader_);
     generateButton_->setObjectName(
         QStringLiteral("generateButton"));
     generateButton_->setText(
@@ -5676,7 +5728,7 @@ void MainWindow::buildUi()
     generateButton_->setToolButtonStyle(
         Qt::ToolButtonTextOnly);
     synchronizeButton_ =
-        new QToolButton(pageHeader_);
+        WorkbenchControls::toolButton(pageHeader_);
     synchronizeButton_->setObjectName(
         QStringLiteral("synchronizeButton"));
     synchronizeButton_->setText(
@@ -5687,7 +5739,7 @@ void MainWindow::buildUi()
     synchronizeButton_->setToolButtonStyle(
         Qt::ToolButtonTextOnly);
     saveSyncButton_ =
-        new QToolButton(pageHeader_);
+        WorkbenchControls::toolButton(pageHeader_);
     saveSyncButton_->setObjectName(
         QStringLiteral("saveSyncButton"));
     saveSyncButton_->setText(
@@ -5723,6 +5775,10 @@ void MainWindow::buildUi()
     canvasLayout->addWidget(
         resultsSplitter_, 1);
     setCentralWidget(workbenchCanvas);
+    const std::array<QAbstractScrollArea*, 8> scrollAreas{
+        hierarchyView_, registerView_, fieldView_, enumView_, problemsView_,
+        generatedView_, diffView_, addressSpaceScroll_};
+    for (auto* area : scrollAreas) WorkbenchControls::styleScrollArea(area);
 }
 
 void MainWindow::buildActions()
@@ -6401,11 +6457,12 @@ void MainWindow::buildActions()
     exitAction->setShortcut(QKeySequence::Quit);
     connect(exitAction, &QAction::triggered, this, &QWidget::close);
 
-    QMenu* fileMenu = menuBar()->addMenu(QStringLiteral("File"));
+    setMenuBar(WorkbenchControls::menuBar(this));
+    QMenu* fileMenu = WorkbenchControls::addMenu(menuBar(), QStringLiteral("File"));
     fileMenu->addAction(newProjectAction_);
     fileMenu->addAction(openProjectAction_);
     recentProjectsMenu_ =
-        fileMenu->addMenu(QStringLiteral("Open Recent"));
+        WorkbenchControls::addMenu(fileMenu, QStringLiteral("Open Recent"));
     recentProjectsMenu_->setObjectName(
         QStringLiteral("recentProjectsMenu"));
     rebuildRecentProjectsMenu();
@@ -6416,7 +6473,7 @@ void MainWindow::buildActions()
     fileMenu->addAction(reloadAction_);
     fileMenu->addSeparator();
     fileMenu->addAction(exitAction);
-    QMenu* editMenu = menuBar()->addMenu(QStringLiteral("Edit"));
+    QMenu* editMenu = WorkbenchControls::addMenu(menuBar(), QStringLiteral("Edit"));
     editMenu->addAction(undoAction_);
     editMenu->addAction(redoAction_);
     editMenu->addSeparator();
@@ -6441,7 +6498,7 @@ void MainWindow::buildActions()
     editMenu->addAction(addEnumAction);
     editMenu->addAction(deleteAction_);
 
-    QMenu* viewMenu = menuBar()->addMenu(QStringLiteral("View"));
+    QMenu* viewMenu = WorkbenchControls::addMenu(menuBar(), QStringLiteral("View"));
     viewMenu->addAction(
         toggleResultsAction_);
     viewMenu->addSeparator();
@@ -6452,7 +6509,7 @@ void MainWindow::buildActions()
         showDetailedRegistersAction_);
     viewMenu->addAction(showAdvancedFieldsAction_);
     QMenu* themeMenu =
-        viewMenu->addMenu(
+        WorkbenchControls::addMenu(viewMenu,
             QStringLiteral("Theme"));
     auto* themeGroup =
         new QActionGroup(this);
@@ -6507,7 +6564,7 @@ void MainWindow::buildActions()
                 WorkbenchTheme::Mode::dark);
         });
 
-    QMenu* projectMenu = menuBar()->addMenu(QStringLiteral("Project"));
+    QMenu* projectMenu = WorkbenchControls::addMenu(menuBar(), QStringLiteral("Project"));
     projectMenu->addAction(synchronizeAction_);
     projectMenu->addAction(generateAction_);
     projectMenu->addSeparator();
@@ -6515,14 +6572,15 @@ void MainWindow::buildActions()
     projectMenu->addAction(useRtlAction_);
     projectMenu->addAction(openSourceAction_);
 
-    QToolBar* toolbar = addToolBar(QStringLiteral("Project"));
+    QToolBar* toolbar = WorkbenchControls::toolBar(QStringLiteral("Project"), this);
+    addToolBar(toolbar);
     toolbar->setObjectName(QStringLiteral("projectToolBar"));
     toolbar->setMovable(false);
     toolbar->setFloatable(false);
-    toolbar->addAction(newProjectAction_);
-    toolbar->addAction(openProjectAction_);
+    WorkbenchControls::addAction(toolbar, newProjectAction_);
+    WorkbenchControls::addAction(toolbar, openProjectAction_);
     openXlsxButton_ =
-        new QToolButton(toolbar);
+        WorkbenchControls::toolButton(toolbar);
     openXlsxButton_->setObjectName(
         QStringLiteral(
             "openXlsxButton"));
@@ -6618,7 +6676,7 @@ void MainWindow::buildActions()
     auto* spacer = new QWidget(toolbar);
     spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     toolbar->addWidget(spacer);
-    globalSearchEdit_ = new QLineEdit(toolbar);
+    globalSearchEdit_ = WorkbenchControls::lineEdit(toolbar);
     globalSearchEdit_->setObjectName(QStringLiteral("globalSearchEdit"));
     globalSearchEdit_->setAccessibleName(
         QStringLiteral(
@@ -6646,6 +6704,8 @@ void MainWindow::buildActions()
     searchCompleter_->setCompletionMode(
         QCompleter::UnfilteredPopupCompletion);
     searchCompleter_->setMaxVisibleItems(12);
+    searchCompleter_->setPopup(WorkbenchControls::listView(globalSearchEdit_));
+    WorkbenchControls::styleScrollArea(searchCompleter_->popup());
     searchCompleter_->popup()->setObjectName(
         QStringLiteral("searchResultsPopup"));
     searchCompleter_->popup()->installEventFilter(
@@ -6668,7 +6728,7 @@ void MainWindow::buildActions()
     searchResultLabel_->setObjectName(QStringLiteral("searchResultLabel"));
     toolbar->addWidget(searchResultLabel_);
     resultsToggleButton_ =
-        new QToolButton(toolbar);
+        WorkbenchControls::toolButton(toolbar);
     resultsToggleButton_->setObjectName(
         QStringLiteral(
             "resultsToggleButton"));
@@ -7053,6 +7113,13 @@ void MainWindow::connectSignals()
             [this](const QString& text) {
                 statusBar()->showMessage(text);
                 updateSyncPresentation(text);
+                WorkbenchControls::dismissMessage(centralWidget());
+                if (text == QStringLiteral("Project, managed RTL, and read-only outputs saved")) {
+                    WorkbenchControls::successMessage(centralWidget(), QStringLiteral("Saved"), text);
+                } else if (text.startsWith(QStringLiteral("Generated ")) &&
+                           text.endsWith(QStringLiteral(" read-only artifact(s)"))) {
+                    WorkbenchControls::successMessage(centralWidget(), QStringLiteral("Generated"), text);
+                }
             });
     connect(
         statusBar(),
@@ -7525,7 +7592,8 @@ void MainWindow::connectSignals()
             return;
         }
         if (index.data(addRowRole).toBool()) {
-            QMenu menu(this);
+            const std::unique_ptr<QMenu> ownedMenu(WorkbenchControls::menu(this));
+            QMenu& menu = *ownedMenu;
             menu.setObjectName(
                 QStringLiteral("enumAddRowContextMenu"));
             QAction* add =
@@ -7566,7 +7634,8 @@ void MainWindow::connectSignals()
         const std::size_t selectedCount =
             selectedEnumValueIds()
                 .size();
-        QMenu menu(this);
+        const std::unique_ptr<QMenu> ownedMenu(WorkbenchControls::menu(this));
+        QMenu& menu = *ownedMenu;
         menu.setObjectName(QStringLiteral("enumContextMenu"));
         menu.setToolTipsVisible(true);
         menu.addAction(copyAction_);
@@ -8608,15 +8677,14 @@ void MainWindow::updateResponsiveLayout()
                 : QStringLiteral("Navigate"));
     }
     if (bitfieldView_ != nullptr) {
-        bitfieldView_->setMinimumHeight(
-            compactLayout_ ? 96 : 188);
-        bitfieldView_->setMaximumHeight(
-            compactLayout_ ? 112
-                           : QWIDGETSIZE_MAX);
+        // The bitfield painter includes endpoints, a 54px bar and a legend.
+        // Keep the complete canvas; the surrounding panel scrolls in short panes.
+        bitfieldView_->setMinimumHeight(188);
+        bitfieldView_->setMaximumHeight(QWIDGETSIZE_MAX);
     }
     if (enumView_ != nullptr) {
         enumView_->setFixedHeight(
-            compactLayout_ ? 64 : 112);
+            compactLayout_ ? 96 : 112);
     }
     if (pageDescriptionLabel_ != nullptr) {
         const bool showContextDescriptions =
@@ -12964,7 +13032,8 @@ void MainWindow::showProblemContextMenu(
         problemsView_;
     updateEditActions();
 
-    QMenu menu(this);
+    const std::unique_ptr<QMenu> ownedMenu(WorkbenchControls::menu(this));
+    QMenu& menu = *ownedMenu;
     menu.setObjectName(
         QStringLiteral(
             "problemContextMenu"));
@@ -13028,7 +13097,8 @@ void MainWindow::showGeneratedContextMenu(
         controller_.artifacts()[
             static_cast<std::size_t>(
                 artifactIndex)];
-    QMenu menu(this);
+    const std::unique_ptr<QMenu> ownedMenu(WorkbenchControls::menu(this));
+    QMenu& menu = *ownedMenu;
     menu.setObjectName(
         QStringLiteral(
             "generatedContextMenu"));
@@ -13131,7 +13201,8 @@ void MainWindow::showDiffContextMenu(
         diffView_;
     updateEditActions();
 
-    QMenu menu(this);
+    const std::unique_ptr<QMenu> ownedMenu(WorkbenchControls::menu(this));
+    QMenu& menu = *ownedMenu;
     menu.setObjectName(
         QStringLiteral(
             "diffContextMenu"));
@@ -13781,7 +13852,8 @@ void MainWindow::showTableHeaderContextMenu(
     if (view == nullptr) {
         return;
     }
-    QMenu menu(this);
+    const std::unique_ptr<QMenu> ownedMenu(WorkbenchControls::menu(this));
+    QMenu& menu = *ownedMenu;
     menu.setObjectName(
         registerTable
             ? QStringLiteral("registerHeaderContextMenu")
@@ -17456,7 +17528,7 @@ void MainWindow::editRegisterTags(const QModelIndex& index)
     layout->setSpacing(6);
     auto* inputRow = new QHBoxLayout;
     inputRow->setContentsMargins(0, 0, 0, 0);
-    auto* search = new QLineEdit(popup);
+    auto* search = WorkbenchControls::lineEdit(popup);
     search->setObjectName(QStringLiteral("tagSearch"));
     search->setPlaceholderText(QStringLiteral("Filter or enter a tag"));
     search->setToolTip(
@@ -17464,7 +17536,7 @@ void MainWindow::editRegisterTags(const QModelIndex& index)
             "Type to filter. Enter selects an exact or sole visible match; "
             "when no tag matches, Enter creates the typed tag. Use + to "
             "create explicitly."));
-    auto* add = new QToolButton(popup);
+    auto* add = WorkbenchControls::toolButton(popup);
     add->setObjectName(QStringLiteral("addTagButton"));
     add->setText(QStringLiteral("+"));
     add->setToolTip(QStringLiteral("Create and select this tag"));
@@ -17474,7 +17546,8 @@ void MainWindow::editRegisterTags(const QModelIndex& index)
     inputRow->addWidget(add);
     layout->addLayout(inputRow);
 
-    auto* list = new QListWidget(popup);
+    auto* list = WorkbenchControls::listWidget(popup);
+    WorkbenchControls::styleScrollArea(list);
     constexpr int selectedRole = Qt::UserRole;
     list->setObjectName(QStringLiteral("tagOptions"));
     list->setSelectionMode(QAbstractItemView::MultiSelection);
@@ -17641,7 +17714,8 @@ void MainWindow::editRegisterAccess(const QModelIndex& index)
         guardedPopup(popup);
     auto* layout = new QVBoxLayout(popup);
     layout->setContentsMargins(6, 6, 6, 6);
-    auto* list = new QListWidget(popup);
+    auto* list = WorkbenchControls::listWidget(popup);
+    WorkbenchControls::styleScrollArea(list);
     list->setObjectName(QStringLiteral("accessOptions"));
     list->setSelectionMode(QAbstractItemView::SingleSelection);
     list->setMouseTracking(true);
@@ -17706,7 +17780,7 @@ void MainWindow::showHierarchyContextMenu(const QPoint& position)
     const bool pageItem = index.isValid() && !addressId.empty() && blockId.empty();
     const bool blockItem = index.isValid() && !blockId.empty();
 
-    auto* menu = new QMenu(hierarchyView_);
+    auto* menu = WorkbenchControls::menu(hierarchyView_);
     menu->setObjectName(QStringLiteral("hierarchyContextMenu"));
     menu->setAttribute(Qt::WA_DeleteOnClose);
     const auto action = [menu](const QString& text, const QString& objectName) {
@@ -19064,6 +19138,8 @@ void MainWindow::batchEditSelectedRegisters()
         QStringLiteral("Batch Edit %1 Registers").arg(ids.size()));
     dialog.setMinimumWidth(520);
     auto* layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(16, 16, 16, 16);
+    layout->setSpacing(8);
     auto* summary = new QLabel(
         QStringLiteral(
             "Only checked properties are changed. Mixed choices require an explicit replacement. Blank Range, Initial Value, Reset Value, or Description values clear that property. The complete edit is one Undo step."),
@@ -19073,25 +19149,26 @@ void MainWindow::batchEditSelectedRegisters()
     auto* form = new QFormLayout;
     layout->addLayout(form);
 
-    auto* accessApply = new QCheckBox(QStringLiteral("Access"), &dialog);
+    auto* accessApply = WorkbenchControls::checkBox(QStringLiteral("Access"), &dialog);
     accessApply->setObjectName(QStringLiteral("batchAccessApply"));
-    auto* access = new QComboBox(&dialog);
+    auto* access = WorkbenchControls::comboBox(&dialog);
     access->setObjectName(QStringLiteral("batchAccessEditor"));
     access->addItems({QStringLiteral("RW"), QStringLiteral("RO"),
                       QStringLiteral("WO"), QStringLiteral("NONE")});
     access->setEnabled(false);
     form->addRow(accessApply, access);
 
-    auto* tagsApply = new QCheckBox(QStringLiteral("Tags"), &dialog);
+    auto* tagsApply = WorkbenchControls::checkBox(QStringLiteral("Tags"), &dialog);
     tagsApply->setObjectName(QStringLiteral("batchTagsApply"));
     auto* tagsRow = new QWidget(&dialog);
     auto* tagsLayout = new QHBoxLayout(tagsRow);
     tagsLayout->setContentsMargins(0, 0, 0, 0);
-    auto* tagsMode = new QComboBox(tagsRow);
+    tagsLayout->setSizeConstraint(QLayout::SetMinimumSize);
+    auto* tagsMode = WorkbenchControls::comboBox(tagsRow);
     tagsMode->setObjectName(QStringLiteral("batchTagsMode"));
     tagsMode->addItems({QStringLiteral("Replace"), QStringLiteral("Add"),
                         QStringLiteral("Remove")});
-    auto* tags = new QLineEdit(tagsRow);
+    auto* tags = WorkbenchControls::lineEdit(tagsRow);
     tags->setObjectName(QStringLiteral("batchTagsEditor"));
     tags->setPlaceholderText(QStringLiteral("comma-separated tags"));
     QStringList availableBatchTags;
@@ -19127,6 +19204,7 @@ void MainWindow::batchEditSelectedRegisters()
         Qt::CaseInsensitive);
     tagsCompleter->setCompletionMode(
         QCompleter::PopupCompletion);
+    tagsCompleter->setPopup(WorkbenchControls::listView(tags));
     tagsCompleter->setFilterMode(
         Qt::MatchContains);
     connect(
@@ -19215,10 +19293,10 @@ void MainWindow::batchEditSelectedRegisters()
     form->addRow(tagsApply, tagsRow);
 
     auto* rangeApply =
-        new QCheckBox(QStringLiteral("Range"), &dialog);
+        WorkbenchControls::checkBox(QStringLiteral("Range"), &dialog);
     rangeApply->setObjectName(
         QStringLiteral("batchRangeApply"));
-    auto* range = new QLineEdit(&dialog);
+    auto* range = WorkbenchControls::lineEdit(&dialog);
     range->setObjectName(
         QStringLiteral("batchRangeEditor"));
     range->setPlaceholderText(
@@ -19227,39 +19305,39 @@ void MainWindow::batchEditSelectedRegisters()
     form->addRow(rangeApply, range);
 
     auto* initialApply =
-        new QCheckBox(
+        WorkbenchControls::checkBox(
             QStringLiteral("Initial Value"),
             &dialog);
     initialApply->setObjectName(QStringLiteral("batchInitialApply"));
-    auto* initial = new QLineEdit(&dialog);
+    auto* initial = WorkbenchControls::lineEdit(&dialog);
     initial->setObjectName(QStringLiteral("batchInitialEditor"));
     initial->setPlaceholderText(QStringLiteral("unsigned value; blank clears"));
     initial->setEnabled(false);
     form->addRow(initialApply, initial);
 
     auto* resetApply =
-        new QCheckBox(
+        WorkbenchControls::checkBox(
             QStringLiteral("Reset Value"),
             &dialog);
     resetApply->setObjectName(QStringLiteral("batchResetApply"));
-    auto* reset = new QLineEdit(&dialog);
+    auto* reset = WorkbenchControls::lineEdit(&dialog);
     reset->setObjectName(QStringLiteral("batchResetEditor"));
     reset->setPlaceholderText(QStringLiteral("unsigned value; blank clears"));
     reset->setEnabled(false);
     form->addRow(resetApply, reset);
 
     auto* descriptionApply =
-        new QCheckBox(QStringLiteral("Description"), &dialog);
+        WorkbenchControls::checkBox(QStringLiteral("Description"), &dialog);
     descriptionApply->setObjectName(QStringLiteral("batchDescriptionApply"));
-    auto* description = new QLineEdit(&dialog);
+    auto* description = WorkbenchControls::lineEdit(&dialog);
     description->setObjectName(QStringLiteral("batchDescriptionEditor"));
     description->setPlaceholderText(QStringLiteral("blank clears"));
     description->setEnabled(false);
     form->addRow(descriptionApply, description);
 
-    auto* fixedApply = new QCheckBox(QStringLiteral("Address"), &dialog);
+    auto* fixedApply = WorkbenchControls::checkBox(QStringLiteral("Address"), &dialog);
     fixedApply->setObjectName(QStringLiteral("batchFixedAddressApply"));
-    auto* fixed = new QComboBox(&dialog);
+    auto* fixed = WorkbenchControls::comboBox(&dialog);
     fixed->setObjectName(QStringLiteral("batchFixedAddressEditor"));
     fixed->addItems({QStringLiteral("Fixed"), QStringLiteral("Movable")});
     fixed->setEnabled(false);
@@ -19353,8 +19431,7 @@ void MainWindow::batchEditSelectedRegisters()
     connect(descriptionApply, &QCheckBox::toggled, description, &QWidget::setEnabled);
     connect(fixedApply, &QCheckBox::toggled, fixed, &QWidget::setEnabled);
 
-    auto* buttons = new QDialogButtonBox(
-        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    auto* buttons = WorkbenchControls::dialogButtons(&dialog);
     buttons->setObjectName(QStringLiteral("batchEditButtons"));
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     auto* validation = new QLabel(&dialog);
@@ -19682,7 +19759,7 @@ void MainWindow::batchEditSelectedRegisters()
             dialog.accept();
         });
     const auto updateApplyButton = [=] {
-        buttons->button(QDialogButtonBox::Ok)->setEnabled(
+        WorkbenchControls::standardButton(buttons, QDialogButtonBox::Ok)->setEnabled(
             accessApply->isChecked() ||
             tagsApply->isChecked() ||
             rangeApply->isChecked() ||
@@ -19821,6 +19898,8 @@ void MainWindow::batchEditSelectedFields()
         QStringLiteral("Batch Edit %1 Fields").arg(ids.size()));
     dialog.setMinimumWidth(520);
     auto* layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(16, 16, 16, 16);
+    layout->setSpacing(8);
     auto* summary = new QLabel(
         QStringLiteral(
             "Only checked properties are changed. Mixed choices require an explicit replacement. A blank Range or Description clears that property. Field Reset is derived from Register Reset and is not edited here. The complete edit is one Undo step."),
@@ -19831,10 +19910,10 @@ void MainWindow::batchEditSelectedFields()
     layout->addLayout(form);
 
     auto* accessApply =
-        new QCheckBox(QStringLiteral("Access"), &dialog);
+        WorkbenchControls::checkBox(QStringLiteral("Access"), &dialog);
     accessApply->setObjectName(
         QStringLiteral("batchFieldAccessApply"));
-    auto* access = new QComboBox(&dialog);
+    auto* access = WorkbenchControls::comboBox(&dialog);
     access->setObjectName(
         QStringLiteral("batchFieldAccessEditor"));
     access->addItems(
@@ -19844,10 +19923,10 @@ void MainWindow::batchEditSelectedFields()
     form->addRow(accessApply, access);
 
     auto* rangeApply =
-        new QCheckBox(QStringLiteral("Range"), &dialog);
+        WorkbenchControls::checkBox(QStringLiteral("Range"), &dialog);
     rangeApply->setObjectName(
         QStringLiteral("batchFieldRangeApply"));
-    auto* range = new QLineEdit(&dialog);
+    auto* range = WorkbenchControls::lineEdit(&dialog);
     range->setObjectName(
         QStringLiteral("batchFieldRangeEditor"));
     range->setPlaceholderText(
@@ -19856,10 +19935,10 @@ void MainWindow::batchEditSelectedFields()
     form->addRow(rangeApply, range);
 
     auto* readEffectApply =
-        new QCheckBox(QStringLiteral("Read Effect"), &dialog);
+        WorkbenchControls::checkBox(QStringLiteral("Read Effect"), &dialog);
     readEffectApply->setObjectName(
         QStringLiteral("batchFieldReadEffectApply"));
-    auto* readEffect = new QComboBox(&dialog);
+    auto* readEffect = WorkbenchControls::comboBox(&dialog);
     readEffect->setObjectName(
         QStringLiteral("batchFieldReadEffectEditor"));
     readEffect->addItems(
@@ -19869,10 +19948,10 @@ void MainWindow::batchEditSelectedFields()
     form->addRow(readEffectApply, readEffect);
 
     auto* writeEffectApply =
-        new QCheckBox(QStringLiteral("Write Effect"), &dialog);
+        WorkbenchControls::checkBox(QStringLiteral("Write Effect"), &dialog);
     writeEffectApply->setObjectName(
         QStringLiteral("batchFieldWriteEffectApply"));
-    auto* writeEffect = new QComboBox(&dialog);
+    auto* writeEffect = WorkbenchControls::comboBox(&dialog);
     writeEffect->setObjectName(
         QStringLiteral("batchFieldWriteEffectEditor"));
     writeEffect->addItems(
@@ -19884,10 +19963,10 @@ void MainWindow::batchEditSelectedFields()
     form->addRow(writeEffectApply, writeEffect);
 
     auto* descriptionApply =
-        new QCheckBox(QStringLiteral("Description"), &dialog);
+        WorkbenchControls::checkBox(QStringLiteral("Description"), &dialog);
     descriptionApply->setObjectName(
         QStringLiteral("batchFieldDescriptionApply"));
-    auto* description = new QLineEdit(&dialog);
+    auto* description = WorkbenchControls::lineEdit(&dialog);
     description->setObjectName(
         QStringLiteral("batchFieldDescriptionEditor"));
     description->setPlaceholderText(
@@ -19970,9 +20049,7 @@ void MainWindow::batchEditSelectedFields()
         descriptionApply, &QCheckBox::toggled,
         description, &QWidget::setEnabled);
 
-    auto* buttons = new QDialogButtonBox(
-        QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
-        &dialog);
+    auto* buttons = WorkbenchControls::dialogButtons(&dialog);
     buttons->setObjectName(
         QStringLiteral("batchEditFieldsButtons"));
     connect(
@@ -20179,7 +20256,7 @@ void MainWindow::batchEditSelectedFields()
             dialog.accept();
         });
     const auto updateApplyButton = [=] {
-        buttons->button(QDialogButtonBox::Ok)->setEnabled(
+        WorkbenchControls::standardButton(buttons, QDialogButtonBox::Ok)->setEnabled(
             accessApply->isChecked() ||
             rangeApply->isChecked() ||
             readEffectApply->isChecked() ||
@@ -20896,7 +20973,8 @@ void MainWindow::showRegisterContextMenu(const QPoint& position)
         return;
     }
     if (index.data(addRowRole).toBool()) {
-        QMenu menu(this);
+        const std::unique_ptr<QMenu> ownedMenu(WorkbenchControls::menu(this));
+        QMenu& menu = *ownedMenu;
         menu.setObjectName(
             QStringLiteral(
                 "registerAddRowContextMenu"));
@@ -20930,7 +21008,8 @@ void MainWindow::showRegisterContextMenu(const QPoint& position)
         return;
     }
 
-    QMenu menu(this);
+    const std::unique_ptr<QMenu> ownedMenu(WorkbenchControls::menu(this));
+    QMenu& menu = *ownedMenu;
     menu.setObjectName(
         QStringLiteral("registerContextMenu"));
     menu.setToolTipsVisible(true);
@@ -21448,7 +21527,8 @@ void MainWindow::showFieldContextMenu(const QPoint& position)
         return;
     }
     if (index.data(addRowRole).toBool()) {
-        QMenu menu(this);
+        const std::unique_ptr<QMenu> ownedMenu(WorkbenchControls::menu(this));
+        QMenu& menu = *ownedMenu;
         menu.setObjectName(
             QStringLiteral(
                 "fieldAddRowContextMenu"));
@@ -21484,7 +21564,8 @@ void MainWindow::showFieldContextMenu(const QPoint& position)
         return;
     }
 
-    QMenu menu(this);
+    const std::unique_ptr<QMenu> ownedMenu(WorkbenchControls::menu(this));
+    QMenu& menu = *ownedMenu;
     menu.setObjectName(
         QStringLiteral("fieldContextMenu"));
     menu.setToolTipsVisible(true);
@@ -21642,7 +21723,7 @@ void MainWindow::showFieldContextMenu(const QPoint& position)
         topLevelField);
     menu.addSeparator();
     QMenu* typeMenu =
-        menu.addMenu(
+        WorkbenchControls::addMenu(&menu,
             selectedCount > 1
                 ? QStringLiteral(
                       "Set Current Field Type")
@@ -27654,6 +27735,12 @@ void MainWindow::resizeEvent(
         [this] {
             ensureSafeSplitterSizes();
         });
+}
+
+bool MainWindow::nativeEvent(const QByteArray& type, void* message, qintptr* result)
+{
+    if (WorkbenchControls::windowChromeNativeEvent(windowChrome_, type, message, result)) return true;
+    return QMainWindow::nativeEvent(type, message, result);
 }
 
 void MainWindow::closeEvent(QCloseEvent* event)

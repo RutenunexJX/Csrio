@@ -1,6 +1,7 @@
 #include "main_window.hpp"
 #include "project_controller.hpp"
 #include "workbench_theme.hpp"
+#include "workbench_controls.hpp"
 
 #include "regmap/core/model.hpp"
 
@@ -9,6 +10,10 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QFontMetrics>
+#include <QFontInfo>
+#include <QHeaderView>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QImage>
 #include <QModelIndex>
 #include <QSettings>
@@ -348,6 +353,16 @@ int main(int argumentCount, char* arguments[])
              .inFontUcs4('A')) {
         return 10;
     }
+    const auto codeFont = WorkbenchTheme::monospaceFont();
+    const QFontMetrics codeMetrics(codeFont);
+    if (!codeMetrics.inFontUcs4('0') || !codeMetrics.inFontUcs4('x') ||
+        codeMetrics.horizontalAdvance('i') != codeMetrics.horizontalAdvance('W') ||
+        application.font().pointSizeF() != 10.0 || codeFont.pointSizeF() != 10.0) {
+        QTextStream(stderr) << "Unreadable or non-monospace numeric font\n";
+        return 12;
+    }
+    QTextStream(stderr) << "fonts ui=" << QFontInfo(application.font()).family()
+                        << " numeric=" << QFontInfo(codeFont).family() << " points=10\n";
 
     const QString manifest =
         projectDirectory.filePath(
@@ -530,7 +545,36 @@ int main(int argumentCount, char* arguments[])
                 120, &window,
                 [&application, &window,
                  &result, output,
-                 pageHeader] {
+                 pageHeader, expectedSize = window.size()] {
+                    if (window.size() != expectedSize) {
+                        result = 8; application.exit(result); return;
+                    }
+                    if (WorkbenchControls::backend() == WorkbenchControls::Backend::ela) {
+                        for (const auto* name : {"registerPanelScroll", "fieldPanelScroll"}) {
+                            auto* scroll = window.findChild<QScrollArea*>(name);
+                            if (!scroll || !scroll->widget() ||
+                                scroll->widget()->height() < scroll->widget()->minimumSizeHint().height() ||
+                                scroll->widget()->width() < scroll->widget()->minimumSizeHint().width()) {
+                                QTextStream(stderr) << "Panel content clipped: " << name << '\n';
+                                result = 13; application.exit(result); return;
+                            }
+                            if (scroll->widget()->height() > scroll->viewport()->height() &&
+                                scroll->verticalScrollBar()->maximum() <= 0) {
+                                result = 14; application.exit(result); return;
+                            }
+                        }
+                        auto* bitfield = window.findChild<QWidget*>("bitfieldView");
+                        if (!bitfield || bitfield->height() < 188) {
+                            result = 15; application.exit(result); return;
+                        }
+                        auto* registers = window.findChild<QTableView*>("registerView");
+                        if (!registers || registers->height() < 104 ||
+                            !registers->parentWidget()->rect().contains(registers->geometry()) ||
+                            registers->viewport()->height() < registers->verticalHeader()->defaultSectionSize()) {
+                            QTextStream(stderr) << "Register table lost its visible data row\n";
+                            result = 16; application.exit(result); return;
+                        }
+                    }
                     const QStringList headerControls{
                         QStringLiteral(
                             "projectTitleLabel"),

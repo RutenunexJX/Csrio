@@ -4,6 +4,7 @@
 #include "project_controller.hpp"
 #include "startup_options.hpp"
 #include "workbench_theme.hpp"
+#include "workbench_controls.hpp"
 
 #ifdef REGMAP_GUI_TEST_HAS_SUITEAPP
 #include "suite_integration.hpp"
@@ -25813,8 +25814,7 @@ void GuiSmokeTests::batchEditsAndCopiesCompleteRanges()
         fixedApply->setChecked(true);
         fixed->setCurrentText(QStringLiteral("Fixed"));
         batchDialogHandled = true;
-        buttons
-            ->button(QDialogButtonBox::Ok)
+        WorkbenchControls::standardButton(buttons, QDialogButtonBox::Ok)
             ->click();
     });
     registerBatchButton->click();
@@ -26024,8 +26024,7 @@ void GuiSmokeTests::batchEditsAndCopiesCompleteRanges()
         editor->setText(
             QStringLiteral("Batch Field description"));
         fieldBatchHandled = true;
-        buttons
-            ->button(QDialogButtonBox::Ok)
+        WorkbenchControls::standardButton(buttons, QDialogButtonBox::Ok)
             ->click();
     });
     fieldBatchButton->click();
@@ -26831,7 +26830,7 @@ void GuiSmokeTests::batchEditsNumericRangesSafely()
                 "Register batch range controls are unavailable");
         }
         auto* ok =
-            buttons->button(QDialogButtonBox::Ok);
+            WorkbenchControls::standardButton(buttons, QDialogButtonBox::Ok);
         if (ok == nullptr || ok->isEnabled()) {
             return QStringLiteral(
                 "Register batch OK must start disabled");
@@ -26914,7 +26913,7 @@ void GuiSmokeTests::batchEditsNumericRangesSafely()
                 "No-change Register batch controls are unavailable");
         }
         auto* ok =
-            buttons->button(QDialogButtonBox::Ok);
+            WorkbenchControls::standardButton(buttons, QDialogButtonBox::Ok);
         if (ok == nullptr ||
             editor->text() !=
                 QStringLiteral("0 .. 15")) {
@@ -27061,7 +27060,7 @@ void GuiSmokeTests::batchEditsNumericRangesSafely()
                 "Field batch range controls are unavailable");
         }
         auto* ok =
-            buttons->button(QDialogButtonBox::Ok);
+            WorkbenchControls::standardButton(buttons, QDialogButtonBox::Ok);
         if (ok == nullptr || ok->isEnabled()) {
             return QStringLiteral(
                 "Field batch OK must start disabled");
@@ -27248,9 +27247,7 @@ void GuiSmokeTests::reportsBatchEditsHiddenByActiveTagFilter()
             editor->setText(
                 QStringLiteral("existing"));
             dialogHandled = true;
-            buttons
-                ->button(
-                    QDialogButtonBox::Ok)
+            WorkbenchControls::standardButton(buttons, QDialogButtonBox::Ok)
                 ->click();
         });
     batch->trigger();

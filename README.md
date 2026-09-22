@@ -1,6 +1,6 @@
 # Register Map Workbench
 
-Current version: `0.3.2`.
+Current version: `0.3.3`.
 
 Register Map Workbench is a standalone Qt desktop application for FPGA and SystemVerilog
 register-map development. Workbench, guarded `regmapc` property patches, and a controlled region
@@ -652,8 +652,9 @@ to run as independent products.
 
 ## Configure, build, and test
 
-Requirements are CMake 3.24 or newer, a C++20 compiler, Ninja, and Qt 6.5 or newer. The compiler
-must match the Qt package. For a MinGW Qt installation:
+Requirements are CMake 3.24 or newer, a C++20 compiler, Ninja, and Qt. The Ela backend
+requires exactly Qt 6.10.2, including private headers; Classic and SuiteUi retain the
+Qt 6.5 minimum. The compiler must match the Qt package. For a MinGW Qt installation:
 
 ```powershell
 $env:PATH="C:\Qt\Tools\mingw1310_64\bin;C:\Qt\Tools\Ninja;C:\Qt\Tools\CMake_64\bin;$env:PATH"
@@ -690,7 +691,8 @@ RegMapWorkbench-<version>-win64-<git-revision>[-dirty|-source-unknown].zip.sha25
 ```
 
 The archive contains `RegMapWorkbench.exe`, `regmapc.exe`, `README.md`, `docs/cli.md`,
-`BUILD-INFO.txt`, and the deployed libraries and plugins. `BUILD-INFO.txt` records the revision
+the Ela migration record and license notices, `BUILD-INFO.txt`, and the deployed libraries
+and plugins. `BUILD-INFO.txt` records the control backend, revision
 and whether tracked or untracked source changes existed at package time. A dirty package receives
 the `-dirty` filename suffix; a package whose source state could not be inspected receives
 `-source-unknown`. Neither can be mistaken for an artifact built exactly from the named commit.
@@ -700,23 +702,36 @@ schema versions before a host opens a project.
 The checked-in [minimal project](examples/minimal/.regmap.yaml) is a complete schema-version-2
 example.
 
-### Default SuiteUi controls
+### Control backends (Ela migration)
 
-Since 0.3.2, the default build and formal package use SuiteUi. `REGMAP_ENABLE_SUITEUI`
-defaults to ON; existing CMake caches need an explicit ON override. Point
-`SuiteUi_DIR` at an installed `SuiteUi 0.1.0` package (`lib/cmake/SuiteUi`) to use
-the independently built control renderer. The version is exact; Qt/compiler and
-configuration must match the SDK's build-info.json. The CLI/core targets do not
-link SuiteUi. Buttons and checkboxes use the shared drawing policy; professional
-tables, bitfields and address maps keep their application-owned style boundary.
+Fresh builds now select the pinned, vendored ElaWidgetTools backend. Select
+`REGMAP_UI_BACKEND=ELA|SUITEUI|CLASSIC` at configure time; only one third-party
+renderer is linked. Existing caches using `REGMAP_ENABLE_SUITEUI` keep their old
+choice until `REGMAP_UI_BACKEND` is set explicitly. Version 0.3.2 used SuiteUi;
+version 0.3.3 selects Ela for the Windows portable release.
 
-Use `REGMAP_UI_STYLE=classic` when starting an SDK-enabled build for a local
-comparison. To remove the dependency, configure `REGMAP_ENABLE_SUITEUI=OFF` and
-rebuild. Theme preferences and project data require no migration. Runtime packages
-from SDK-enabled builds include `licenses/SuiteUi` with the SDK/backend/font
-notices and provenance. `REGMAP_UI_STYLE=classic` keeps the original Fusion/QSS
-controls available without replacing the executable. Native cross-DPI and frame-pacing
-validation limits are unchanged by this default switch.
+Ela replaces command buttons, ordinary form inputs, menus, toolbars, result
+tabs, scrollbars, batch-dialog OK/Cancel buttons, status bar, candidate lists,
+read-only result tables, Type/Access editor controls and the window title bar.
+Ordinary controls use Ela tooltips; successful saves and generation add transient
+notifications without replacing persistent status or diagnostic text. Models,
+delegate commit/cancel and validation contracts, specialized views, native file
+pickers and destructive confirmations remain application-owned. The title bar
+retains the unsaved-close guard and Windows resize/maximize behavior. Its source revision,
+font license and compatibility patches are recorded under
+`thirdparty/elawidgettools`; it does not depend on another application's checkout.
+See [the migration record](docs/ela-migration.md) for scope and validation.
+
+For `REGMAP_UI_BACKEND=SUITEUI`, point `SuiteUi_DIR` at an installed
+`SuiteUi 0.1.0` package (`lib/cmake/SuiteUi`). Qt/compiler and configuration must
+match the SDK's build-info.json. Core and CLI do not link either control backend.
+
+Use `REGMAP_UI_STYLE=classic` at process startup for a local Fusion/QSS comparison.
+The choice is fixed before widget creation; theme switches do not swap backends.
+To remove third-party UI dependencies, configure `REGMAP_UI_BACKEND=CLASSIC` and
+rebuild. Theme preferences and project data require no migration. Install rules
+include the selected renderer's license and provenance notices. Native cross-DPI
+and frame-pacing validation are distinct from the offscreen screenshot matrix.
 
 Tests use temporary settings and apply the actual theme before GUI cases.
 `REGMAP_TEST_THEME=light|dark`, `QT_SCALE_FACTOR`, `QT_REDUCE_MOTION` and

@@ -24,6 +24,7 @@ $env:QT_SCREEN_SCALE_FACTORS = "1"
 $env:QT_FONT_DPI = "96"
 $env:QT_QPA_FONTDIR = $fontDirectory
 $env:QT_SCALE_FACTOR_ROUNDING_POLICY = "PassThrough"
+$captures = @()
 
 try {
     foreach ($scale in @("1", "1.25", "1.5", "2")) {
@@ -44,9 +45,23 @@ try {
                 if ($LASTEXITCODE -ne 0) {
                     throw "Snapshot failed with exit code ${LASTEXITCODE}: $name"
                 }
+                $png = [IO.File]::ReadAllBytes($target)
+                $pixelWidth = ([int]$png[16] -shl 24) -bor ([int]$png[17] -shl 16) -bor ([int]$png[18] -shl 8) -bor [int]$png[19]
+                $pixelHeight = ([int]$png[20] -shl 24) -bor ([int]$png[21] -shl 16) -bor ([int]$png[22] -shl 8) -bor [int]$png[23]
+                $factor = [double]::Parse($scale, [Globalization.CultureInfo]::InvariantCulture)
+                if ($pixelWidth -ne $viewport.Width * $factor -or $pixelHeight -ne $viewport.Height * $factor) {
+                    throw "PNG pixel size mismatch: $name is ${pixelWidth}x${pixelHeight}"
+                }
+                $captures += [pscustomobject]@{
+                    File = $name; Theme = $theme; Scale = $factor
+                    LogicalWidth = $viewport.Width; LogicalHeight = $viewport.Height
+                    PixelWidth = $pixelWidth; PixelHeight = $pixelHeight
+                    Sha256 = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
+                }
             }
         }
     }
+    $captures | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $outputRoot "manifest.json") -Encoding utf8
 } finally {
     $env:QT_QPA_PLATFORM = $previousPlatform
     $env:QT_SCALE_FACTOR = $previousScale

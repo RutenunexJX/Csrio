@@ -6,6 +6,7 @@
 #include <array>
 
 class QApplication;
+class QFont;
 
 namespace WorkbenchTheme {
 
@@ -70,6 +71,7 @@ struct DensityMetrics {
                                    const QColor& background);
 [[nodiscard]] QColor contrastingText(const QColor& background);
 [[nodiscard]] bool reducedMotionEnabled();
+[[nodiscard]] QFont monospaceFont();
 
 void apply(QApplication& application);
 void apply(QApplication& application, Mode mode);

@@ -1,6 +1,6 @@
 # RegMapWorkbench Goal
 
-Current version: `0.3.0`.
+Current version: `0.3.3`.
 
 Maintain a focused register-map editor with one validated model, managed RTL synchronization and generated
 XLSX/C/Markdown views. External disk changes use explicit decisions and must not silently overwrite local work.

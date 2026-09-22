@@ -1,9 +1,11 @@
 #include "workbench_theme.hpp"
+#include "workbench_controls.hpp"
 #include "suiteui_adapter.hpp"
 
 #include <QApplication>
 #include <QFont>
 #include <QFontDatabase>
+#include <QFontInfo>
 #include <QPalette>
 #include <QSettings>
 #include <QStringList>
@@ -184,7 +186,7 @@ QString modeName(const Mode mode)
     return mode == Mode::dark ? QStringLiteral("dark") : QStringLiteral("light");
 }
 
-static QString styleSheetImpl(const Mode mode, bool sdkControls)
+static QString styleSheetImpl(const Mode mode, bool sdkControls, bool elaControls = false)
 {
     const Tokens& token = tokens(mode);
     const QString headerButtons = sdkControls ? QString() : QStringLiteral(R"QSS(
@@ -223,33 +225,7 @@ QPushButton:checked, QToolButton:checked { background: {{selection}}; border-col
 QPushButton:disabled, QToolButton:disabled { color: {{muted}}; background: {{panel}}; border-color: {{divider}}; }
 QPushButton:focus, QToolButton:focus, QComboBox:focus { border: 2px solid {{focus}}; }
 )QSS");
-    QString sheet = QStringLiteral(R"QSS(
-QMainWindow, QDialog { background: {{application}}; color: {{text}}; }
-QWidget#workbenchCanvas { background: {{application}}; }
-QWidget#pageHeader {
-    background: {{raised}};
-    border: 1px solid {{border}};
-    border-radius: {{radiusLarge}}px;
-}
-QLabel#projectTitleLabel { color: {{text}}; font-size: 14px; font-weight: 600; }
-QLabel#projectPathLabel, QLabel#selectedFieldSummaryLabel { color: {{muted}}; }
-QLabel#fileStateBadge, QLabel#syncStateBadge, QLabel#recoveryStateBadge,
-QLabel#registerSelectionLabel, QLabel#fieldSelectionLabel {
-    color: {{info}};
-    background: {{selection}};
-    border: 1px solid {{border}};
-    border-radius: {{radiusLarge}}px;
-    padding: {{space}}px {{space2}}px;
-    font-weight: 600;
-}
-QLabel#fileStateBadge[state="saved"], QLabel#syncStateBadge[state="synced"],
-QLabel#recoveryStateBadge[state="saved"] { color: {{success}}; }
-QLabel#fileStateBadge[state="dirty"], QLabel#syncStateBadge[state="dirty"],
-QLabel#fileStateBadge[state="loading"], QLabel#syncStateBadge[state="busy"] { color: {{warning}}; }
-QLabel#fileStateBadge[state="failed"], QLabel#syncStateBadge[state="blocked"],
-QLabel#syncStateBadge[state="conflict"], QLabel#syncStateBadge[state="partial"],
-QLabel#recoveryStateBadge[state="failed"] { color: {{error}}; }
-{{headerButtons}}
+    const QString navigationControls = elaControls ? QString() : QStringLiteral(R"QSS(
 QMenuBar {
     background: {{header}};
     color: {{onAccent}};
@@ -293,6 +269,70 @@ QToolBar QLineEdit#globalSearchEdit {
 }
 QToolBar QLabel#searchResultLabel { color: {{onAccent}}; min-width: 54px; padding: 0 3px; }
 QToolBar QToolButton#resultsToggleButton { border-color: {{border}}; }
+)QSS");
+    const QString formControls = elaControls ? QString() : QStringLiteral(R"QSS(
+QTabWidget::pane { background: {{canvas}}; border: 1px solid {{border}}; top: -1px; }
+QTabBar::tab { background: {{panel}}; color: {{muted}}; border: 1px solid {{border}}; border-bottom: none; padding: {{space2}}px {{space3}}px; }
+QTabBar::tab:selected { background: {{header}}; color: {{onAccent}}; border-color: {{header}}; }
+QTabBar::tab:hover:!selected { background: {{selection}}; color: {{text}}; }
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit, QPlainTextEdit {
+    min-height: {{compact}}px;
+    background: {{input}};
+    color: {{text}};
+    border: 1px solid {{border}};
+    border-radius: {{radiusSmall}}px;
+    padding: 0 {{space2}}px;
+    selection-background-color: {{selection}};
+    selection-color: {{text}};
+}
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus,
+QTextEdit:focus, QPlainTextEdit:focus { border: 2px solid {{focus}}; }
+QLineEdit[readOnly="true"] { background: {{panel}}; color: {{muted}}; }
+)QSS");
+    const QString viewActions = elaControls ? QString() : QStringLiteral(R"QSS(
+QPushButton#hierarchyAddButton { background: {{raised}}; color: {{header}}; border-color: {{border}}; }
+QPushButton#registerEmptyPrimaryButton { background: {{selectionStrong}}; color: {{onAccent}}; border-color: {{selectionStrong}}; }
+QWidget#externalDecisionBar QPushButton { min-height: {{compact}}px; }
+)QSS");
+    const QString dataViewItems = elaControls ? QStringLiteral(R"QSS(
+QTableView::item, QTreeView::item, QListWidget::item { padding: {{space}}px {{space2}}px; border: none; }
+QTableView::item:selected, QTreeView::item:selected, QListWidget::item:selected { background: {{selection}}; color: {{text}}; }
+QTableView::item:hover:!selected, QTreeView::item:hover:!selected, QListWidget::item:hover:!selected { background: {{panel}}; }
+QTableView:focus, QTreeView:focus, QListWidget:focus { border: 2px solid {{focus}}; }
+)QSS") : QStringLiteral(R"QSS(
+QAbstractItemView::item { padding: {{space}}px {{space2}}px; border: none; }
+QAbstractItemView::item:selected { background: {{selection}}; color: {{text}}; }
+QAbstractItemView::item:hover:!selected { background: {{panel}}; }
+QAbstractItemView:focus { border: 2px solid {{focus}}; }
+)QSS");
+    QString sheet = QStringLiteral(R"QSS(
+QMainWindow, QDialog { background: {{application}}; color: {{text}}; }
+QWidget#workbenchCanvas { background: {{application}}; }
+QWidget#pageHeader {
+    background: {{raised}};
+    border: 1px solid {{border}};
+    border-radius: {{radiusLarge}}px;
+}
+QLabel#projectTitleLabel { color: {{text}}; font-size: 14px; font-weight: 600; }
+QLabel#projectPathLabel, QLabel#selectedFieldSummaryLabel { color: {{muted}}; }
+QLabel#fileStateBadge, QLabel#syncStateBadge, QLabel#recoveryStateBadge,
+QLabel#registerSelectionLabel, QLabel#fieldSelectionLabel {
+    color: {{info}};
+    background: {{selection}};
+    border: 1px solid {{border}};
+    border-radius: {{radiusLarge}}px;
+    padding: {{space}}px {{space2}}px;
+    font-weight: 600;
+}
+QLabel#fileStateBadge[state="saved"], QLabel#syncStateBadge[state="synced"],
+QLabel#recoveryStateBadge[state="saved"] { color: {{success}}; }
+QLabel#fileStateBadge[state="dirty"], QLabel#syncStateBadge[state="dirty"],
+QLabel#fileStateBadge[state="loading"], QLabel#syncStateBadge[state="busy"] { color: {{warning}}; }
+QLabel#fileStateBadge[state="failed"], QLabel#syncStateBadge[state="blocked"],
+QLabel#syncStateBadge[state="conflict"], QLabel#syncStateBadge[state="partial"],
+QLabel#recoveryStateBadge[state="failed"] { color: {{error}}; }
+{{headerButtons}}
+{{navigationControls}}
 QHeaderView::section {
     background: {{header}};
     color: {{onAccent}};
@@ -313,10 +353,7 @@ QTableView, QTreeView, QTreeWidget, QListWidget {
     selection-color: {{text}};
     outline: 0;
 }
-QAbstractItemView::item { padding: {{space}}px {{space2}}px; border: none; }
-QAbstractItemView::item:selected { background: {{selection}}; color: {{text}}; }
-QAbstractItemView::item:hover:!selected { background: {{panel}}; }
-QAbstractItemView:focus { border: 2px solid {{focus}}; }
+{{dataViewItems}}
 QWidget#hierarchyPanel, QWidget#fieldPanel { background: {{canvas}}; }
 QWidget#hierarchyHeaderBar {
     background: {{header}};
@@ -324,7 +361,7 @@ QWidget#hierarchyHeaderBar {
     border-radius: {{radiusSmall}}px {{radiusSmall}}px 0 0;
 }
 QLabel#hierarchyTitle { color: {{onAccent}}; font-weight: 600; }
-QPushButton#hierarchyAddButton { background: {{raised}}; color: {{header}}; border-color: {{border}}; }
+
 QWidget#registerContextBar, QWidget#fieldHeaderBar, QWidget#registerToolsBar,
 QWidget#diagnosticsToolbar {
     background: {{panel}};
@@ -346,14 +383,13 @@ QWidget#registerEmptyState {
 }
 QLabel#registerEmptyTitle { color: {{text}}; font-weight: 600; }
 QLabel#registerEmptyHint { color: {{muted}}; }
-QPushButton#registerEmptyPrimaryButton { background: {{selectionStrong}}; color: {{onAccent}}; border-color: {{selectionStrong}}; }
+
 QWidget#registerFeedbackBar, QWidget#fieldFeedbackBar {
     background: {{panel}};
     border: 1px solid {{error}};
     border-radius: {{radiusSmall}}px;
 }
-QLabel#registerFeedbackLabel, QLabel#fieldFeedbackLabel,
-QWidget#registerFeedbackBar QToolButton, QWidget#fieldFeedbackBar QToolButton { color: {{error}}; }
+QLabel#registerFeedbackLabel, QLabel#fieldFeedbackLabel { color: {{error}}; }
 QWidget#conflictBar, QWidget#externalDecisionBar {
     background: {{panel}};
     border: 1px solid {{warning}};
@@ -364,24 +400,9 @@ QLabel#externalDecisionStatusLabel[state="pending"],
 QLabel#externalDecisionStatusLabel[state="warning"] { color: {{warning}}; font-weight: 600; }
 QLabel#externalDecisionStatusLabel[state="error"] { color: {{error}}; font-weight: 600; }
 QLabel#externalDecisionStatusLabel[state="success"] { color: {{success}}; font-weight: 600; }
-QWidget#externalDecisionBar QPushButton { min-height: {{compact}}px; }
-QTabWidget::pane { background: {{canvas}}; border: 1px solid {{border}}; top: -1px; }
-QTabBar::tab { background: {{panel}}; color: {{muted}}; border: 1px solid {{border}}; border-bottom: none; padding: {{space2}}px {{space3}}px; }
-QTabBar::tab:selected { background: {{header}}; color: {{onAccent}}; border-color: {{header}}; }
-QTabBar::tab:hover:!selected { background: {{selection}}; color: {{text}}; }
-QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit, QPlainTextEdit {
-    min-height: {{compact}}px;
-    background: {{input}};
-    color: {{text}};
-    border: 1px solid {{border}};
-    border-radius: {{radiusSmall}}px;
-    padding: 0 {{space2}}px;
-    selection-background-color: {{selection}};
-    selection-color: {{text}};
-}
-QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus,
-QTextEdit:focus, QPlainTextEdit:focus { border: 2px solid {{focus}}; }
-QLineEdit[readOnly="true"] { background: {{panel}}; color: {{muted}}; }
+
+{{formControls}}
+{{viewActions}}
 {{controls}}
 QSplitter::handle { background: {{divider}}; border-radius: {{space}}px; }
 QSplitter::handle:hover, QSplitter::handle:focus { background: {{focus}}; }
@@ -395,6 +416,19 @@ QToolTip { background: {{raised}}; color: {{text}}; border: 1px solid {{border}}
 
     sheet.replace(QStringLiteral("{{headerButtons}}"), headerButtons);
     sheet.replace(QStringLiteral("{{controls}}"), controls);
+    sheet.replace(QStringLiteral("{{navigationControls}}"), navigationControls);
+    sheet.replace(QStringLiteral("{{formControls}}"), formControls);
+    sheet.replace(QStringLiteral("{{viewActions}}"), viewActions);
+    sheet.replace(QStringLiteral("{{dataViewItems}}"), dataViewItems);
+    if (elaControls) {
+        // Ela owns migrated view/status painting; native editor views retain QSS.
+        sheet.replace(QStringLiteral("QTableView"), QStringLiteral("QTableView[regmapElaItemView=\"false\"]"));
+        sheet.replace(QStringLiteral("QListWidget"), QStringLiteral("QListWidget[regmapElaItemView=\"false\"]"));
+        sheet.replace(QStringLiteral("QHeaderView::section"), QStringLiteral("QHeaderView[regmapElaItemView=\"false\"]::section"));
+        sheet.replace(QStringLiteral("QTableCornerButton::section"), QStringLiteral("QTableView[regmapElaItemView=\"false\"] QTableCornerButton::section"));
+        sheet.replace(QStringLiteral("QStatusBar { background: {{panel}}; color: {{muted}}; border-top: 1px solid {{border}}; }"), QString());
+        sheet.replace(QStringLiteral("QStatusBar::item { border: none; }"), QString());
+    }
     const std::array<std::pair<QString, QColor>, 26> replacements{{
         {QStringLiteral("application"), token.application},
         {QStringLiteral("canvas"), token.canvas},
@@ -496,8 +530,25 @@ void apply(QApplication& application)
     apply(application, preferredMode());
 }
 
+QFont monospaceFont()
+{
+    QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    const auto families = QFontDatabase::families();
+    for (const auto& candidate : {QStringLiteral("Cascadia Mono"), QStringLiteral("Consolas"),
+                                 QStringLiteral("DejaVu Sans Mono"), QStringLiteral("Liberation Mono")}) {
+        if (families.contains(candidate, Qt::CaseInsensitive)) {
+            font.setFamily(candidate);
+            break;
+        }
+    }
+    font.setStyleHint(QFont::Monospace);
+    font.setPointSizeF(qApp->font().pointSizeF());
+    return font;
+}
+
 void apply(QApplication& application, const Mode mode)
 {
+    WorkbenchControls::initialize(application);
     QStyle* backend = nullptr;
     if (RegMapSuiteUi::enabled()) {
         backend = RegMapSuiteUi::install(application);
@@ -547,7 +598,9 @@ void apply(QApplication& application, const Mode mode)
     palette.setColor(QPalette::Disabled, QPalette::ButtonText, token.mutedText);
     application.setPalette(palette);
     if (backend) RegMapSuiteUi::update(backend, mode);
-    application.setStyleSheet(styleSheetImpl(mode, backend != nullptr));
+    WorkbenchControls::updateTheme(mode);
+    const bool ela = WorkbenchControls::backend() == WorkbenchControls::Backend::ela;
+    application.setStyleSheet(styleSheetImpl(mode, backend != nullptr || ela, ela));
     application.setProperty(themeProperty, modeName(mode));
     application.setProperty(
         reducedMotionProperty, reducedMotionEnabled());

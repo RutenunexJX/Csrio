@@ -79,6 +79,7 @@ private:
     };
 
     ProjectController controller_;
+    QWidget* windowChrome_{nullptr};
 
     QTreeView* hierarchyView_{nullptr};
     QPushButton* hierarchyAddButton_{nullptr};
@@ -499,6 +500,7 @@ private:
     void dropEvent(QDropEvent* event) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
     void closeEvent(QCloseEvent* event) override;
+    bool nativeEvent(const QByteArray& type, void* message, qintptr* result) override;
     void resizeEvent(QResizeEvent* event) override;
 
     [[nodiscard]] const regmap::Register* findRegister(const std::string& id) const;

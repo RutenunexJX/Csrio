@@ -1,0 +1,776 @@
+diff --git a/Development/ElaListViewStyle.cpp b/Development/ElaListViewStyle.cpp
+index beb2cfa..2026ed9 100644
+--- a/Development/ElaListViewStyle.cpp
++++ b/Development/ElaListViewStyle.cpp
+@@ -3,10 +3,12 @@
+ #include <QPainter>
+ #include <QPainterPath>
+ #include <QStyleOption>
++#include <QStyleFactory>
+ 
+ #include "ElaListView.h"
+ #include "ElaTheme.h"
+ ElaListViewStyle::ElaListViewStyle(QStyle* style)
++    : QProxyStyle(QStyleFactory::create(QStringLiteral("Fusion")))
+ {
+     _pItemHeight = 35;
+     _pIsTransparent = false;
+@@ -65,7 +67,7 @@ void ElaListViewStyle::drawPrimitive(PrimitiveElement element, const QStyleOptio
+         // Item背景隔行变色
+         if (const QStyleOptionViewItem* vopt = qstyleoption_cast<const QStyleOptionViewItem*>(option))
+         {
+-            if (vopt->features == QStyleOptionViewItem::Alternate)
++            if (vopt->features.testFlag(QStyleOptionViewItem::Alternate))
+             {
+                 painter->save();
+                 painter->setRenderHint(QPainter::Antialiasing);
+@@ -111,6 +113,12 @@ void ElaListViewStyle::drawControl(ControlElement element, const QStyleOption* o
+     }
+     case QStyle::CE_ItemViewItem:
+     {
++        if (widget && widget->property("ElaUseQtItemSemantics").toBool())
++        {
++            // Retain roles, check states, elision, bidi text and keyboard focus.
++            QProxyStyle::drawControl(element, option, painter, widget);
++            return;
++        }
+         if (const QStyleOptionViewItem* vopt = qstyleoption_cast<const QStyleOptionViewItem*>(option))
+         {
+             // 背景绘制
+@@ -120,8 +128,8 @@ void ElaListViewStyle::drawControl(ControlElement element, const QStyleOption* o
+             QRect itemRect = option->rect;
+             painter->save();
+             painter->setRenderHints(QPainter::Antialiasing | QPainter::SmoothPixmapTransform | QPainter::TextAntialiasing);
+-            const ElaListView* listView = dynamic_cast<const ElaListView*>(widget);
+-            QListView::ViewMode viewMode = listView->viewMode();
++            const QListView* listView = qobject_cast<const QListView*>(widget);
++            QListView::ViewMode viewMode = listView ? listView->viewMode() : QListView::ListMode;
+             // QRect checkRect = proxy()->subElementRect(SE_ItemViewItemCheckIndicator, vopt, widget);
+             QRect iconRect = proxy()->subElementRect(SE_ItemViewItemDecoration, vopt, widget);
+             QRect textRect = proxy()->subElementRect(SE_ItemViewItemText, vopt, widget);
+@@ -176,13 +184,13 @@ QSize ElaListViewStyle::sizeFromContents(ContentsType type, const QStyleOption*
+     case QStyle::CT_ItemViewItem:
+     {
+         QSize itemSize = QProxyStyle::sizeFromContents(type, option, size, widget);
+-        const ElaListView* listView = dynamic_cast<const ElaListView*>(widget);
+-        QListView::ViewMode viewMode = listView->viewMode();
++        const QListView* listView = qobject_cast<const QListView*>(widget);
++        QListView::ViewMode viewMode = listView ? listView->viewMode() : QListView::ListMode;
+         if (viewMode == QListView::ListMode)
+         {
+             itemSize.setWidth(itemSize.width() + _leftPadding);
+         }
+-        itemSize.setHeight(_pItemHeight);
++        itemSize.setHeight(qMax(itemSize.height(), _pItemHeight));
+         return itemSize;
+     }
+     default:
+diff --git a/Development/ElaTableViewStyle.cpp b/Development/ElaTableViewStyle.cpp
+index de4a197..e78b7c9 100644
+--- a/Development/ElaTableViewStyle.cpp
++++ b/Development/ElaTableViewStyle.cpp
+@@ -3,10 +3,12 @@
+ #include <QPainter>
+ #include <QPainterPath>
+ #include <QStyleOptionViewItem>
++#include <QStyleFactory>
+ 
+ #include "ElaTableView.h"
+ #include "ElaTheme.h"
+ ElaTableViewStyle::ElaTableViewStyle(QStyle* style)
++    : QProxyStyle(QStyleFactory::create(QStringLiteral("Fusion")))
+ {
+     _pHeaderMargin = 6;
+     _pCurrentHoverRow = -1;
+@@ -40,10 +42,11 @@ void ElaTableViewStyle::drawPrimitive(PrimitiveElement element, const QStyleOpti
+             QAbstractItemView::SelectionBehavior selectionBehavior = tabView->selectionBehavior();
+             if (selectionBehavior == QAbstractItemView::SelectRows)
+             {
+-                if (vopt->index.row() == _pCurrentHoverRow)
++                if (vopt->state.testFlag(QStyle::State_Selected) || vopt->index.row() == _pCurrentHoverRow)
+                 {
+                     painter->setPen(Qt::NoPen);
+-                    painter->setBrush(ElaThemeColor(_themeMode, BasicHoverAlpha));
++                    painter->setBrush(vopt->state.testFlag(QStyle::State_Selected)
++                        ? ElaThemeColor(_themeMode, BasicSelectedAlpha) : ElaThemeColor(_themeMode, BasicHoverAlpha));
+                     painter->drawRect(vopt->rect);
+                 }
+             }
+@@ -52,7 +55,8 @@ void ElaTableViewStyle::drawPrimitive(PrimitiveElement element, const QStyleOpti
+                 if (vopt->state.testFlag(QStyle::State_Selected) || vopt->state.testFlag(QStyle::State_MouseOver))
+                 {
+                     painter->setPen(Qt::NoPen);
+-                    painter->setBrush(ElaThemeColor(_themeMode, BasicHoverAlpha));
++                    painter->setBrush(vopt->state.testFlag(QStyle::State_Selected)
++                        ? ElaThemeColor(_themeMode, BasicSelectedAlpha) : ElaThemeColor(_themeMode, BasicHoverAlpha));
+                     painter->drawRect(vopt->rect);
+                 }
+             }
+@@ -120,6 +124,11 @@ void ElaTableViewStyle::drawControl(ControlElement element, const QStyleOption*
+     }
+     case QStyle::CE_HeaderLabel:
+     {
++        if (widget && widget->property("regmapElaItemView").toBool())
++        {
++            QProxyStyle::drawControl(element, option, painter, widget);
++            return;
++        }
+         // 表头文字绘制
+         if (const QStyleOptionHeader* hopt = qstyleoption_cast<const QStyleOptionHeader*>(option))
+         {
+@@ -172,6 +181,11 @@ void ElaTableViewStyle::drawControl(ControlElement element, const QStyleOption*
+     }
+     case QStyle::CE_ItemViewItem:
+     {
++        if (widget && widget->property("ElaUseQtItemSemantics").toBool())
++        {
++            QProxyStyle::drawControl(element, option, painter, widget);
++            return;
++        }
+         if (const QStyleOptionViewItem* vopt = qstyleoption_cast<const QStyleOptionViewItem*>(option))
+         {
+             // 背景绘制
+diff --git a/ElaAppBar.cpp b/ElaAppBar.cpp
+index afb895c..5302de4 100644
+--- a/ElaAppBar.cpp
++++ b/ElaAppBar.cpp
+@@ -20,12 +20,36 @@
+ #include <QScreen>
+ #include <QTimer>
+ #include <QVBoxLayout>
++#include <QtMath>
+ 
+ #include "ElaEventBus.h"
+ #include "ElaIconButton.h"
+ #include "ElaTheme.h"
+ #include "ElaWidgetToolsDef.h"
+ #include "private/ElaAppBarPrivate.h"
++namespace {
++void refreshCaption(ElaText* label, const QWidget* window)
++{
++    QString text = window->windowTitle();
++    text.replace(QStringLiteral("[*]"), window->isWindowModified() ? QStringLiteral("*") : QString());
++    label->setText(text);
++    label->setAccessibleName(text);
++}
++
++class CaptionLabel final : public ElaText {
++public:
++    using ElaText::ElaText;
++protected:
++    void paintEvent(QPaintEvent*) override
++    {
++        QPainter painter(this);
++        painter.setFont(font());
++        painter.setPen(ElaThemeColor(eTheme->getThemeMode(), BasicText));
++        painter.drawText(contentsRect(), Qt::AlignVCenter | Qt::AlignLeft,
++                         fontMetrics().elidedText(text(), Qt::ElideRight, contentsRect().width()));
++    }
++};
++}
+ Q_PROPERTY_CREATE_Q_CPP(ElaAppBar, bool, IsStayTop)
+ Q_PROPERTY_CREATE_Q_CPP(ElaAppBar, bool, IsDefaultClosed)
+ Q_PROPERTY_CREATE_Q_CPP(ElaAppBar, bool, IsOnlyAllowMinAndClose)
+@@ -35,7 +59,7 @@ ElaAppBar::ElaAppBar(QWidget* parent)
+ {
+     Q_D(ElaAppBar);
+     d->_buttonFlags = ElaAppBarType::RouteBackButtonHint | ElaAppBarType::RouteForwardButtonHint | ElaAppBarType::StayTopButtonHint | ElaAppBarType::ThemeChangeButtonHint | ElaAppBarType::MinimizeButtonHint | ElaAppBarType::MaximizeButtonHint | ElaAppBarType::CloseButtonHint;
+-    window()->setAttribute(Qt::WA_Mapped);
++    window()->setWindowFlag(Qt::FramelessWindowHint, true);
+     d->_pAppBarHeight = 45;
+     d->_pRibbonHeight = 0;
+     setFixedHeight(d->_pAppBarHeight);
+@@ -111,9 +135,12 @@ ElaAppBar::ElaAppBar(QWidget* parent)
+     });
+ 
+     //标题
+-    d->_titleLabel = new ElaText(this);
++    d->_titleLabel = new CaptionLabel(this);
++    d->_titleLabel->setObjectName("windowTitleLabel");
+     d->_titleLabel->setIsWrapAnywhere(false);
+-    d->_titleLabel->setTextPixelSize(13);
++    d->_titleLabel->setFont(qApp->font());
++    d->_titleLabel->setMinimumWidth(0);
++    d->_titleLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+     d->_titleLabelLayout = d->_createVLayout(d->_titleLabel);
+     if (parent->windowTitle().isEmpty())
+     {
+@@ -121,11 +148,11 @@ ElaAppBar::ElaAppBar(QWidget* parent)
+     }
+     else
+     {
+-        d->_titleLabel->setText(parent->windowTitle());
++        refreshCaption(d->_titleLabel, parent);
+         d->_titleLabelLayout->setContentsMargins(10, 0, 0, 0);
+     }
+     connect(parent, &QWidget::windowTitleChanged, this, [=](const QString& title) {
+-        d->_titleLabel->setText(title);
++        refreshCaption(d->_titleLabel, parent);
+         d->_titleLabel->setVisible(!title.isEmpty());
+         d->_titleLabelLayout->setContentsMargins(title.isEmpty() ? 0 : 10, 0, 0, 0);
+     });
+@@ -140,15 +167,24 @@ ElaAppBar::ElaAppBar(QWidget* parent)
+     });
+ 
+     d->_minButton = new ElaToolButton(this);
++    d->_minButton->setObjectName("windowMinimizeButton");
++    d->_minButton->setAccessibleName(tr("Minimize window"));
++    d->_minButton->setToolTip(tr("Minimize window"));
+     d->_minButton->setElaIcon(ElaIconType::Dash);
+     d->_minButton->setFixedSize(40, 30);
+     connect(d->_minButton, &ElaToolButton::clicked, d, &ElaAppBarPrivate::onMinButtonClicked);
+     d->_maxButton = new ElaToolButton(this);
++    d->_maxButton->setObjectName("windowMaximizeButton");
++    d->_maxButton->setAccessibleName(tr("Maximize window"));
++    d->_maxButton->setToolTip(tr("Maximize window"));
+     d->_maxButton->setIconSize(QSize(18, 18));
+     d->_maxButton->setElaIcon(ElaIconType::Square);
+     d->_maxButton->setFixedSize(40, 30);
+     connect(d->_maxButton, &ElaToolButton::clicked, d, &ElaAppBarPrivate::onMaxButtonClicked);
+     d->_closeButton = new ElaIconButton(ElaIconType::Xmark, 18, 40, 30, this);
++    d->_closeButton->setObjectName("windowCloseButton");
++    d->_closeButton->setAccessibleName(tr("Close window"));
++    d->_closeButton->setToolTip(tr("Close window"));
+     d->_closeButton->setLightHoverColor(QColor(0xE8, 0x11, 0x23));
+     d->_closeButton->setDarkHoverColor(QColor(0xE8, 0x11, 0x23));
+     d->_closeButton->setLightHoverIconColor(Qt::white);
+@@ -166,8 +202,8 @@ ElaAppBar::ElaAppBar(QWidget* parent)
+     leftLayout->addLayout(d->_createVLayout(d->_routeForwardButton));
+     leftLayout->addLayout(d->_createVLayout(d->_navigationButton));
+     leftLayout->addLayout(d->_iconLabelLayout);
+-    leftLayout->addLayout(d->_titleLabelLayout);
+-    d->_mainLayout->addLayout(leftLayout);
++    leftLayout->addLayout(d->_titleLabelLayout, 1);
++    d->_mainLayout->addLayout(leftLayout, 1);
+ 
+     auto leftAreaWidget = new QWidget(this);
+     leftAreaWidget->setVisible(false);
+@@ -179,9 +215,9 @@ ElaAppBar::ElaAppBar(QWidget* parent)
+     d->_customAreaWidgetList[1] = middleAreaWidget;
+     d->_customAreaWidgetList[2] = rightAreaWidget;
+     d->_mainLayout->addWidget(leftAreaWidget);
+-    d->_mainLayout->addStretch();
++    d->_mainLayout->addSpacing(0);
+     d->_mainLayout->addWidget(middleAreaWidget);
+-    d->_mainLayout->addStretch();
++    d->_mainLayout->addSpacing(0);
+     d->_mainLayout->addWidget(rightAreaWidget);
+ 
+     QHBoxLayout* rightLayout = new QHBoxLayout();
+@@ -218,8 +254,10 @@ ElaAppBar::ElaAppBar(QWidget* parent)
+     //主屏幕变更处理
+     connect(qApp, &QApplication::primaryScreenChanged, this, [=]() {
+         HWND hwnd = (HWND)(d->_currentWinID);
+-        ::SetWindowPos(hwnd, nullptr, 0, 0, 0, 0, SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED);
+-        ::RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
++        if (hwnd) {
++            ::SetWindowPos(hwnd, nullptr, 0, 0, 0, 0, SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED);
++            ::RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
++        }
+     });
+     d->_lastScreen = qApp->screenAt(window()->geometry().center());
+ #endif
+@@ -286,7 +324,7 @@ void ElaAppBar::setCustomWidget(ElaAppBarType::CustomArea customArea, QWidget* w
+ QWidget* ElaAppBar::getCustomWidget(ElaAppBarType::CustomArea customArea) const
+ {
+     Q_D(const ElaAppBar);
+-    int customAreaIndex = (int)customArea - 1;
++    int customAreaIndex = static_cast<int>(customArea);
+     return d->_customAreaWidgetList[customAreaIndex];
+ }
+ 
+@@ -407,7 +445,7 @@ int ElaAppBar::takeOverNativeEvent(const QByteArray& eventType, void* message, l
+ #endif
+ {
+     Q_D(ElaAppBar);
+-    if ((eventType != "windows_generic_MSG") || !message)
++    if ((eventType != "windows_generic_MSG") || !message || !result)
+     {
+         return 0;
+     }
+@@ -493,57 +531,14 @@ int ElaAppBar::takeOverNativeEvent(const QByteArray& eventType, void* message, l
+         {
+             return 0;
+         }
+-#if (QT_VERSION >= QT_VERSION_CHECK(6, 5, 3) && QT_VERSION <= QT_VERSION_CHECK(6, 6, 1))
+-        if (::IsZoomed(hwnd))
+-        {
+-            this->move(7, 7);
+-            window()->setContentsMargins(8, 8 + height() + d->_pRibbonHeight, 8, 8);
+-        }
+-        else
+-        {
+-            this->move(0, 0);
+-            window()->setContentsMargins(0, height() + d->_pRibbonHeight, 0, 0);
+-        }
+-        *result = 0;
+-        return 1;
+-#else
+         RECT* clientRect = &((NCCALCSIZE_PARAMS*)(lParam))->rgrc[0];
+-        if (eWinHelper->getIsWinVersionGreater10())
+-        {
+-            const LONG originTop = clientRect->top;
+-            const LRESULT hitTestResult = ::DefWindowProcW(hwnd, WM_NCCALCSIZE, wParam, lParam);
+-            if ((hitTestResult != HTERROR) && (hitTestResult != HTNOWHERE))
+-            {
+-                *result = static_cast<long>(hitTestResult);
+-                return 1;
+-            }
+-            clientRect->top = originTop;
+-        }
+-        if (::IsZoomed(hwnd))
+-        {
+-#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
+-            auto geometry = window()->screen()->geometry();
+-#else
+-            QScreen* screen = qApp->screenAt(window()->geometry().center());
+-            QRect geometry;
+-            if (!screen)
+-            {
+-                screen = qApp->screenAt(QCursor::pos());
+-            }
+-            geometry = screen->geometry();
+-#endif
+-            clientRect->top = geometry.top();
+-            if (!eWinHelper->getIsWinVersionGreater10())
+-            {
+-                quint32 borderThickness = eWinHelper->getResizeBorderThickness(hwnd);
+-                clientRect->left = geometry.left();
+-                clientRect->bottom -= borderThickness;
+-                clientRect->right -= borderThickness;
+-            }
++        if (::IsZoomed(hwnd) && !window()->isFullScreen()) {
++            MONITORINFO monitor{sizeof(MONITORINFO)};
++            if (::GetMonitorInfo(::MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitor))
++                *clientRect = monitor.rcWork;
+         }
+-        *result = WVR_REDRAW;
++        *result = 0;
+         return 1;
+-#endif
+     }
+     case WM_MOVE:
+     {
+@@ -561,39 +556,23 @@ int ElaAppBar::takeOverNativeEvent(const QByteArray& eventType, void* message, l
+     }
+     case WM_NCHITTEST:
+     {
+-        if (d->_containsCursorToItem(d->_maxButton))
+-        {
+-            if (*result == HTNOWHERE)
+-            {
+-                if (!d->_isHoverMaxButton)
+-                {
+-                    d->_isHoverMaxButton = true;
+-                    d->_maxButton->setIsSelected(true);
+-                    d->_maxButton->update();
+-                }
+-                *result = HTZOOM;
+-            }
+-            return 1;
+-        }
+-        else
+-        {
+-            if (d->_isHoverMaxButton)
+-            {
+-                d->_isHoverMaxButton = false;
+-                d->_maxButton->setIsSelected(false);
+-                d->_maxButton->update();
+-            }
+-        }
+         POINT nativeLocalPos{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+         ::ScreenToClient(hwnd, &nativeLocalPos);
++        const qreal ratio = window()->devicePixelRatioF();
++        const QPoint localPos(qRound(nativeLocalPos.x / ratio), qRound(nativeLocalPos.y / ratio));
++        const auto contains = [this, localPos](QWidget* widget) {
++            return widget && widget->isVisible()
++                && QRect(widget->mapTo(window(), QPoint()), widget->size()).contains(localPos);
++        };
+         RECT clientRect{0, 0, 0, 0};
+         ::GetClientRect(hwnd, &clientRect);
+         auto clientWidth = clientRect.right - clientRect.left;
+         auto clientHeight = clientRect.bottom - clientRect.top;
+-        bool left = nativeLocalPos.x < d->_win7Margins;
+-        bool right = nativeLocalPos.x > clientWidth - d->_win7Margins;
+-        bool top = nativeLocalPos.y < d->_margins;
+-        bool bottom = nativeLocalPos.y > clientHeight - d->_win7Margins;
++        const int border = qMax(1, qRound(6 * ratio));
++        bool left = nativeLocalPos.x < border;
++        bool right = nativeLocalPos.x >= clientWidth - border;
++        bool top = nativeLocalPos.y < border;
++        bool bottom = nativeLocalPos.y >= clientHeight - border;
+         *result = HTNOWHERE;
+         if (!d->_pIsOnlyAllowMinAndClose && !d->_pIsFixedSize && !window()->isFullScreen() && !window()->isMaximized())
+         {
+@@ -634,9 +613,20 @@ int ElaAppBar::takeOverNativeEvent(const QByteArray& eventType, void* message, l
+         {
+             return 1;
+         }
+-        if (d->_containsCursorToItem(this) && !window()->isFullScreen())
+-        {
+-            *result = HTCAPTION;
++        const bool overMax = contains(d->_maxButton) && !d->_pIsFixedSize && !window()->isFullScreen();
++        if (d->_isHoverMaxButton != overMax) {
++            d->_isHoverMaxButton = overMax;
++            d->_maxButton->setIsSelected(overMax);
++        }
++        if (overMax) {
++            *result = HTZOOM;
++            return 1;
++        }
++        if (contains(this) && !window()->isFullScreen()) {
++            bool overControl = false;
++            for (auto* widget : d->_clientWidgetList) overControl |= contains(widget);
++            for (auto* widget : d->_customAreaWidgetList) overControl |= contains(widget);
++            *result = overControl ? HTCLIENT : HTCAPTION;
+             return 1;
+         }
+         *result = HTCLIENT;
+@@ -645,13 +635,18 @@ int ElaAppBar::takeOverNativeEvent(const QByteArray& eventType, void* message, l
+     case WM_GETMINMAXINFO:
+     {
+         MINMAXINFO* minmaxInfo = reinterpret_cast<MINMAXINFO*>(lParam);
+-        RECT rect;
+-        SystemParametersInfo(SPI_GETWORKAREA, 0, &rect, 0);
++        const qreal ratio = window()->devicePixelRatioF();
+         d->_lastMinTrackWidth = d->_calculateMinimumWidth();
+-        minmaxInfo->ptMinTrackSize.x = d->_lastMinTrackWidth * qApp->devicePixelRatio();
+-        minmaxInfo->ptMinTrackSize.y = parentWidget()->minimumHeight() * qApp->devicePixelRatio();
+-        minmaxInfo->ptMaxPosition.x = rect.left;
+-        minmaxInfo->ptMaxPosition.y = rect.top;
++        minmaxInfo->ptMinTrackSize.x = qCeil(d->_lastMinTrackWidth * ratio);
++        minmaxInfo->ptMinTrackSize.y = qCeil(parentWidget()->minimumHeight() * ratio);
++        MONITORINFO monitor{sizeof(MONITORINFO)};
++        if (::GetMonitorInfo(::MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitor)) {
++            minmaxInfo->ptMaxPosition.x = monitor.rcWork.left - monitor.rcMonitor.left;
++            minmaxInfo->ptMaxPosition.y = monitor.rcWork.top - monitor.rcMonitor.top;
++            minmaxInfo->ptMaxSize.x = monitor.rcWork.right - monitor.rcWork.left;
++            minmaxInfo->ptMaxSize.y = monitor.rcWork.bottom - monitor.rcWork.top;
++        }
++        *result = 0;
+         return 1;
+     }
+     case WM_LBUTTONDBLCLK:
+@@ -680,7 +675,7 @@ int ElaAppBar::takeOverNativeEvent(const QByteArray& eventType, void* message, l
+         QVariantMap postData;
+         postData.insert("WMClickType", ElaAppBarType::WMNCLBUTTONDOWN);
+         ElaEventBus::getInstance()->post("WMWindowClicked", postData);
+-        if (d->_containsCursorToItem(d->_maxButton) || d->_pIsOnlyAllowMinAndClose)
++        if (wParam == HTZOOM || d->_pIsOnlyAllowMinAndClose)
+         {
+             return 1;
+         }
+@@ -691,7 +686,7 @@ int ElaAppBar::takeOverNativeEvent(const QByteArray& eventType, void* message, l
+         QVariantMap postData;
+         postData.insert("WMClickType", ElaAppBarType::WMNCLBUTTONDOWN);
+         ElaEventBus::getInstance()->post("WMWindowClicked", postData);
+-        if (d->_containsCursorToItem(d->_maxButton) && !d->_pIsOnlyAllowMinAndClose)
++        if (wParam == HTZOOM && !d->_pIsOnlyAllowMinAndClose)
+         {
+             d->onMaxButtonClicked();
+             return 1;
+@@ -734,6 +729,19 @@ bool ElaAppBar::eventFilter(QObject* obj, QEvent* event)
+     Q_D(ElaAppBar);
+     switch (event->type())
+     {
++    case QEvent::ModifiedChange:
++    {
++        refreshCaption(d->_titleLabel, window());
++        break;
++    }
++    case QEvent::WindowStateChange:
++    {
++        const bool fullScreen = window()->isFullScreen();
++        setVisible(!fullScreen);
++        window()->setContentsMargins(0, fullScreen ? 0 : height() + d->_pRibbonHeight, 0, 0);
++        d->_changeMaxButtonAwesome(window()->isMaximized());
++        break;
++    }
+     case QEvent::Resize:
+     {
+         QSize size = parentWidget()->size();
+@@ -754,12 +762,11 @@ bool ElaAppBar::eventFilter(QObject* obj, QEvent* event)
+ #ifdef Q_OS_WIN
+     case QEvent::Show:
+     {
+-        if (!d->_pIsFixedSize && !d->_pIsOnlyAllowMinAndClose)
++        if (d->_currentWinID && !d->_pIsFixedSize && !d->_pIsOnlyAllowMinAndClose)
+         {
+             HWND hwnd = (HWND)d->_currentWinID;
+             DWORD style = ::GetWindowLongPtr(hwnd, GWL_STYLE);
+-            style &= ~WS_SYSMENU;
+-            ::SetWindowLongPtr(hwnd, GWL_STYLE, style | WS_MAXIMIZEBOX | WS_THICKFRAME);
++            ::SetWindowLongPtr(hwnd, GWL_STYLE, style | WS_CAPTION | WS_SYSMENU | WS_MAXIMIZEBOX | WS_MINIMIZEBOX | WS_THICKFRAME);
+             if (!eWinHelper->getIsWinVersionGreater10())
+             {
+                 SetClassLong(hwnd, GCL_STYLE, GetClassLong(hwnd, GCL_STYLE) | CS_DROPSHADOW);
+diff --git a/ElaComboBox.cpp b/ElaComboBox.cpp
+index 187b49d..4648bca 100644
+--- a/ElaComboBox.cpp
++++ b/ElaComboBox.cpp
+@@ -40,6 +40,7 @@ ElaComboBox::ElaComboBox(QWidget* parent)
+     QWidget* container = this->findChild<QFrame*>();
+     if (container)
+     {
++        d->_popupContainer = container;
+         container->setWindowFlags(Qt::Popup | Qt::FramelessWindowHint | Qt::NoDropShadowWindowHint);
+         container->setAttribute(Qt::WA_TranslucentBackground);
+         container->setObjectName("ElaComboBoxContainer");
+@@ -64,11 +65,10 @@ ElaComboBox::ElaComboBox(QWidget* parent)
+ ElaComboBox::~ElaComboBox()
+ {
+     Q_D(ElaComboBox);
+-    // The popup and view share this style. Release their references while it
+-    // is still alive, before QWidget closes/deletes the popup during teardown.
++    // Destroy the popup tree while its shared Ela style is still alive.
++    // Resetting a native container's style can re-enter Qt's stylesheet cleanup.
++    delete d->_popupContainer.data();
+     if (lineEdit()) lineEdit()->setStyle(nullptr);
+-    view()->setStyle(nullptr);
+-    if (auto* container = findChild<QFrame*>()) container->setStyle(nullptr);
+     setStyle(nullptr);
+     delete d->_comboBoxStyle;
+ }
+diff --git a/ElaListView.cpp b/ElaListView.cpp
+index 408db04..65c36b7 100644
+--- a/ElaListView.cpp
++++ b/ElaListView.cpp
+@@ -5,6 +5,7 @@
+ #include "ElaListViewPrivate.h"
+ #include "ElaListViewStyle.h"
+ #include "ElaScrollBar.h"
++#include "ElaTheme.h"
+ ElaListView::ElaListView(QWidget* parent)
+     : QListView(parent), d_ptr(new ElaListViewPrivate())
+ {
+@@ -13,6 +14,7 @@ ElaListView::ElaListView(QWidget* parent)
+     setObjectName("ElaListView");
+     setStyleSheet("#ElaListView{background-color:transparent;}");
+     d->_listViewStyle = new ElaListViewStyle(style());
++    d->_listViewStyle->setParent(this);
+     setStyle(d->_listViewStyle);
+     setMouseTracking(true);
+     setVerticalScrollBar(new ElaScrollBar(this));
+@@ -21,11 +23,14 @@ ElaListView::ElaListView(QWidget* parent)
+     this->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+     setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+     setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
++    connect(eTheme, &ElaTheme::themeModeChanged, this, [this] { viewport()->update(); });
+ }
+ 
+ ElaListView::~ElaListView()
+ {
+     Q_D(ElaListView);
++    viewport()->setStyle(nullptr);
++    setStyle(nullptr);
+     delete d->_listViewStyle;
+ }
+ 
+diff --git a/ElaListWidget.cpp b/ElaListWidget.cpp
+new file mode 100644
+index 0000000..83372b4
+--- /dev/null
++++ b/ElaListWidget.cpp
+@@ -0,0 +1,23 @@
++#include "ElaListWidget.h"
++
++#include "ElaListViewStyle.h"
++#include "ElaTheme.h"
++
++ElaListWidget::ElaListWidget(QWidget* parent)
++    : QListWidget(parent), _listStyle(new ElaListViewStyle)
++{
++    setObjectName("ElaListWidget");
++    setProperty("ElaUseQtItemSemantics", true);
++    _listStyle->setParent(this);
++    _listStyle->setItemHeight(qMax(28, fontMetrics().height() + 10));
++    setStyle(_listStyle);
++    setMouseTracking(true);
++    connect(eTheme, &ElaTheme::themeModeChanged, this, [this] { viewport()->update(); });
++}
++
++ElaListWidget::~ElaListWidget()
++{
++    viewport()->setStyle(nullptr);
++    setStyle(nullptr);
++    delete _listStyle;
++}
+diff --git a/ElaListWidget.h b/ElaListWidget.h
+new file mode 100644
+index 0000000..3df8a2a
+--- /dev/null
++++ b/ElaListWidget.h
+@@ -0,0 +1,17 @@
++#pragma once
++
++#include <QListWidget>
++#include "ElaWidgetToolsExport.h"
++
++class ElaListViewStyle;
++
++// Ela rendering with QListWidget's existing item/model contract.
++class ELA_EXPORT ElaListWidget : public QListWidget
++{
++    Q_OBJECT
++public:
++    explicit ElaListWidget(QWidget* parent = nullptr);
++    ~ElaListWidget() override;
++private:
++    ElaListViewStyle* _listStyle;
++};
+diff --git a/ElaStatusBar.cpp b/ElaStatusBar.cpp
+index ab13bd9..70d2b50 100644
+--- a/ElaStatusBar.cpp
++++ b/ElaStatusBar.cpp
+@@ -4,6 +4,7 @@
+ #include <QTimer>
+ 
+ #include "ElaStatusBarStyle.h"
++#include "ElaTheme.h"
+ ElaStatusBar::ElaStatusBar(QWidget* parent)
+     : QStatusBar(parent)
+ {
+@@ -11,9 +12,14 @@ ElaStatusBar::ElaStatusBar(QWidget* parent)
+     setStyleSheet("#ElaStatusBar{background-color:transparent;}");
+     setFixedHeight(28);
+     setContentsMargins(20, 0, 0, 0);
+-    setStyle(new ElaStatusBarStyle(style()));
++    _statusStyle = new ElaStatusBarStyle(style());
++    _statusStyle->setParent(this);
++    setStyle(_statusStyle);
++    connect(eTheme, &ElaTheme::themeModeChanged, this, [this] { update(); });
+ }
+ 
+ ElaStatusBar::~ElaStatusBar()
+ {
++    setStyle(nullptr);
++    delete _statusStyle;
+ }
+diff --git a/ElaStatusBar.h b/ElaStatusBar.h
+index 12f1f28..f8ebed3 100644
+--- a/ElaStatusBar.h
++++ b/ElaStatusBar.h
+@@ -11,6 +11,8 @@ class ELA_EXPORT ElaStatusBar : public QStatusBar
+ public:
+     explicit ElaStatusBar(QWidget* parent = nullptr);
+     ~ElaStatusBar() override;
++private:
++    QStyle* _statusStyle{nullptr};
+ };
+ 
+ #endif // ELAWORKSPACE_ELAWIDGETTOOLS_ELASTATUSBAR_H_
+diff --git a/ElaTableView.cpp b/ElaTableView.cpp
+index 9f73fb2..4d409ee 100644
+--- a/ElaTableView.cpp
++++ b/ElaTableView.cpp
+@@ -6,6 +6,7 @@
+ #include "ElaTableViewStyle.h"
+ #include "ElaScrollBar.h"
+ #include "ElaTableViewPrivate.h"
++#include "ElaTheme.h"
+ ElaTableView::ElaTableView(QWidget* parent)
+     : QTableView(parent), d_ptr(new ElaTableViewPrivate())
+ {
+@@ -24,12 +25,22 @@ ElaTableView::ElaTableView(QWidget* parent)
+     setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+     setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+     d->_tableViewStyle = new ElaTableViewStyle(style());
++    d->_tableViewStyle->setParent(this);
+     setStyle(d->_tableViewStyle);
++    connect(eTheme, &ElaTheme::themeModeChanged, this, [this] {
++        viewport()->update();
++        horizontalHeader()->update();
++        verticalHeader()->update();
++    });
+ }
+ 
+ ElaTableView::~ElaTableView()
+ {
+     Q_D(ElaTableView);
++    horizontalHeader()->setStyle(nullptr);
++    verticalHeader()->setStyle(nullptr);
++    viewport()->setStyle(nullptr);
++    setStyle(nullptr);
+     delete d->_tableViewStyle;
+ }
+ 
+diff --git a/private/ElaAppBarPrivate.cpp b/private/ElaAppBarPrivate.cpp
+index 203e53f..0280efd 100644
+--- a/private/ElaAppBarPrivate.cpp
++++ b/private/ElaAppBarPrivate.cpp
+@@ -41,9 +41,7 @@ void ElaAppBarPrivate::onMaxButtonClicked()
+     Q_Q(ElaAppBar);
+     bool isMaximized = q->window()->isMaximized();
+     isMaximized ? q->window()->showNormal() : q->window()->showMaximized();
+-#ifndef Q_OS_WIM
+     _changeMaxButtonAwesome(!isMaximized);
+-#endif
+ }
+ 
+ void ElaAppBarPrivate::onCloseButtonClicked()
+@@ -51,13 +49,8 @@ void ElaAppBarPrivate::onCloseButtonClicked()
+     Q_Q(ElaAppBar);
+     if (_pIsDefaultClosed)
+     {
+-        const auto window = q->window();
+-        window->close();
+-        QApplication::processEvents();
+-        if (const auto windowHandle = window->windowHandle())
+-        {
+-            windowHandle->close();
+-        }
++        // QWidget::close() may be rejected by unsaved-edit or validation guards.
++        q->window()->close();
+     }
+     else
+     {
+@@ -88,6 +81,8 @@ void ElaAppBarPrivate::onStayTopButtonClicked()
+ 
+ void ElaAppBarPrivate::_changeMaxButtonAwesome(bool isMaximized)
+ {
++    _maxButton->setAccessibleName(isMaximized ? tr("Restore window") : tr("Maximize window"));
++    _maxButton->setToolTip(_maxButton->accessibleName());
+     if (isMaximized)
+     {
+         _maxButton->setElaIcon(ElaIconType::WindowRestore);
+@@ -254,7 +249,7 @@ int ElaAppBarPrivate::_calculateMinimumWidth()
+     int appBarWidth = 0;
+     if (_titleLabel->isVisible())
+     {
+-        appBarWidth += _titleLabel->width();
++        appBarWidth += _titleLabel->minimumWidth();
+         appBarWidth += 10;
+     }
+     if (_iconLabel->isVisible())
+@@ -298,4 +293,4 @@ QVBoxLayout* ElaAppBarPrivate::_createVLayout(QWidget* widget)
+     vLayout->addWidget(widget);
+     vLayout->addStretch();
+     return vLayout;
+-}
+\ No newline at end of file
++}
+diff --git a/private/ElaComboBoxPrivate.h b/private/ElaComboBoxPrivate.h
+index 34f1166..be58b13 100644
+--- a/private/ElaComboBoxPrivate.h
++++ b/private/ElaComboBoxPrivate.h
+@@ -2,10 +2,12 @@
+ #define ELAWORKSPACE_ELAWIDGETTOOLS_PRIVATE_ELACOMBOBOXPRIVATE_H_
+ 
+ #include <QObject>
++#include <QPointer>
+ 
+ #include "ElaWidgetToolsDef.h"
+ 
+ class QLineEdit;
++class QWidget;
+ class ElaComboBox;
+ class ElaComboBoxStyle;
+ class ElaComboBoxPrivate : public QObject
+@@ -23,6 +25,7 @@ public:
+ private:
+     bool _isAllowHidePopup{false};
+     ElaComboBoxStyle* _comboBoxStyle{nullptr};
++    QPointer<QWidget> _popupContainer;
+     ElaThemeType::ThemeMode _themeMode;
+ };
+ 

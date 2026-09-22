@@ -2,6 +2,7 @@
 #include "ui_snapshot.cpp"
 #undef main
 #include "suiteui_adapter.hpp"
+#include "workbench_controls.hpp"
 #include <QAccessible>
 #include <QCheckBox>
 #include <QComboBox>
@@ -11,10 +12,12 @@
 #include <QFontDatabase>
 #include <QFontInfo>
 #include <QLabel>
+#include <QLineEdit>
 #include <QPushButton>
 #include <QTableView>
 #include <QScopeGuard>
 #include <QSignalSpy>
+#include <QStatusBar>
 #include <QTest>
 
 class Contracts final : public QObject {
@@ -27,7 +30,7 @@ private slots:
         QVERIFY(QFontMetrics(qApp->font()).inFontUcs4('A'));
         QVERIFY(QFontMetrics(qApp->font()).inFontUcs4('0'));
         qInfo() << "Fonts:" << QFontInfo(qApp->font()).family()
-                << QFontInfo(QFontDatabase::systemFont(QFontDatabase::FixedFont)).family();
+                << QFontInfo(WorkbenchTheme::monospaceFont()).family();
         const bool expectsSdk = REGMAP_TEST_SUITEUI_ENABLED
             && qEnvironmentVariable("REGMAP_UI_STYLE") != "classic";
         QCOMPARE(RegMapSuiteUi::enabled(), expectsSdk);
@@ -36,12 +39,24 @@ private slots:
             QVERIFY(backend);
             QCOMPARE(backend->objectName(), QStringLiteral("RegMapSuiteUi"));
         }
-        qInfo() << "Renderer:" << (backend ? backend->objectName() : QStringLiteral("classic"));
+        qInfo() << "Renderer:" << (backend ? backend->objectName()
+            : WorkbenchControls::backend() == WorkbenchControls::Backend::ela
+                ? QStringLiteral("ElaWidgetTools") : QStringLiteral("classic"));
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
         const auto manifest = directory.filePath("pilot.regmap.yaml");
         QVERIFY(createFixture(manifest));
         MainWindow window;
+        const bool expectsEla = REGMAP_TEST_ELA_ENABLED
+            && qEnvironmentVariable("REGMAP_UI_STYLE") != "classic";
+        QCOMPARE(WorkbenchControls::backend() == WorkbenchControls::Backend::ela, expectsEla);
+        for (const auto& entry : {qMakePair("saveSyncButton", "ElaToolButton"),
+                                 qMakePair("pageBaseEdit", "ElaLineEdit"),
+                                 qMakePair("resultTabs", "ElaTabWidget")}) {
+            auto* widget = window.findChild<QWidget*>(entry.first);
+            QVERIFY2(widget, entry.first);
+            QCOMPARE(widget->inherits(entry.second), expectsEla);
+        }
         QVERIFY(window.openProjectPath(manifest));
         window.resize(1440, 900); window.show(); QTest::qWait(50);
         auto* controller = window.findChild<ProjectController*>();
@@ -49,6 +64,13 @@ private slots:
         auto* fileBadge = window.findChild<QLabel*>("fileStateBadge");
         auto* syncBadge = window.findChild<QLabel*>("syncStateBadge");
         QVERIFY(controller && registers && fileBadge && syncBadge);
+        for (const auto* name : {"registerView", "fieldView", "enumView", "problemsView",
+                                 "generatedView", "diffView"}) {
+            auto* area = window.findChild<QAbstractScrollArea*>(name);
+            QVERIFY2(area, name);
+            QCOMPARE(area->verticalScrollBar()->inherits("ElaScrollBar"), expectsEla);
+            QCOMPARE(area->horizontalScrollBar()->inherits("ElaScrollBar"), expectsEla);
+        }
         const auto tableFont = registers->font();
         const auto headerFont = registers->horizontalHeader()->font();
         const auto columns = registers->model()->columnCount();
@@ -89,6 +111,16 @@ private slots:
         generate->setFocus(Qt::TabFocusReason); QTest::qWait(10); QVERIFY(generate->hasFocus());
         QTest::keyClick(generate, Qt::Key_Space); QCOMPARE(clicks.count(), 1);
         QTest::mouseClick(generate, Qt::LeftButton); QCOMPARE(clicks.count(), 2);
+        auto* message = window.centralWidget()->findChild<QWidget*>("workbenchSuccessMessage");
+        QCOMPARE(message != nullptr, expectsEla);
+        if (message) {
+            QVERIFY(message->inherits("ElaMessageBar"));
+            QCOMPARE(message->accessibleDescription(), window.statusBar()->currentMessage());
+        }
+        QVERIFY(QMetaObject::invokeMethod(controller, "syncStatusChanged", Qt::DirectConnection,
+                                         Q_ARG(QString, QString("Generation failed"))));
+        QCOMPARE(window.statusBar()->currentMessage(), QString("Generation failed"));
+        QVERIFY(!window.centralWidget()->findChild<QWidget*>("workbenchSuccessMessage"));
 
         registers->setCurrentIndex(registers->model()->index(0, 0));
         registers->selectionModel()->select(QItemSelection(registers->model()->index(0, 0),
@@ -107,6 +139,27 @@ private slots:
             auto* combo = dialog->findChild<QComboBox*>("batchAccessEditor");
             auto* buttons = dialog->findChild<QDialogButtonBox*>("batchEditButtons");
             QVERIFY(check && combo && buttons);
+            auto* ok = WorkbenchControls::standardButton(buttons, QDialogButtonBox::Ok);
+            auto* cancel = WorkbenchControls::standardButton(buttons, QDialogButtonBox::Cancel);
+            QVERIFY(ok && cancel);
+            QCOMPARE(ok->inherits("ElaPushButton"), expectsEla);
+            QCOMPARE(cancel->inherits("ElaPushButton"), expectsEla);
+            QCOMPARE(buttons->buttonRole(ok), QDialogButtonBox::AcceptRole);
+            QCOMPARE(buttons->buttonRole(cancel), QDialogButtonBox::RejectRole);
+            QVERIFY(!ok->isEnabled());
+            QVERIFY(dialog->width() <= window.width());
+            QVERIFY(dialog->height() <= window.height());
+            for (auto* control : dialog->findChildren<QWidget*>()) {
+                if (!control->isVisibleTo(dialog)
+                    || !(qobject_cast<QLineEdit*>(control) || qobject_cast<QComboBox*>(control)
+                         || qobject_cast<QCheckBox*>(control) || qobject_cast<QPushButton*>(control))) continue;
+                const auto context = QString("%1: geometry %2,%3 %4x%5, parent %6x%7")
+                    .arg(control->objectName()).arg(control->x()).arg(control->y())
+                    .arg(control->width()).arg(control->height())
+                    .arg(control->parentWidget()->width()).arg(control->parentWidget()->height()).toUtf8();
+                QVERIFY2(control->parentWidget()->rect().contains(control->geometry()), context.constData());
+                QVERIFY2(control->height() >= control->fontMetrics().height() + 4, context.constData());
+            }
             QVERIFY(!check->isChecked()); QVERIFY(!combo->isEnabled());
             QSignalSpy toggles(check, &QCheckBox::toggled);
             check->setFocus(Qt::TabFocusReason); QTest::qWait(10); QVERIFY(check->hasFocus());
@@ -130,7 +183,7 @@ private slots:
             QTest::qWait(250);
             QVERIFY(dialog->grab().save(output + "/batch.png"));
             checked = true;
-            QTest::mouseClick(buttons->button(QDialogButtonBox::Cancel), Qt::LeftButton);
+            QTest::mouseClick(WorkbenchControls::standardButton(buttons, QDialogButtonBox::Cancel), Qt::LeftButton);
         });
         QTest::mouseClick(batch, Qt::LeftButton);
         QVERIFY(checked); QCOMPARE(controller->undoDepth(), undoDepth);

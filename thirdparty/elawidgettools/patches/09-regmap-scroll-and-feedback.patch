@@ -1,0 +1,503 @@
+diff --git a/Development/ElaScrollBarStyle.cpp b/Development/ElaScrollBarStyle.cpp
+index 4ac8a8d..9fed516 100644
+--- a/Development/ElaScrollBarStyle.cpp
++++ b/Development/ElaScrollBarStyle.cpp
+@@ -8,6 +8,7 @@
+ 
+ #include "ElaScrollBar.h"
+ #include "ElaTheme.h"
++#include <QApplication>
+ ElaScrollBarStyle::ElaScrollBarStyle(QStyle* style)
+ {
+     _pIsExpand = false;
+@@ -126,6 +127,7 @@ int ElaScrollBarStyle::pixelMetric(PixelMetric metric, const QStyleOption* optio
+     {
+     case QStyle::PM_ScrollBarExtent:
+     {
++        if (widget && widget->property("ElaUseQtScrollSemantics").toBool()) return 14;
+         return _scrollBarExtent;
+     }
+     default:
+@@ -138,7 +140,8 @@ int ElaScrollBarStyle::pixelMetric(PixelMetric metric, const QStyleOption* optio
+ 
+ int ElaScrollBarStyle::styleHint(StyleHint hint, const QStyleOption* option, const QWidget* widget, QStyleHintReturn* returnData) const
+ {
+-    if (hint == QStyle::SH_ScrollBar_LeftClickAbsolutePosition)
++    if (hint == QStyle::SH_ScrollBar_LeftClickAbsolutePosition &&
++        !(widget && widget->property("ElaUseQtScrollSemantics").toBool()))
+     {
+         return true;
+     }
+@@ -147,10 +150,18 @@ int ElaScrollBarStyle::styleHint(StyleHint hint, const QStyleOption* option, con
+ 
+ void ElaScrollBarStyle::startExpandAnimation(bool isExpand)
+ {
++    for (auto* animation : findChildren<QPropertyAnimation*>()) animation->stop();
++    if (qApp->property("ElaReducedMotion").toBool()) {
++        _pIsExpand = isExpand;
++        _pOpacity = isExpand ? 1 : 0;
++        _pSliderExtent = isExpand ? _scrollBarExtent - 2 * _sliderMargin : 2.4;
++        if (_pScrollBar) _pScrollBar->update();
++        return;
++    }
+     if (isExpand)
+     {
+         _pIsExpand = true;
+-        QPropertyAnimation* opacityAnimation = new QPropertyAnimation(this, "pOpacity");
++        QPropertyAnimation* opacityAnimation = new QPropertyAnimation(this, "pOpacity", this);
+         connect(opacityAnimation, &QPropertyAnimation::valueChanged, this, [=]() {
+             _pScrollBar->update();
+         });
+@@ -160,7 +171,7 @@ void ElaScrollBarStyle::startExpandAnimation(bool isExpand)
+         opacityAnimation->setEndValue(1);
+         opacityAnimation->start(QAbstractAnimation::DeleteWhenStopped);
+ 
+-        QPropertyAnimation* extentAnimation = new QPropertyAnimation(this, "pSliderExtent");
++        QPropertyAnimation* extentAnimation = new QPropertyAnimation(this, "pSliderExtent", this);
+         extentAnimation->setDuration(250);
+         extentAnimation->setEasingCurve(QEasingCurve::InOutSine);
+         extentAnimation->setStartValue(_pSliderExtent);
+@@ -169,7 +180,7 @@ void ElaScrollBarStyle::startExpandAnimation(bool isExpand)
+     }
+     else
+     {
+-        QPropertyAnimation* opacityAnimation = new QPropertyAnimation(this, "pOpacity");
++        QPropertyAnimation* opacityAnimation = new QPropertyAnimation(this, "pOpacity", this);
+         connect(opacityAnimation, &QPropertyAnimation::finished, this, [=]() {
+             _pIsExpand = false;
+         });
+@@ -182,7 +193,7 @@ void ElaScrollBarStyle::startExpandAnimation(bool isExpand)
+         opacityAnimation->setEndValue(0);
+         opacityAnimation->start(QAbstractAnimation::DeleteWhenStopped);
+ 
+-        QPropertyAnimation* extentAnimation = new QPropertyAnimation(this, "pSliderExtent");
++        QPropertyAnimation* extentAnimation = new QPropertyAnimation(this, "pSliderExtent", this);
+         extentAnimation->setDuration(250);
+         extentAnimation->setEasingCurve(QEasingCurve::InOutSine);
+         extentAnimation->setStartValue(_pSliderExtent);
+diff --git a/ElaMessageBar.cpp b/ElaMessageBar.cpp
+index cf01782..5d67a0d 100644
+--- a/ElaMessageBar.cpp
++++ b/ElaMessageBar.cpp
+@@ -23,10 +23,11 @@ ElaMessageBar::ElaMessageBar(ElaMessageBarType::PositionPolicy policy, ElaMessag
+     d->_policy = policy;
+     d->_messageMode = messageMode;
+     d->_themeMode = eTheme->getThemeMode();
+-    setFixedHeight(60);
+     setMouseTracking(true);
+     d->_pOpacity = 1;
+-    setFont(QFont("微软雅黑"));
++    setFont(qApp->font());
++    setAccessibleName(title);
++    setAccessibleDescription(text);
+     parent->installEventFilter(this);
+     d->_closeButton = new ElaIconButton(ElaIconType::Xmark, 17, d->_closeButtonWidth, 30, this);
+     switch (d->_messageMode)
+@@ -66,6 +67,19 @@ ElaMessageBar::ElaMessageBar(ElaMessageBarType::PositionPolicy policy, ElaMessag
+     }
+     }
+     d->_closeButton->setBorderRadius(5);
++    d->_closeButton->setAccessibleName(tr("Dismiss notification"));
++    d->_closeButton->setObjectName("messageDismissButton");
++    d->_closeButton->setAutoDefault(false);
++    d->_closeButton->setLightIconColor(ElaThemeColor(ElaThemeType::Light, BasicText));
++    d->_closeButton->setDarkIconColor(ElaThemeColor(ElaThemeType::Dark, BasicText));
++    d->_closeButton->setLightHoverIconColor(ElaThemeColor(ElaThemeType::Light, BasicText));
++    d->_closeButton->setDarkHoverIconColor(ElaThemeColor(ElaThemeType::Dark, BasicText));
++    d->_closeButton->setLightHoverColor(ElaThemeColor(ElaThemeType::Light, BasicHover));
++    d->_closeButton->setDarkHoverColor(ElaThemeColor(ElaThemeType::Dark, BasicHover));
++    connect(eTheme, &ElaTheme::themeModeChanged, this, [this, d](ElaThemeType::ThemeMode mode) {
++        d->_themeMode = mode;
++        update();
++    });
+     connect(d->_closeButton, &ElaIconButton::clicked, d, &ElaMessageBarPrivate::messageBarEnd);
+     QHBoxLayout* mainLayout = new QHBoxLayout(this);
+     mainLayout->setContentsMargins(0, 0, 10, 0);
+@@ -168,122 +182,60 @@ void ElaMessageBar::error(ElaMessageBarType::PositionPolicy policy, QString titl
+ 
+ void ElaMessageBar::paintEvent(QPaintEvent* event)
+ {
++    Q_UNUSED(event);
+     Q_D(ElaMessageBar);
+-    int fontPixelSize = eApp->getFontPixelSize();
+     QPainter painter(this);
+     painter.setOpacity(d->_pOpacity);
+-    painter.setRenderHints(QPainter::SmoothPixmapTransform | QPainter::Antialiasing | QPainter::TextAntialiasing);
+-    // 高性能阴影
++    painter.setRenderHint(QPainter::Antialiasing);
+     eTheme->drawEffectShadow(&painter, rect(), d->_shadowBorderWidth, d->_borderRadius);
+-
+-    // 背景和图标绘制
+-    painter.save();
+-    painter.setPen(d->_themeMode == ElaThemeType::Light ? QColor(0xBE, 0xBA, 0xBE) : QColor(0x52, 0x50, 0x52));
+-    switch (d->_messageMode)
+-    {
+-    case ElaMessageBarType::Success:
+-    {
+-        d->_drawSuccess(&painter);
+-        break;
+-    }
+-    case ElaMessageBarType::Warning:
+-    {
+-        d->_drawWarning(&painter);
+-        break;
+-    }
+-    case ElaMessageBarType::Information:
+-    {
+-        d->_drawInformation(&painter);
+-        break;
+-    }
+-    case ElaMessageBarType::Error:
+-    {
+-        d->_drawError(&painter);
+-        break;
+-    }
+-    }
+-    // 文字绘制
+-    // 标题
+-    QFont font = this->font();
+-    font.setWeight(QFont::Bold);
+-    font.setPixelSize(fontPixelSize + 3);
+-    painter.setFont(font);
+-    int titleTextWidth = painter.fontMetrics().horizontalAdvance(d->_title) + 1;
+-    if (titleTextWidth > 100)
+-    {
+-        titleTextWidth = 100;
+-    }
+-    int textFlags = Qt::AlignLeft | Qt::AlignVCenter | Qt::TextWordWrap | Qt::TextWrapAnywhere;
+-    painter.drawText(QRect(d->_leftPadding + d->_titleLeftSpacing, -1, titleTextWidth, height()), textFlags, d->_title);
+-    // 正文
+-    font.setWeight(QFont::Light);
+-    font.setPixelSize(fontPixelSize + 2);
+-    painter.setFont(font);
+-    painter.drawText(QRect(d->_leftPadding + d->_titleLeftSpacing + titleTextWidth + d->_textLeftSpacing, 0, width() - (d->_leftPadding + d->_titleLeftSpacing + titleTextWidth + d->_textLeftSpacing + d->_closeButtonWidth + d->_closeButtonLeftRightMargin / 2), height() - d->_timePercentHeight), textFlags, d->_text);
+-    int textHeight = painter.fontMetrics().boundingRect(QRect(d->_leftPadding + d->_titleLeftSpacing + titleTextWidth + d->_textLeftSpacing, 0, width() - (d->_leftPadding + d->_titleLeftSpacing + titleTextWidth + d->_textLeftSpacing + d->_closeButtonWidth + d->_closeButtonLeftRightMargin), height()), textFlags, d->_text).height();
+-    if (textHeight >= minimumHeight() - 20)
+-    {
+-        setMinimumHeight(textHeight + 20);
+-    }
+-    painter.restore();
++    const QRect frame = rect().adjusted(6, 6, -6, -6);
++    painter.setPen(ElaThemeColor(d->_themeMode, PopupBorder));
++    painter.setBrush(ElaThemeColor(d->_themeMode, PopupBase));
++    painter.drawRoundedRect(frame, d->_borderRadius, d->_borderRadius);
++    const auto accentProperty = property(d->_themeMode == ElaThemeType::Light
++                                            ? "ElaMessageAccentLight" : "ElaMessageAccentDark");
++    const QColor accent = accentProperty.isValid() ? accentProperty.value<QColor>()
++        : d->_messageMode == ElaMessageBarType::Error ? ElaThemeColor(d->_themeMode, StatusDanger)
++                                                    : ElaThemeColor(d->_themeMode, PrimaryNormal);
++    painter.setPen(QPen(accent, 2));
++    painter.setBrush(Qt::NoBrush);
++    painter.drawEllipse(QPointF(27, 27), 8, 8);
++    if (d->_messageMode == ElaMessageBarType::Success) {
++        painter.drawLine(QPointF(23, 27), QPointF(26, 30));
++        painter.drawLine(QPointF(26, 30), QPointF(31, 24));
++    } else if (d->_messageMode == ElaMessageBarType::Error) {
++        painter.drawLine(QPointF(24, 24), QPointF(30, 30));
++        painter.drawLine(QPointF(24, 30), QPointF(30, 24));
++    } else {
++        painter.drawText(QRect(19, 19, 16, 16), Qt::AlignCenter,
++                         d->_messageMode == ElaMessageBarType::Information ? QStringLiteral("i") : QStringLiteral("!"));
++    }
++    QFont titleFont = font();
++    titleFont.setBold(true);
++    painter.setFont(titleFont);
++    painter.setPen(ElaThemeColor(d->_themeMode, BasicText));
++    const int lineHeight = fontMetrics().height();
++    const QRect titleRect(50, 16, qMax(1, width() - 100), lineHeight);
++    painter.drawText(titleRect, Qt::AlignLeft | Qt::AlignVCenter,
++                     painter.fontMetrics().elidedText(d->_title, Qt::ElideRight, titleRect.width()));
++    painter.setFont(font());
++    painter.drawText(QRect(50, 20 + lineHeight, qMax(1, width() - 100), height() - lineHeight - 36),
++                     Qt::AlignLeft | Qt::TextWordWrap | Qt::TextWrapAnywhere, d->_text);
+ }
+ 
+ bool ElaMessageBar::eventFilter(QObject* watched, QEvent* event)
+ {
+     Q_D(ElaMessageBar);
+-    if (watched == parentWidget())
+-    {
+-        switch (event->type())
+-        {
+-        case QEvent::Resize:
+-        {
+-            QResizeEvent* resizeEvent = dynamic_cast<QResizeEvent*>(event);
+-            QSize offsetSize = parentWidget()->size() - resizeEvent->oldSize();
+-            if (d->_isNormalDisplay)
+-            {
+-                switch (d->_policy)
+-                {
+-                case ElaMessageBarType::Top:
+-                {
+-                    this->move(parentWidget()->width() / 2 - minimumWidth() / 2, this->y());
+-                    break;
+-                }
+-                case ElaMessageBarType::Bottom:
+-                {
+-                    this->move(parentWidget()->width() / 2 - minimumWidth() / 2, this->pos().y() + offsetSize.height());
+-                    break;
+-                }
+-                case ElaMessageBarType::Left:
+-                case ElaMessageBarType::TopLeft:
+-                {
+-                    this->move(d->_messageBarHorizontalMargin, this->pos().y());
+-                    break;
+-                }
+-                case ElaMessageBarType::BottomLeft:
+-                {
+-                    this->move(d->_messageBarHorizontalMargin, this->pos().y() + offsetSize.height());
+-                    break;
+-                }
+-                case ElaMessageBarType::Right:
+-                case ElaMessageBarType::TopRight:
+-                {
+-                    this->move(parentWidget()->width() - minimumWidth() - d->_messageBarHorizontalMargin, this->y());
+-                    break;
+-                }
+-                case ElaMessageBarType::BottomRight:
+-                {
+-                    this->move(parentWidget()->width() - minimumWidth() - d->_messageBarHorizontalMargin, this->pos().y() + offsetSize.height());
+-                    break;
+-                }
+-                }
+-            }
+-            break;
+-        }
+-        default:
+-        {
+-            break;
+-        }
++    if (watched == parentWidget() && event->type() == QEvent::Resize) {
++        for (auto* animation : findChildren<QPropertyAnimation*>()) {
++            if (animation->targetObject() == this && animation->propertyName() == "pos")
++                animation->stop();
+         }
++        d->_updateSize();
++        int startX = 0, startY = 0, endX = 0, endY = 0;
++        d->_calculateInitialPos(startX, startY, endX, endY);
++        move(endX, endY);
++        d->_isNormalDisplay = true;
+     }
+     return QWidget::eventFilter(watched, event);
+ }
+diff --git a/private/ElaMessageBarPrivate.h b/private/ElaMessageBarPrivate.h
+index 832c666..3aaf148 100644
+--- a/private/ElaMessageBarPrivate.h
++++ b/private/ElaMessageBarPrivate.h
+@@ -25,7 +25,7 @@ public:
+     Q_SLOT void messageBarEnd();
+ 
+ private:
+-    static QMap<QObject*, QMap<ElaMessageBarType::PositionPolicy, QList<ElaMessageBar*>*>> _messageBarActiveMap;
++    static QMap<QObject*, QMap<ElaMessageBarType::PositionPolicy, QList<ElaMessageBar*>>> _messageBarActiveMap;
+     ElaThemeType::ThemeMode _themeMode;
+     int _borderRadius{6};
+     QString _title{""};
+@@ -49,9 +49,11 @@ private:
+ 
+     // 逻辑数据
+     bool _isNormalDisplay{false};
++    bool _isClosing{false};
+     bool _isOtherMessageBarEnd{false};
+     ElaIconButton* _closeButton{nullptr};
+     void _messageBarCreate(int displayMsec);
++    void _updateSize();
+ 
+     // 初始坐标计算
+     void _calculateInitialPos(int& startX, int& startY, int& endX, int& endY);
+diff --git a/private/ElaMessageBarPrivate.cpp b/private/ElaMessageBarPrivate.cpp
+index e85df86..92e9b30 100644
+--- a/private/ElaMessageBarPrivate.cpp
++++ b/private/ElaMessageBarPrivate.cpp
+@@ -10,8 +10,10 @@
+ #include <QPainterPath>
+ #include <QPropertyAnimation>
+ #include <QTimer>
++#include <QApplication>
++#include <QFontMetrics>
+ 
+-QMap<QObject*, QMap<ElaMessageBarType::PositionPolicy, QList<ElaMessageBar*>*>> ElaMessageBarPrivate::_messageBarActiveMap;
++QMap<QObject*, QMap<ElaMessageBarType::PositionPolicy, QList<ElaMessageBar*>>> ElaMessageBarPrivate::_messageBarActiveMap;
+ ElaMessageBarPrivate::ElaMessageBarPrivate(QObject* parent)
+     : QObject{parent}
+ {
+@@ -30,12 +32,12 @@ void ElaMessageBarPrivate::onOtherMessageBarEnd()
+ {
+     Q_Q(ElaMessageBar);
+     qreal targetPosY = _calculateTargetPosY();
+-    QPropertyAnimation* closePosAnimation = new QPropertyAnimation(this, "MessageBarClosedY");
++    QPropertyAnimation* closePosAnimation = new QPropertyAnimation(this, "MessageBarClosedY", this);
+     connect(closePosAnimation, &QPropertyAnimation::valueChanged, this, [=](const QVariant& value) {
+-        q->move(q->pos().x(), value.toUInt());
++        q->move(q->pos().x(), value.toInt());
+     });
+     closePosAnimation->setEasingCurve(QEasingCurve::OutCubic);
+-    closePosAnimation->setDuration(220);
++    closePosAnimation->setDuration(qApp->property("ElaReducedMotion").toBool() ? 0 : 220);
+     closePosAnimation->setStartValue(q->pos().y());
+     closePosAnimation->setEndValue(targetPosY);
+     closePosAnimation->start(QAbstractAnimation::DeleteWhenStopped);
+@@ -44,9 +46,11 @@ void ElaMessageBarPrivate::onOtherMessageBarEnd()
+ void ElaMessageBarPrivate::messageBarEnd()
+ {
+     Q_Q(ElaMessageBar);
++    if (_isClosing) return;
++    _isClosing = true;
+     _closeButton->setEnabled(false);
+     _updateActiveMap(false);
+-    QPropertyAnimation* barFinishedOpacityAnimation = new QPropertyAnimation(this, "pOpacity");
++    QPropertyAnimation* barFinishedOpacityAnimation = new QPropertyAnimation(this, "pOpacity", this);
+     connect(barFinishedOpacityAnimation, &QPropertyAnimation::valueChanged, this, [=]() {
+         _closeButton->setOpacity(_pOpacity);
+         q->update();
+@@ -54,15 +58,15 @@ void ElaMessageBarPrivate::messageBarEnd()
+     connect(barFinishedOpacityAnimation, &QPropertyAnimation::finished, this, [=]() {
+         q->deleteLater();
+     });
+-    barFinishedOpacityAnimation->setDuration(300);
++    barFinishedOpacityAnimation->setDuration(qApp->property("ElaReducedMotion").toBool() ? 0 : 300);
+     barFinishedOpacityAnimation->setEasingCurve(QEasingCurve::InOutSine);
+     barFinishedOpacityAnimation->setStartValue(1);
+     barFinishedOpacityAnimation->setEndValue(0);
+     barFinishedOpacityAnimation->start(QAbstractAnimation::DeleteWhenStopped);
+     // 通知同类型的其他MessageBar
+     auto parentWidget = q->parent();
+-    auto& messageBarMap = _messageBarActiveMap[parentWidget];
+-    for (const auto messageBar: *messageBarMap[_policy])
++    const auto messages = _messageBarActiveMap.value(parentWidget).value(_policy);
++    for (const auto messageBar: messages)
+     {
+         if (messageBar->d_ptr->_isNormalDisplay)
+         {
+@@ -75,22 +79,21 @@ void ElaMessageBarPrivate::messageBarEnd()
+     }
+ }
+ 
++void ElaMessageBarPrivate::_updateSize()
++{
++    Q_Q(ElaMessageBar);
++    const int width = qMax(1, qMin(500, q->parentWidget()->width() - 40));
++    const QFontMetrics metrics(q->font());
++    const int bodyHeight = metrics.boundingRect(QRect(0, 0, qMax(1, width - 100), 10000),
++        Qt::TextWordWrap | Qt::TextWrapAnywhere, _text).height();
++    q->setFixedSize(width, qMax(60, bodyHeight + metrics.height() + 36));
++}
++
+ void ElaMessageBarPrivate::_messageBarCreate(int displayMsec)
+ {
+     Q_Q(ElaMessageBar);
+-    int fontPixelSize = eApp->getFontPixelSize();
++    _updateSize();
+     q->show();
+-    QFont font = q->font();
+-    font.setPixelSize(fontPixelSize + 3);
+-    font.setWeight(QFont::Bold);
+-    q->setFont(font);
+-    int titleWidth = q->fontMetrics().horizontalAdvance(_title);
+-    font.setPixelSize(fontPixelSize + 1);
+-    font.setWeight(QFont::Medium);
+-    q->setFont(font);
+-    int textWidth = q->fontMetrics().horizontalAdvance(_text);
+-    int fixedWidth = _closeButtonLeftRightMargin + _leftPadding + _titleLeftSpacing + _textLeftSpacing + _closeButtonWidth + titleWidth + textWidth + 2 * _shadowBorderWidth;
+-    q->setFixedWidth(fixedWidth > 500 ? 500 : fixedWidth);
+     int startX = 0;
+     int startY = 0;
+     int endX = 0;
+@@ -98,17 +101,15 @@ void ElaMessageBarPrivate::_messageBarCreate(int displayMsec)
+     _updateActiveMap(true);
+     _calculateInitialPos(startX, startY, endX, endY);
+     // 滑入动画
+-    QPropertyAnimation* barPosAnimation = new QPropertyAnimation(q, "pos");
++    QPropertyAnimation* barPosAnimation = new QPropertyAnimation(q, "pos", q);
+     connect(barPosAnimation, &QPropertyAnimation::finished, q, [=]() {
+         _isNormalDisplay = true;
+         if (_isOtherMessageBarEnd)
+         {
+             onOtherMessageBarEnd();
+         }
+-        QTimer::singleShot(displayMsec, q, [=]() {
+-            messageBarEnd();
+-        });
+-        QPropertyAnimation* timePercentAnimation = new QPropertyAnimation(this, "pTimePercent");
++        if (qApp->property("ElaReducedMotion").toBool()) return;
++        QPropertyAnimation* timePercentAnimation = new QPropertyAnimation(this, "pTimePercent", this);
+         connect(timePercentAnimation, &QPropertyAnimation::valueChanged, this, [=]() {
+             q->update();
+         });
+@@ -132,6 +133,8 @@ void ElaMessageBarPrivate::_messageBarCreate(int displayMsec)
+         break;
+     }
+     }
++    if (qApp->property("ElaReducedMotion").toBool()) barPosAnimation->setDuration(0);
++    QTimer::singleShot(qMax(1, displayMsec) + barPosAnimation->duration(), q, [this] { messageBarEnd(); });
+     barPosAnimation->setStartValue(QPoint(startX, startY));
+     barPosAnimation->setEndValue(QPoint(endX, endY));
+     barPosAnimation->setEasingCurve(QEasingCurve::InOutSine);
+@@ -220,9 +223,15 @@ void ElaMessageBarPrivate::_calculateInitialPos(int& startX, int& startY, int& e
+     if (endY < _messageBarVerticalTopMargin || endY > q->parentWidget()->height() - _messageBarVerticalBottomMargin - q->minimumHeight())
+     {
+         auto parentWidget = q->parent();
+-        auto& messageBarMap = _messageBarActiveMap[parentWidget];
+-        (*messageBarMap[_policy])[0]->d_ptr->messageBarEnd();
+-        _calculateInitialPos(startX, startY, endX, endY);
++        const auto messages = _messageBarActiveMap.value(parentWidget).value(_policy);
++        for (auto* other : messages) {
++            if (other != q) {
++                other->d_ptr->messageBarEnd();
++                _calculateInitialPos(startX, startY, endX, endY);
++                return;
++            }
++        }
++        endY = qMax(0, qMin(endY, q->parentWidget()->height() - q->height()));
+     }
+ }
+ 
+@@ -233,9 +242,8 @@ QList<int> ElaMessageBarPrivate::_getOtherMessageBarTotalData()
+     int minimumHeightTotal = 0;
+     int indexLessCount = 0;
+     auto parentWidget = q->parent();
+-    auto& messageBarMap = _messageBarActiveMap[parentWidget];
+-    QList<ElaMessageBar*>* messageBarList = messageBarMap[_policy];
+-    for (const auto messageBar: *messageBarList)
++    const auto messages = _messageBarActiveMap.value(parentWidget).value(_policy);
++    for (const auto messageBar: messages)
+     {
+         if (messageBar == q)
+         {
+@@ -299,29 +307,18 @@ void ElaMessageBarPrivate::_updateActiveMap(bool isActive)
+     Q_Q(ElaMessageBar);
+     ElaMessageBarType::PositionPolicy policy = _policy;
+     auto parentWidget = q->parent();
+-    auto& messageBarMap = _messageBarActiveMap[parentWidget];
+     if (isActive)
+     {
+-        if (messageBarMap.contains(policy))
+-        {
+-            messageBarMap[policy]->append(q);
+-        }
+-        else
+-        {
+-            QList<ElaMessageBar*>* messageBarList = new QList<ElaMessageBar*>();
+-            messageBarList->append(q);
+-            messageBarMap.insert(policy, messageBarList);
+-        }
++        _messageBarActiveMap[parentWidget][policy].append(q);
+     }
+     else
+     {
+-        if (messageBarMap.contains(policy))
+-        {
+-            if (!messageBarMap[policy]->isEmpty())
+-            {
+-                messageBarMap[policy]->removeOne(q);
+-            }
+-        }
++        auto it = _messageBarActiveMap.find(parentWidget);
++        if (it == _messageBarActiveMap.end()) return;
++        auto& messageBarMap = it.value();
++        messageBarMap[policy].removeOne(q);
++        if (messageBarMap[policy].isEmpty()) messageBarMap.remove(policy);
++        if (messageBarMap.isEmpty()) _messageBarActiveMap.erase(it);
+     }
+ }
+ 

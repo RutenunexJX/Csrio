@@ -205,10 +205,45 @@ if(REGMAP_BUILD_APP)
     set_target_properties(regmap_suiteui_control_test PROPERTIES AUTOMOC ON)
     target_link_libraries(regmap_suiteui_control_test PRIVATE RegMap::WorkbenchUi Qt6::Test)
     target_compile_definitions(regmap_suiteui_control_test PRIVATE
-        REGMAP_TEST_SUITEUI_ENABLED=$<BOOL:${REGMAP_ENABLE_SUITEUI}>)
+        REGMAP_TEST_SUITEUI_ENABLED=$<BOOL:${REGMAP_ENABLE_SUITEUI}>
+        REGMAP_TEST_ELA_ENABLED=$<BOOL:${REGMAP_ENABLE_ELA}>)
     add_test(NAME regmap_suiteui_controls COMMAND regmap_suiteui_control_test
         -o "${CMAKE_CURRENT_BINARY_DIR}/regmap_suiteui_controls.log,txt")
     set_tests_properties(regmap_suiteui_controls PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
         ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+endif()
+
+if(REGMAP_BUILD_APP AND REGMAP_ENABLE_ELA)
+    qt_add_executable(regmap_ela_remaining_tests ela_remaining_controls_test.cpp)
+    set_target_properties(regmap_ela_remaining_tests PROPERTIES AUTOMOC ON)
+    target_link_libraries(regmap_ela_remaining_tests PRIVATE RegMap::WorkbenchUi Qt6::Test)
+    add_test(NAME regmap_ela_remaining COMMAND regmap_ela_remaining_tests
+        -o "${CMAKE_CURRENT_BINARY_DIR}/regmap_ela_remaining.log,txt")
+    set_tests_properties(regmap_ela_remaining PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;REGMAP_UI_STYLE=ela"
+        ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+    qt_add_executable(regmap_ela_control_tests ela_controls_test.cpp test_profile.cpp)
+    set_target_properties(regmap_ela_control_tests PROPERTIES AUTOMOC ON)
+    target_link_libraries(regmap_ela_control_tests PRIVATE RegMap::WorkbenchUi Qt6::Test)
+    add_test(NAME regmap_ela_controls COMMAND regmap_ela_control_tests
+        -o "${CMAKE_CURRENT_BINARY_DIR}/regmap_ela_controls.log,txt")
+    set_tests_properties(regmap_ela_controls PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;REGMAP_UI_STYLE=ela"
+        ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+    add_test(NAME regmap_classic_controls COMMAND regmap_suiteui_control_test
+        -o "${CMAKE_CURRENT_BINARY_DIR}/regmap_classic_controls.log,txt")
+    set_tests_properties(regmap_classic_controls PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;REGMAP_UI_STYLE=classic"
+        ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+    if(WIN32)
+        foreach(target regmap_gui_tests regmap_ui_snapshot regmap_suiteapp_integration_test
+                       regmap_suiteui_control_test regmap_ela_control_tests regmap_ela_remaining_tests)
+            if(TARGET ${target})
+                add_custom_command(TARGET ${target} POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        $<TARGET_FILE:ElaWidgetTools> $<TARGET_FILE_DIR:${target}>)
+            endif()
+        endforeach()
+    endif()
 endif()

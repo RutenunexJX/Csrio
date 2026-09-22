@@ -1,4 +1,5 @@
 #include "suiteui_adapter.hpp"
+#include "workbench_controls.hpp"
 #ifdef REGMAP_ENABLE_SUITEUI
 #include <SuiteUi/ControlStyle.hpp>
 #include <QAbstractItemView>
@@ -51,7 +52,7 @@ class Style final : public SuiteUi::ControlStyle {
 namespace RegMapSuiteUi {
 bool enabled() {
 #ifdef REGMAP_ENABLE_SUITEUI
-    return qEnvironmentVariable("REGMAP_UI_STYLE") != "classic";
+    return WorkbenchControls::backend() == WorkbenchControls::Backend::suiteUi;
 #else
     return false;
 #endif
