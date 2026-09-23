@@ -282,8 +282,6 @@ private:
     bool uiStateRestoreComplete_{false};
     enum class EmptyStateAction {
         none,
-        newProject,
-        openProject,
         recentProject,
         firstRegister,
         addBlock,

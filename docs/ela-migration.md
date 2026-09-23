@@ -279,3 +279,50 @@ then extracts into a fresh `.tmp/portable-smoke` directory. With only Windows
 system directories on PATH and no developer Qt/plugin environment, it checks GUI
 version/help and CLI version/init/validate/generate/current-output status. It uses
 its own project/profile, retains logs, and never opens the protected examples.
+
+## Release 0.3.4 validation (2026-09-23)
+
+This patch removes the no-project card's duplicate New/Open Project buttons.
+Toolbar commands, File menu actions, keyboard shortcuts, drag-and-drop opening,
+direct recent-project reopening and project-specific empty-state actions remain.
+No model, generator, CLI or file-format behavior changes are included.
+
+- Release rebuild and full CTest passed **8/8**; GUI tests passed **168/168**.
+  Logs: `build/ela-migration/build-release-0.3.4.log`,
+  `ctest-release-0.3.4.log` and `tests/regmap_gui_tests.log`.
+- The no-project/recent-project tests passed in all eight theme/scale runs,
+  producing **16** exact 960×720/1440×900 logical-window captures. New/Open each
+  have exactly one visible button; 10pt fonts, card/control bounds, menu/shortcut
+  availability and exact scaled PNG dimensions are asserted without relaxation.
+  Evidence: `build/ela-migration/release-0.3.4-empty-screenshots/<theme>-<scale>`.
+  Every PNG matches the preceding visually reviewed fix capture byte-for-byte;
+  light/dark 200% captures were also reopened for the release review.
+- Protected example blobs remain the baseline hashes above. Native high-DPI
+  desktop limits documented for 0.3.3 remain applicable; this patch does not claim
+  a fresh native-window matrix or physical mouse test.
+
+Reproduce the empty-state matrix after the matching Release build:
+
+```powershell
+$env:QT_QPA_FONTDIR = 'C:\Windows\Fonts'
+$env:QT_SCREEN_SCALE_FACTORS = '1'
+$env:QT_FONT_DPI = '96'
+$env:QT_SCALE_FACTOR_ROUNDING_POLICY = 'PassThrough'
+$env:REGMAP_UI_STYLE = 'ela'
+foreach ($theme in @('light', 'dark')) {
+    foreach ($scale in @('1', '1.25', '1.5', '2')) {
+        $env:REGMAP_TEST_THEME = $theme
+        $env:QT_SCALE_FACTOR = $scale
+        $env:REGMAP_UI_ARTIFACT_DIR = "$PWD/build/ela-migration/release-0.3.4-empty-screenshots/$theme-$scale"
+        New-Item -ItemType Directory -Path $env:REGMAP_UI_ARTIFACT_DIR -Force | Out-Null
+        ./build/ela-migration/tests/regmap_gui_tests.exe startsWithCleanNoProjectState reopensRecentProjectFromEmptyState -o "$env:REGMAP_UI_ARTIFACT_DIR/gui.log,txt"
+        if ($LASTEXITCODE -ne 0) { throw "Empty-state checks failed: $theme / $scale" }
+    }
+}
+```
+
+Publication uses the same clean-commit CPack target and isolated portable checker
+as 0.3.3, with `-ExpectedVersion 0.3.4`. The formal installation target is
+`E:\PinloomRoot\AppPackage\AppSuite\Apps\RegMapWorkbench`. Preserve the prior
+package and its shared metadata in a verified backup before replacement; update
+only RegMap's suite version/checksum entries and retain unrelated applications.

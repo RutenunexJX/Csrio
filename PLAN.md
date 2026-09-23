@@ -1,10 +1,19 @@
 # RegMapWorkbench Plan
 
-Current version: `0.3.3`.
+Current version: `0.3.4`.
 
 External disk-change accept/reject, large-map editing and semantic UI/density are implemented.
 No previous competition-UI delivery remains an active task.
 
+- Completed UI fix (2026-09-23): remove duplicate New/Open Project buttons from
+  the no-project card while retaining toolbar/menu/shortcut commands and direct
+  recent-project reopening. Release 0.3.4 contains this scoped fix. Full CTest
+  passed 8/8, including 168 GUI cases; all 16 light/dark × 960×720/1440×900 ×
+  100/125/150/200% empty-state captures passed exact-size, 10pt-font and control-bound
+  assertions and were visually inspected. Evidence is under
+  `build/ela-migration/release-0.3.4-empty-screenshots` and the same build directory's
+  `ctest-release-0.3.4.log`.
+  Protected example hashes, core/CLI behavior and file formats remain unchanged.
 - Completed goal (2026-09-22): all three
   [ElaWidgetTools migration slices](docs/ela-migration.md), including status bar,
   candidate lists, read-only result tables, Type/Access editors and ElaAppBar.

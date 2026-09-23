@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.24)
 
 project(
     RegMapWorkbench
-    VERSION 0.3.3
+    VERSION 0.3.4
     DESCRIPTION "Register map workbench for FPGA and SystemVerilog development"
     LANGUAGES CXX
 )

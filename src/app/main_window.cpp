@@ -17082,29 +17082,17 @@ void MainWindow::updateRegisterEmptyState()
                 QFileInfo(registerEmptyRecentProjectPath_).fileName();
             title = QStringLiteral("Continue a register-map project");
             hint = QStringLiteral(
-                "Reopen the most recent project, create a new project, "
-                "or choose another .regmap.yaml file.");
+                "Reopen the most recent project below. Use the toolbar to create "
+                "a project or open another .regmap.yaml file.");
             primaryText =
                 QStringLiteral("Reopen %1").arg(recentName);
-            secondaryText = QStringLiteral("Open Project");
-            tertiaryText = QStringLiteral("New Project");
             registerEmptyPrimaryAction_ =
                 EmptyStateAction::recentProject;
-            registerEmptySecondaryAction_ =
-                EmptyStateAction::openProject;
-            registerEmptyTertiaryAction_ =
-                EmptyStateAction::newProject;
         } else {
             title = QStringLiteral("Open a register-map project");
             hint = QStringLiteral(
-                "Create a new project, open an existing .regmap.yaml file, "
+                "Use the toolbar to create a new project or open a .regmap.yaml file, "
                 "or drop one onto this window.");
-            primaryText = QStringLiteral("New Project");
-            secondaryText = QStringLiteral("Open Project");
-            registerEmptyPrimaryAction_ =
-                EmptyStateAction::newProject;
-            registerEmptySecondaryAction_ =
-                EmptyStateAction::openProject;
         }
     } else if (workspace->addressSpaces.empty()) {
         title = QStringLiteral("Create the first Register");
@@ -17226,9 +17214,7 @@ void MainWindow::updateRegisterEmptyState()
             EmptyStateAction::firstRegister;
     }
 
-    const bool visible =
-        registerEmptyPrimaryAction_ !=
-            EmptyStateAction::none;
+    const bool visible = !title.isEmpty();
     registerEmptyState_->setVisible(visible);
     if (!visible) {
         return;
@@ -17243,6 +17229,9 @@ void MainWindow::updateRegisterEmptyState()
             ? QString{}
             : QDir::toNativeSeparators(
                   registerEmptyRecentProjectPath_));
+    registerEmptyPrimaryButton_->setVisible(
+        registerEmptyPrimaryAction_ !=
+        EmptyStateAction::none);
     registerEmptySecondaryButton_->setVisible(
         registerEmptySecondaryAction_ !=
         EmptyStateAction::none);
@@ -17345,16 +17334,6 @@ void MainWindow::triggerRegisterEmptyAction(
     EmptyStateAction action)
 {
     switch (action) {
-    case EmptyStateAction::newProject:
-        if (newProjectAction_ != nullptr) {
-            newProjectAction_->trigger();
-        }
-        break;
-    case EmptyStateAction::openProject:
-        if (openProjectAction_ != nullptr) {
-            openProjectAction_->trigger();
-        }
-        break;
     case EmptyStateAction::recentProject:
         if (registerEmptyRecentProjectPath_.isEmpty()) {
             updateRegisterEmptyState();

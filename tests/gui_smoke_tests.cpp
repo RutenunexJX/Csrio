@@ -1969,11 +1969,10 @@ void GuiSmokeTests::startsWithCleanNoProjectState()
     QVERIFY(emptyState->isVisible());
     QCOMPARE(emptyTitle->text(),
              QStringLiteral("Open a register-map project"));
-    QCOMPARE(emptyPrimary->text(),
-             QStringLiteral("New Project"));
-    QCOMPARE(emptySecondary->text(),
-             QStringLiteral("Open Project"));
+    QVERIFY(!emptyPrimary->isVisible());
+    QVERIFY(!emptySecondary->isVisible());
     QVERIFY(!emptyTertiary->isVisible());
+    QVERIFY(emptyHint->text().contains(QStringLiteral("toolbar")));
     QVERIFY(
         emptyHint->text()
             .contains(
@@ -1981,6 +1980,64 @@ void GuiSmokeTests::startsWithCleanNoProjectState()
                     "drop one")));
     QVERIFY(window.statusBar()->currentMessage().contains(
         QStringLiteral("Open a .regmap.yaml project")));
+
+    auto* newProject = window.findChild<QAction*>(QStringLiteral("newProjectAction"));
+    auto* openProject = window.findChild<QAction*>(QStringLiteral("openProjectAction"));
+    QVERIFY(newProject != nullptr);
+    QVERIFY(openProject != nullptr);
+    QVERIFY(newProject->isEnabled());
+    QVERIFY(openProject->isEnabled());
+    QCOMPARE(newProject->shortcut(), QKeySequence(QKeySequence::New));
+    QCOMPARE(openProject->shortcut(), QKeySequence(QKeySequence::Open));
+    bool fileMenuRetainsActions = false;
+    for (auto* menu : window.findChildren<QMenu*>()) {
+        fileMenuRetainsActions |= menu->actions().contains(newProject)
+            && menu->actions().contains(openProject);
+    }
+    QVERIFY(fileMenuRetainsActions);
+
+    const auto output = qEnvironmentVariable("REGMAP_UI_ARTIFACT_DIR");
+    if (!output.isEmpty()) QVERIFY(QDir().mkpath(output));
+    for (const auto size : {QSize(960, 720), QSize(1440, 900)}) {
+        window.resize(size);
+        QTest::qWait(30);
+        QCOMPARE(window.size(), size);
+        QCOMPARE(window.font().pointSizeF(), 10.0);
+        QVERIFY(emptyState->isVisible());
+        for (auto* button : {emptyPrimary, emptySecondary, emptyTertiary})
+            QVERIFY(!button->isVisible());
+        for (auto* label : {emptyTitle, emptyHint}) {
+            QCOMPARE(label->font().pointSizeF(), 10.0);
+            QVERIFY(emptyState->rect().contains(QRect(label->mapTo(emptyState, QPoint()), label->size())));
+            QVERIFY(label->height() >= label->fontMetrics().height());
+            if (label->hasHeightForWidth())
+                QVERIFY(label->height() >= label->heightForWidth(label->width()));
+        }
+        for (auto* action : {newProject, openProject}) {
+            int visibleButtons = 0;
+            for (auto* button : window.findChildren<QAbstractButton*>()) {
+                if (!button->isVisibleTo(&window)) continue;
+                if (!button->text().startsWith(action == newProject
+                        ? QStringLiteral("New Project") : QStringLiteral("Open Project"))) continue;
+                ++visibleButtons;
+                auto* toolButton = qobject_cast<QToolButton*>(button);
+                QVERIFY(toolButton != nullptr);
+                QCOMPARE(toolButton->defaultAction(), action);
+                QVERIFY(button->isEnabled());
+                QVERIFY(button->parentWidget()->rect().contains(button->geometry()));
+                QVERIFY(button->width() >= button->minimumSizeHint().width());
+                QVERIFY(button->height() >= button->minimumSizeHint().height());
+            }
+            QCOMPARE(visibleButtons, 1);
+        }
+        if (!output.isEmpty()) {
+            const auto capture = window.grab();
+            QCOMPARE(capture.size(), QSize(qRound(size.width() * window.devicePixelRatioF()),
+                                          qRound(size.height() * window.devicePixelRatioF())));
+            QVERIFY(capture.save(QDir(output).filePath(
+                QStringLiteral("empty-%1x%2.png").arg(size.width()).arg(size.height()))));
+        }
+    }
 }
 
 void GuiSmokeTests::createsWorkbenchFirstProject()
@@ -7637,12 +7694,9 @@ void GuiSmokeTests::reopensRecentProjectFromEmptyState()
         QCOMPARE(
             primary->toolTip(),
             QDir::toNativeSeparators(normalizedRecent));
-        QCOMPARE(secondary->text(),
-                 QStringLiteral("Open Project"));
-        QCOMPARE(tertiary->text(),
-                 QStringLiteral("New Project"));
-        QVERIFY(secondary->isVisible());
-        QVERIFY(tertiary->isVisible());
+        QVERIFY(primary->isVisible());
+        QVERIFY(!secondary->isVisible());
+        QVERIFY(!tertiary->isVisible());
 
         QTest::mouseClick(primary, Qt::LeftButton);
         QTRY_COMPARE_WITH_TIMEOUT(
@@ -7706,10 +7760,8 @@ void GuiSmokeTests::reopensRecentProjectFromEmptyState()
             emptyTitle->text(),
             QStringLiteral("Open a register-map project"),
             2000);
-        QCOMPARE(primary->text(),
-                 QStringLiteral("New Project"));
-        QCOMPARE(secondary->text(),
-                 QStringLiteral("Open Project"));
+        QVERIFY(!primary->isVisible());
+        QVERIFY(!secondary->isVisible());
         QVERIFY(!tertiary->isVisible());
         QVERIFY(emptyState->isVisible());
         settings.sync();

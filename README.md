@@ -1,6 +1,6 @@
 # Register Map Workbench
 
-Current version: `0.3.3`.
+Current version: `0.3.4`.
 
 Register Map Workbench is a standalone Qt desktop application for FPGA and SystemVerilog
 register-map development. Workbench, guarded `regmapc` property patches, and a controlled region
@@ -396,7 +396,10 @@ automation and embedding hosts.
 Create a Workbench-first project with **File > New Project**, or open an existing
 `.regmap.yaml` project from **File > Open Project**. A single project file can also be dragged
 from the file manager and dropped anywhere on the Workbench window. A new project starts with an
-empty, valid workspace. Click **+ First Register** once to create the default Page, Register Block,
+empty, valid workspace. With no project open, use the toolbar's **New Project** or **Open Project**
+commands; the empty-state card provides guidance without duplicating those buttons. When a valid
+recent project exists, the card retains its direct **Reopen** action. Click **+ First Register**
+once to create the default Page, Register Block,
 and first Register as one undoable edit. The hierarchy context menu remains available when explicit
 Page or Block naming is required. The window title shows
 the Workspace name together with the manifest's containing directory and file name, so separate
@@ -708,7 +711,7 @@ Fresh builds now select the pinned, vendored ElaWidgetTools backend. Select
 `REGMAP_UI_BACKEND=ELA|SUITEUI|CLASSIC` at configure time; only one third-party
 renderer is linked. Existing caches using `REGMAP_ENABLE_SUITEUI` keep their old
 choice until `REGMAP_UI_BACKEND` is set explicitly. Version 0.3.2 used SuiteUi;
-version 0.3.3 selects Ela for the Windows portable release.
+Windows portable releases use Ela starting with version 0.3.3.
 
 Ela replaces command buttons, ordinary form inputs, menus, toolbars, result
 tabs, scrollbars, batch-dialog OK/Cancel buttons, status bar, candidate lists,
