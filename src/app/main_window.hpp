@@ -267,6 +267,10 @@ private:
     bool discardRecoveryAfterReplacement_{false};
     QString lastSyncMessage_;
     QString searchQuery_;
+    struct SearchEntry { std::string id; QString label; QStringList values; };
+    std::vector<SearchEntry> searchIndex_;
+    bool searchIndexValid_{false};
+    QWidget* resultsPanel_{nullptr};
     QString lastTypedSearchText_;
     std::vector<std::string> searchResults_;
     std::vector<QString> searchResultLabels_;

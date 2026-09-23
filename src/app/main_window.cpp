@@ -885,6 +885,9 @@ void makePanelScrollable(QWidget* panel, const QString& name, QWidget* pinnedTab
     auto* scroll = new PanelScrollArea(panel);
     scroll->setObjectName(name);
     scroll->setFrameShape(QFrame::NoFrame);
+    // Tab navigation remains available, but clicks on TabFocus commands must
+    // reach their validation guard before an ancestor steals the cell focus.
+    scroll->setFocusPolicy(Qt::TabFocus);
     scroll->setWidgetResizable(true);
     scroll->setWidget(content);
     WorkbenchControls::styleScrollArea(scroll);
@@ -4288,6 +4291,7 @@ void MainWindow::buildUi()
         QStringLiteral("searchCompletionModel"));
 
     auto* hierarchyTree = new HierarchyTreeView(objectIdRole, this);
+    WorkbenchControls::styleHierarchy(hierarchyTree);
     hierarchyView_ = hierarchyTree;
     hierarchyView_->setObjectName(QStringLiteral("hierarchyView"));
     hierarchyView_->setModel(hierarchyModel_);
@@ -4338,7 +4342,7 @@ void MainWindow::buildUi()
         density.panelHeaderVerticalPadding);
     hierarchyHeaderLayout->setSpacing(density.baseSpacing);
     auto* hierarchyTitle =
-        new QLabel(QStringLiteral("Workspace"), hierarchyHeader);
+        WorkbenchControls::label(QStringLiteral("Workspace"), hierarchyHeader);
     hierarchyTitle->setObjectName(QStringLiteral("hierarchyTitle"));
     hierarchyTitle->setToolTip(QStringLiteral("Workspace / Pages / Blocks"));
     hierarchyAddButton_ = WorkbenchControls::pushButton(QStringLiteral("+ Page"), hierarchyHeader);
@@ -4532,7 +4536,7 @@ void MainWindow::buildUi()
             addRegister();
         });
 
-    pageContextLabel_ = new QLabel(QStringLiteral("Page: —"), this);
+    pageContextLabel_ = WorkbenchControls::label(QStringLiteral("Page: —"), this);
     pageContextLabel_->setObjectName(QStringLiteral("contextTitle"));
     pageBaseEdit_ = WorkbenchControls::lineEdit(this);
     pageBaseEdit_->setObjectName(QStringLiteral("pageBaseEdit"));
@@ -4558,7 +4562,7 @@ void MainWindow::buildUi()
     pageDescriptionEdit_->setAccessibleName(QStringLiteral("Page description"));
     pageDescriptionEdit_->setMinimumWidth(170);
 
-    blockContextLabel_ = new QLabel(QStringLiteral("Block: —"), this);
+    blockContextLabel_ = WorkbenchControls::label(QStringLiteral("Block: —"), this);
     blockContextLabel_->setObjectName(QStringLiteral("contextTitle"));
     blockBaseEdit_ = WorkbenchControls::lineEdit(this);
     blockBaseEdit_->setObjectName(QStringLiteral("blockBaseEdit"));
@@ -4644,9 +4648,9 @@ void MainWindow::buildUi()
             "Clear Register Tag filter"));
     clearTagFilterButton_->setToolTip(QStringLiteral("Clear the active Tag filter"));
     clearTagFilterButton_->setVisible(false);
-    registerCountLabel_ = new QLabel(this);
+    registerCountLabel_ = WorkbenchControls::label(this);
     registerCountLabel_->setObjectName(QStringLiteral("registerCountLabel"));
-    registerSelectionLabel_ = new QLabel(this);
+    registerSelectionLabel_ = WorkbenchControls::label(this);
     registerSelectionLabel_->setObjectName(
         QStringLiteral("registerSelectionLabel"));
     registerSelectionLabel_->setVisible(false);
@@ -4692,16 +4696,16 @@ void MainWindow::buildUi()
     auto* pageRow = new QHBoxLayout;
     pageRow->setContentsMargins(0, 0, 0, 0);
     pageRow->addWidget(pageContextLabel_);
-    auto* baseCaption = new QLabel(QStringLiteral("Base"), contextBar);
+    auto* baseCaption = WorkbenchControls::label(QStringLiteral("Base"), contextBar);
     baseCaption->setToolTip(QStringLiteral("Page base address"));
     pageRow->addWidget(baseCaption);
     pageRow->addWidget(pageBaseEdit_);
-    auto* widthCaption = new QLabel(QStringLiteral("Bits"), contextBar);
+    auto* widthCaption = WorkbenchControls::label(QStringLiteral("Bits"), contextBar);
     widthCaption->setToolTip(QStringLiteral("Page address width in bits"));
     pageRow->addWidget(widthCaption);
     pageRow->addWidget(pageWidthEdit_);
     pageDescriptionLabel_ =
-        new QLabel(
+        WorkbenchControls::label(
             QStringLiteral("Description"),
             contextBar);
     pageRow->addWidget(
@@ -4712,16 +4716,16 @@ void MainWindow::buildUi()
     auto* blockRow = new QHBoxLayout;
     blockRow->setContentsMargins(0, 0, 0, 0);
     blockRow->addWidget(blockContextLabel_);
-    auto* offsetCaption = new QLabel(QStringLiteral("Offset"), contextBar);
+    auto* offsetCaption = WorkbenchControls::label(QStringLiteral("Offset"), contextBar);
     offsetCaption->setToolTip(QStringLiteral("Block base offset"));
     blockRow->addWidget(offsetCaption);
     blockRow->addWidget(blockBaseEdit_);
-    auto* sizeCaption = new QLabel(QStringLiteral("Bytes"), contextBar);
+    auto* sizeCaption = WorkbenchControls::label(QStringLiteral("Bytes"), contextBar);
     sizeCaption->setToolTip(QStringLiteral("Block size in bytes"));
     blockRow->addWidget(sizeCaption);
     blockRow->addWidget(blockSizeEdit_);
     blockDescriptionLabel_ =
-        new QLabel(
+        WorkbenchControls::label(
             QStringLiteral("Description"),
             contextBar);
     blockRow->addWidget(
@@ -4759,17 +4763,17 @@ void MainWindow::buildUi()
         density.panelHeaderVerticalPadding);
     registerToolsLayout->setSpacing(density.baseSpacing);
     auto* registerToolsTitle =
-        new QLabel(
+        WorkbenchControls::label(
             QStringLiteral("Registers"),
             registerToolsBar);
     registerToolsTitle->setObjectName(
         QStringLiteral("registerToolsTitle"));
     auto* fixedAddressIconLabel =
-        new QLabel(registerToolsBar);
+        WorkbenchControls::label(registerToolsBar);
     fixedAddressIconLabel->setPixmap(
         fixedAddressIcon().pixmap(14, 14));
     fixedAddressLegend_ =
-        new QLabel(
+        WorkbenchControls::label(
             QStringLiteral("Fixed address"),
             registerToolsBar);
     fixedAddressLegend_->setObjectName(
@@ -4791,7 +4795,7 @@ void MainWindow::buildUi()
         registerBatchEditButton_);
     registerToolsLayout->addStretch(1);
     registerTagFilterLabel_ =
-        new QLabel(
+        WorkbenchControls::label(
             QStringLiteral("Filter by tag"),
             registerToolsBar);
     registerToolsLayout->addWidget(
@@ -4816,11 +4820,11 @@ void MainWindow::buildUi()
     registerEmptyText->setContentsMargins(0, 0, 0, 0);
     registerEmptyText->setSpacing(density.baseSpacing);
     registerEmptyTitleLabel_ =
-        new QLabel(registerEmptyState_);
+        WorkbenchControls::label(registerEmptyState_);
     registerEmptyTitleLabel_->setObjectName(
         QStringLiteral("registerEmptyTitle"));
     registerEmptyHintLabel_ =
-        new QLabel(registerEmptyState_);
+        WorkbenchControls::label(registerEmptyState_);
     registerEmptyHintLabel_->setObjectName(
         QStringLiteral("registerEmptyHint"));
     registerEmptyHintLabel_->setWordWrap(true);
@@ -4869,7 +4873,7 @@ void MainWindow::buildUi()
         density.panelHeaderVerticalPadding);
     registerFeedbackLayout->setSpacing(density.baseSpacing * 2);
     registerFeedbackLabel_ =
-        new QLabel(registerFeedbackBar_);
+        WorkbenchControls::label(registerFeedbackBar_);
     registerFeedbackLabel_->setObjectName(
         QStringLiteral("registerFeedbackLabel"));
     registerFeedbackLabel_->setWordWrap(true);
@@ -5082,10 +5086,10 @@ void MainWindow::buildUi()
         density.panelHeaderHorizontalPadding,
         density.panelHeaderVerticalPadding);
     fieldHeaderLayout->setSpacing(density.baseSpacing * 2);
-    fieldContextLabel_ = new QLabel(QStringLiteral("Fields"), fieldHeaderBar_);
+    fieldContextLabel_ = WorkbenchControls::label(QStringLiteral("Fields"), fieldHeaderBar_);
     fieldContextLabel_->setObjectName(QStringLiteral("fieldContextLabel"));
     selectedFieldSummaryLabel_ =
-        new QLabel(fieldHeaderBar_);
+        WorkbenchControls::label(fieldHeaderBar_);
     selectedFieldSummaryLabel_->setObjectName(
         QStringLiteral(
             "selectedFieldSummaryLabel"));
@@ -5098,7 +5102,7 @@ void MainWindow::buildUi()
         QSizePolicy::Ignored,
         QSizePolicy::Preferred);
     selectedFieldSummaryLabel_->setVisible(false);
-    fieldSelectionLabel_ = new QLabel(fieldHeaderBar_);
+    fieldSelectionLabel_ = WorkbenchControls::label(fieldHeaderBar_);
     fieldSelectionLabel_->setObjectName(
         QStringLiteral("fieldSelectionLabel"));
     fieldSelectionLabel_->setVisible(false);
@@ -5143,7 +5147,7 @@ void MainWindow::buildUi()
         density.panelHeaderVerticalPadding);
     fieldFeedbackLayout->setSpacing(density.baseSpacing * 2);
     fieldFeedbackLabel_ =
-        new QLabel(fieldFeedbackBar_);
+        WorkbenchControls::label(fieldFeedbackBar_);
     fieldFeedbackLabel_->setObjectName(
         QStringLiteral("fieldFeedbackLabel"));
     fieldFeedbackLabel_->setWordWrap(true);
@@ -5172,7 +5176,7 @@ void MainWindow::buildUi()
     auto* enumLayout = new QVBoxLayout(enumPanel_);
     enumLayout->setContentsMargins(0, 0, 0, 0);
     enumLayout->setSpacing(density.baseSpacing);
-    enumContextLabel_ = new QLabel(QStringLiteral("Enum Values"), enumPanel_);
+    enumContextLabel_ = WorkbenchControls::label(QStringLiteral("Enum Values"), enumPanel_);
     enumContextLabel_->setObjectName(QStringLiteral("contextTitle"));
     customizeBooleanValuesButton_ =
         WorkbenchControls::toolButton(enumPanel_);
@@ -5407,7 +5411,7 @@ void MainWindow::buildUi()
     auto* problemsLayout = new QVBoxLayout(problemsPanel);
     problemsLayout->setContentsMargins(0, 0, 0, 0);
     problemsLayout->setSpacing(density.baseSpacing);
-    problemsSummaryLabel_ = new QLabel(problemsPanel);
+    problemsSummaryLabel_ = WorkbenchControls::label(problemsPanel);
     problemsSummaryLabel_->setObjectName(
         QStringLiteral("problemsSummaryLabel"));
     problemsSummaryLabel_->setContentsMargins(8, 4, 8, 0);
@@ -5502,7 +5506,7 @@ void MainWindow::buildUi()
         density.panelHeaderHorizontalPadding,
         density.panelHeaderVerticalPadding);
     externalDecisionLayout->setSpacing(density.baseSpacing);
-    externalDecisionStatusLabel_ = new QLabel(externalDecisionBar_);
+    externalDecisionStatusLabel_ = WorkbenchControls::label(externalDecisionBar_);
     externalDecisionStatusLabel_->setObjectName(
         QStringLiteral("externalDecisionStatusLabel"));
     externalDecisionStatusLabel_->setWordWrap(true);
@@ -5585,7 +5589,7 @@ void MainWindow::buildUi()
         density.panelHeaderVerticalPadding,
         density.panelHeaderHorizontalPadding,
         density.panelHeaderVerticalPadding);
-    conflictSummaryLabel_ = new QLabel(conflictBar_);
+    conflictSummaryLabel_ = WorkbenchControls::label(conflictBar_);
     conflictSummaryLabel_->setObjectName(QStringLiteral("conflictSummaryLabel"));
     conflictSummaryLabel_->setSizePolicy(
         QSizePolicy::Ignored,
@@ -5618,7 +5622,13 @@ void MainWindow::buildUi()
         QSizePolicy::Ignored,
         QSizePolicy::Ignored);
     resultsSplitter_->addWidget(workspaceSplitter_);
-    resultsSplitter_->addWidget(tabs_);
+    resultsPanel_ = new QWidget(this);
+    resultsPanel_->setObjectName(QStringLiteral("resultsPanel"));
+    auto* resultsLayout = new QVBoxLayout(resultsPanel_);
+    resultsLayout->setContentsMargins(0, 0, 0, 0);
+    resultsLayout->addWidget(tabs_);
+    WorkbenchControls::installPanelMotion(resultsPanel_, Qt::BottomEdge);
+    resultsSplitter_->addWidget(resultsPanel_);
     resultsSplitter_->setStretchFactor(0, 1);
     resultsSplitter_->setStretchFactor(1, 0);
     resultsSplitter_->setChildrenCollapsible(true);
@@ -5653,7 +5663,7 @@ void MainWindow::buildUi()
         0, 0, 0, 0);
     projectIdentityLayout->setSpacing(density.baseSpacing);
     projectTitleLabel_ =
-        new QLabel(
+        WorkbenchControls::label(
             QStringLiteral(
                 "Register Map Workbench"),
             pageHeader_);
@@ -5663,7 +5673,7 @@ void MainWindow::buildUi()
         QSizePolicy::Ignored,
         QSizePolicy::Preferred);
     projectPathLabel_ =
-        new QLabel(
+        WorkbenchControls::label(
             QStringLiteral(
                 "Open or create a project"),
             pageHeader_);
@@ -5682,7 +5692,7 @@ void MainWindow::buildUi()
         projectIdentityLayout, 1);
 
     fileStateLabel_ =
-        new QLabel(
+        WorkbenchControls::label(
             QStringLiteral("No project"),
             pageHeader_);
     fileStateLabel_->setObjectName(
@@ -5699,7 +5709,7 @@ void MainWindow::buildUi()
     pageHeaderLayout->addWidget(
         fileStateLabel_);
     syncStateLabel_ =
-        new QLabel(
+        WorkbenchControls::label(
             QStringLiteral("No project"),
             pageHeader_);
     syncStateLabel_->setObjectName(
@@ -5779,6 +5789,7 @@ void MainWindow::buildUi()
         hierarchyView_, registerView_, fieldView_, enumView_, problemsView_,
         generatedView_, diffView_, addressSpaceScroll_};
     for (auto* area : scrollAreas) WorkbenchControls::styleScrollArea(area);
+    WorkbenchControls::installPanelMotion(fieldPanel_, Qt::RightEdge);
 }
 
 void MainWindow::buildActions()
@@ -6654,7 +6665,7 @@ void MainWindow::buildActions()
         openXlsxButton_);
     toolbar->addSeparator();
     activeContextLabel_ =
-        new QLabel(
+        WorkbenchControls::label(
             QStringLiteral("Selected: none"),
             statusBar());
     activeContextLabel_->setObjectName(
@@ -6724,7 +6735,7 @@ void MainWindow::buildActions()
     connect(clearSearchShortcut, &QShortcut::activated,
             this, &MainWindow::clearSearch);
     toolbar->addWidget(globalSearchEdit_);
-    searchResultLabel_ = new QLabel(toolbar);
+    searchResultLabel_ = WorkbenchControls::label(toolbar);
     searchResultLabel_->setObjectName(QStringLiteral("searchResultLabel"));
     toolbar->addWidget(searchResultLabel_);
     resultsToggleButton_ =
@@ -6745,7 +6756,7 @@ void MainWindow::buildActions()
     toolbar->addWidget(
         resultsToggleButton_);
     recoveryStateLabel_ =
-        new QLabel(this);
+        WorkbenchControls::label(this);
     recoveryStateLabel_->setObjectName(
         QStringLiteral(
             "recoveryStateBadge"));
@@ -6864,6 +6875,9 @@ void MainWindow::buildActions()
 
 void MainWindow::connectSignals()
 {
+    const auto invalidateSearchIndex = [this] { searchIndexValid_ = false; };
+    connect(&controller_, &ProjectController::projectChanged, this, invalidateSearchIndex);
+    connect(&controller_, &ProjectController::editStateChanged, this, invalidateSearchIndex);
     connect(
         diagnosticsFilterEdit_,
         &QLineEdit::textChanged,
@@ -6988,7 +7002,7 @@ void MainWindow::connectSignals()
                 return;
             }
             if (enumOnlyEditorLayout_ ||
-                !fieldPanel_->isVisible()) {
+                !WorkbenchControls::panelRequestedVisible(fieldPanel_)) {
                 return;
             }
             preserveRestoredEditorState_ =
@@ -8618,7 +8632,7 @@ void MainWindow::updateResponsiveLayout()
         nextOrientation) {
         if (uiStateRestoreComplete_ &&
             fieldPanel_ != nullptr &&
-            fieldPanel_->isVisible()) {
+            WorkbenchControls::panelRequestedVisible(fieldPanel_)) {
             const QList<int> oldSizes =
                 editorSplitter_->sizes();
             if (oldSizes.size() == 2 &&
@@ -8641,7 +8655,7 @@ void MainWindow::updateResponsiveLayout()
                 : editorSplitter_->height();
         if (total > 1 &&
             fieldPanel_ != nullptr &&
-            fieldPanel_->isVisible()) {
+            WorkbenchControls::panelRequestedVisible(fieldPanel_)) {
             const int inspector =
                 std::clamp(
                     static_cast<int>(
@@ -8690,7 +8704,7 @@ void MainWindow::updateResponsiveLayout()
         const bool showContextDescriptions =
             !compactLayout_ &&
             (fieldPanel_ == nullptr ||
-             !fieldPanel_->isVisible());
+             !WorkbenchControls::panelRequestedVisible(fieldPanel_));
         pageDescriptionLabel_->setVisible(
             showContextDescriptions);
         pageDescriptionEdit_->setVisible(
@@ -8957,7 +8971,7 @@ void MainWindow::saveUiState() const
     QByteArray editorState =
         expandedEditorSplitterState_;
     if (!enumOnlyEditorLayout_ &&
-        fieldPanel_->isVisible()) {
+        WorkbenchControls::panelRequestedVisible(fieldPanel_)) {
         editorState = editorSplitter_->saveState();
     }
     if (editorState.isEmpty()) {
@@ -8969,7 +8983,7 @@ void MainWindow::saveUiState() const
     double editorLowerFraction =
         expandedEditorLowerFraction_;
     if (!enumOnlyEditorLayout_ &&
-        fieldPanel_->isVisible()) {
+        WorkbenchControls::panelRequestedVisible(fieldPanel_)) {
         const QList<int> sizes =
             editorSplitter_->sizes();
         if (sizes.size() == 2 &&
@@ -9044,7 +9058,7 @@ void MainWindow::updateEditorPanelMode(
         enumOnlyEditorLayout_ &&
         hasOpenFieldEditor;
     if (!enumOnlyEditorLayout_ &&
-        fieldPanel_->isVisible()) {
+        WorkbenchControls::panelRequestedVisible(fieldPanel_)) {
         if (!preserveRestoredEditorState_) {
             expandedEditorSplitterState_ =
                 editorSplitter_->saveState();
@@ -9074,7 +9088,7 @@ void MainWindow::updateEditorPanelMode(
                       enumPanel_->sizeHint().height() +
                       8
                 : QWIDGETSIZE_MAX);
-        fieldPanel_->setVisible(true);
+        WorkbenchControls::setPanelVisible(fieldPanel_, true);
         fieldPanel_->updateGeometry();
         updateContextDescriptionVisibility(
             true);
@@ -9093,7 +9107,7 @@ void MainWindow::updateEditorPanelMode(
             : 0);
     fieldPanel_->setMaximumHeight(
         QWIDGETSIZE_MAX);
-    fieldPanel_->setVisible(
+    WorkbenchControls::setPanelVisible(fieldPanel_,
         hasOpenFieldEditor);
     fieldPanel_->updateGeometry();
     updateContextDescriptionVisibility(
@@ -10159,7 +10173,7 @@ void MainWindow::updateContextBar()
     const bool constrainedContext =
         compactLayout_ ||
         (fieldPanel_ != nullptr &&
-         fieldPanel_->isVisible());
+         WorkbenchControls::panelRequestedVisible(fieldPanel_));
     pageContextLabel_->setText(
         constrainedContext && page != nullptr
             ? QStringLiteral("Page: %1")
@@ -13322,8 +13336,9 @@ void MainWindow::updateBottomPanelVisibility()
     const bool showPanel =
         hasResults &&
         resultsPanelRequested_;
-    tabs_->setVisible(
-        showPanel);
+    if (showPanel) tabs_->show();
+    WorkbenchControls::setPanelVisible(resultsPanel_, showPanel);
+    if (!showPanel) tabs_->hide();
     if (showPanel &&
         resultsSplitter_ != nullptr) {
         const QList<int> sizes =
@@ -13391,7 +13406,7 @@ void MainWindow::updateBottomPanelVisibility()
         const QSignalBlocker blocker(
             resultsToggleButton_);
         resultsToggleButton_->setChecked(
-            tabs_->isVisible());
+            showPanel);
     }
     if (toggleResultsAction_ !=
         nullptr) {
@@ -16792,7 +16807,7 @@ void MainWindow::addEnumValue()
                     index);
                 enumView_->scrollTo(
                     index);
-                enumView_->setFocus(
+                WorkbenchControls::focusWhenVisible(enumView_,
                     Qt::OtherFocusReason);
                 break;
             }
@@ -17296,7 +17311,7 @@ void MainWindow::showInlineFailure(
         QApplication::focusWidget();
     const bool fieldContext =
         fieldPanel_ != nullptr &&
-        fieldPanel_->isVisible() &&
+        WorkbenchControls::panelRequestedVisible(fieldPanel_) &&
         (focusBelongsToWidgetOutsidePopup(
              focus, fieldPanel_) ||
          lastCommandView_ == fieldView_ ||
@@ -18086,7 +18101,7 @@ void MainWindow::openFieldsForRegister(
     if (toggleIfOpen &&
         openFieldsRegisterId_ ==
             registerId &&
-        fieldPanel_->isVisible()) {
+        WorkbenchControls::panelRequestedVisible(fieldPanel_)) {
         closeFields();
         return;
     }
@@ -18097,7 +18112,7 @@ void MainWindow::openFieldsForRegister(
     selectedFieldId_.clear();
     selectRegister(registerId);
     populateFields(reg);
-    fieldPanel_->setVisible(true);
+    WorkbenchControls::setPanelVisible(fieldPanel_, true);
     if (previousRegisterId != registerId) {
         updateFieldsAction(previousRegisterId);
     }
@@ -18107,7 +18122,7 @@ void MainWindow::openFieldsForRegister(
         const QModelIndex first = fieldModel_->index(0, fieldNameColumn);
         fieldView_->setCurrentIndex(first);
         fieldView_->scrollTo(first);
-        fieldView_->setFocus(
+        WorkbenchControls::focusWhenVisible(fieldView_,
             Qt::OtherFocusReason);
     } else if (
         enumDetails &&
@@ -18117,7 +18132,7 @@ void MainWindow::openFieldsForRegister(
                 0, enumNameColumn);
         enumView_->setCurrentIndex(first);
         enumView_->scrollTo(first);
-        enumView_->setFocus(
+        WorkbenchControls::focusWhenVisible(enumView_,
             Qt::OtherFocusReason);
     }
     fieldEditContextActive_ =
@@ -19111,15 +19126,16 @@ void MainWindow::batchEditSelectedRegisters()
                 });
         };
 
-    QDialog dialog(this);
+    const std::unique_ptr<QDialog> dialogOwner(WorkbenchControls::contentDialog(this));
+    auto& dialog = *dialogOwner;
     dialog.setObjectName(QStringLiteral("batchEditRegistersDialog"));
     dialog.setWindowTitle(
         QStringLiteral("Batch Edit %1 Registers").arg(ids.size()));
     dialog.setMinimumWidth(520);
-    auto* layout = new QVBoxLayout(&dialog);
+    auto* layout = new QVBoxLayout(WorkbenchControls::dialogContent(&dialog));
     layout->setContentsMargins(16, 16, 16, 16);
     layout->setSpacing(8);
-    auto* summary = new QLabel(
+    auto* summary = WorkbenchControls::label(
         QStringLiteral(
             "Only checked properties are changed. Mixed choices require an explicit replacement. Blank Range, Initial Value, Reset Value, or Description values clear that property. The complete edit is one Undo step."),
         &dialog);
@@ -19413,7 +19429,7 @@ void MainWindow::batchEditSelectedRegisters()
     auto* buttons = WorkbenchControls::dialogButtons(&dialog);
     buttons->setObjectName(QStringLiteral("batchEditButtons"));
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    auto* validation = new QLabel(&dialog);
+    auto* validation = WorkbenchControls::label(&dialog);
     validation->setObjectName(
         QStringLiteral("batchRegisterValidation"));
     validation->setWordWrap(true);
@@ -19871,15 +19887,16 @@ void MainWindow::batchEditSelectedFields()
                 });
         };
 
-    QDialog dialog(this);
+    const std::unique_ptr<QDialog> dialogOwner(WorkbenchControls::contentDialog(this));
+    auto& dialog = *dialogOwner;
     dialog.setObjectName(QStringLiteral("batchEditFieldsDialog"));
     dialog.setWindowTitle(
         QStringLiteral("Batch Edit %1 Fields").arg(ids.size()));
     dialog.setMinimumWidth(520);
-    auto* layout = new QVBoxLayout(&dialog);
+    auto* layout = new QVBoxLayout(WorkbenchControls::dialogContent(&dialog));
     layout->setContentsMargins(16, 16, 16, 16);
     layout->setSpacing(8);
-    auto* summary = new QLabel(
+    auto* summary = WorkbenchControls::label(
         QStringLiteral(
             "Only checked properties are changed. Mixed choices require an explicit replacement. A blank Range or Description clears that property. Field Reset is derived from Register Reset and is not edited here. The complete edit is one Undo step."),
         &dialog);
@@ -20034,7 +20051,7 @@ void MainWindow::batchEditSelectedFields()
     connect(
         buttons, &QDialogButtonBox::rejected,
         &dialog, &QDialog::reject);
-    auto* validation = new QLabel(&dialog);
+    auto* validation = WorkbenchControls::label(&dialog);
     validation->setObjectName(
         QStringLiteral("batchFieldValidation"));
     validation->setWordWrap(true);
@@ -21037,7 +21054,7 @@ void MainWindow::showRegisterContextMenu(const QPoint& position)
         const bool detailsOpen =
             openFieldsRegisterId_ ==
                 reg->id &&
-            fieldPanel_->isVisible();
+            WorkbenchControls::panelRequestedVisible(fieldPanel_);
         openDetails =
             menu.addAction(
                 QStringLiteral(
@@ -24215,7 +24232,7 @@ bool MainWindow::navigateToObject(
                         }
                         enumView_->setCurrentIndex(enumIndex);
                         enumView_->scrollTo(enumIndex);
-                        enumView_->setFocus(Qt::OtherFocusReason);
+                        WorkbenchControls::focusWhenVisible(enumView_, Qt::OtherFocusReason);
                         break;
                     }
                 }
@@ -24245,11 +24262,11 @@ bool MainWindow::navigateToObject(
                 if (hierarchyHadFocus ||
                     focusTarget) {
                     if (canOpenEnum) {
-                        enumView_->setFocus(
+                        WorkbenchControls::focusWhenVisible(enumView_,
                             Qt::OtherFocusReason);
                     } else if (
                         canOpenField) {
-                        fieldView_->setFocus(
+                        WorkbenchControls::focusWhenVisible(fieldView_,
                             Qt::OtherFocusReason);
                     } else {
                         registerView_->setFocus(
@@ -24357,180 +24374,181 @@ void MainWindow::rebuildSearchResults()
         return;
     }
 
-    std::set<std::string> seen;
-    const auto addIfMatch =
-        [&](const std::string& id,
-            const QString& label,
-            const QStringList& values) {
-        if (seen.contains(id)) {
-            return;
+    if (!searchIndexValid_) {
+        searchIndex_.clear();
+        const auto addSearchEntry =
+            [&](const std::string& id,
+                const QString& label,
+                const QStringList& values) {
+            searchIndex_.push_back({id, label, values});
+        };
+        const auto addEnumValues =
+            [&](const std::vector<regmap::EnumValue>& values,
+                const QString& ownerPath) {
+            for (const auto& value : values) {
+                addSearchEntry(
+                    value.id,
+                    QStringLiteral(
+                        "Enum · %1 / %2")
+                        .arg(
+                            ownerPath,
+                            fromUtf8(
+                                value.name)),
+                    {fromUtf8(value.name),
+                     fromUtf8(value.id),
+                     fromUtf8(
+                         value.value
+                             .toHexString()),
+                     fromUtf8(
+                         value.description),
+                     ownerPath});
+            }
+        };
+
+        addSearchEntry(
+            workspace->id,
+            QStringLiteral("Workspace · %1")
+                .arg(
+                    fromUtf8(
+                        workspace->name)),
+            {fromUtf8(workspace->name),
+             fromUtf8(workspace->id)});
+        for (const auto& page : workspace->addressSpaces) {
+            const QString pagePath =
+                fromUtf8(page.name);
+            addSearchEntry(
+                page.id,
+                QStringLiteral("Page · %1 @ %2")
+                    .arg(pagePath, hex(page.baseAddress)),
+                {fromUtf8(page.name),
+                 fromUtf8(page.id),
+                 hex(page.baseAddress),
+                 fromUtf8(page.description)});
+            for (const auto& block : page.blocks) {
+                const QString blockPath =
+                    QStringLiteral("%1 / %2")
+                        .arg(
+                            pagePath,
+                            fromUtf8(
+                                block.name));
+                std::uint64_t blockAbsoluteAddress = 0;
+                const bool blockAddressOverflow =
+                    addOverflow(
+                        page.baseAddress,
+                        block.baseAddress,
+                        blockAbsoluteAddress);
+                const QString blockAddressText =
+                    blockAddressOverflow
+                        ? QStringLiteral("overflow")
+                        : hex(blockAbsoluteAddress);
+                addSearchEntry(
+                    block.id,
+                    QStringLiteral("Block · %1 @ %2")
+                        .arg(blockPath, blockAddressText),
+                    {fromUtf8(block.name),
+                     fromUtf8(block.id),
+                     hex(block.baseAddress),
+                     blockAddressText,
+                     fromUtf8(
+                         block.description),
+                     blockPath});
+                for (const auto& reg : block.registers) {
+                    std::uint64_t pageBlockAddress = 0;
+                    std::uint64_t absoluteAddress = 0;
+                    const bool addressOverflow =
+                        addOverflow(page.baseAddress, block.baseAddress, pageBlockAddress) ||
+                        addOverflow(pageBlockAddress, reg.offset, absoluteAddress);
+                    QStringList registerValues{
+                        fromUtf8(reg.name), fromUtf8(reg.id), hex(reg.offset),
+                        addressOverflow ? QStringLiteral("overflow") : hex(absoluteAddress),
+                        registerTypeText(reg), accessText(reg.access), tagsText(reg.tags),
+                        fromUtf8(reg.description)};
+                    const QString registerPath =
+                        QStringLiteral(
+                            "%1 / %2")
+                            .arg(
+                                blockPath,
+                                fromUtf8(
+                                    reg.name));
+                    const QString registerAddressText =
+                        addressOverflow
+                            ? QStringLiteral("overflow")
+                            : hex(absoluteAddress);
+                    const QString registerResultPath =
+                        QStringLiteral("%1 @ %2")
+                            .arg(
+                                registerPath,
+                                registerAddressText);
+                    registerValues.push_back(
+                        registerPath);
+                    addSearchEntry(
+                        reg.id,
+                        QStringLiteral(
+                            "Register · %1")
+                            .arg(
+                                registerResultPath),
+                        registerValues);
+                    addEnumValues(
+                        reg.enumValues,
+                        registerResultPath);
+
+                    const auto visitFields =
+                        [&](const auto& self, const std::vector<regmap::Field>& fields,
+                            const QString& parentPath) -> void {
+                        for (const auto& field : fields) {
+                            const QString path = parentPath.isEmpty()
+                                ? fromUtf8(field.name)
+                                : parentPath + QStringLiteral(".") + fromUtf8(field.name);
+                            QStringList fieldValues{
+                                fromUtf8(field.name), fromUtf8(field.id), path,
+                                QString::number(field.msb), QString::number(field.lsb),
+                                fieldTypeText(field), accessText(field.softwareAccess),
+                                fromUtf8(field.description)};
+                            const QString fieldPath =
+                                QStringLiteral(
+                                    "%1 / %2 @ %3")
+                                    .arg(
+                                        registerPath,
+                                        path,
+                                        registerAddressText);
+                            fieldValues.push_back(
+                                fieldPath);
+                            addSearchEntry(
+                                field.id,
+                                QStringLiteral(
+                                    "Field · %1")
+                                    .arg(
+                                        fieldPath),
+                                fieldValues);
+                            addEnumValues(
+                                field.enumValues,
+                                fieldPath);
+                            self(self, field.members, path);
+                        }
+                    };
+                    visitFields(visitFields, reg.fields, {});
+                }
+            }
         }
-        const bool exact = std::ranges::any_of(values, [&](const QString& value) {
+        searchIndexValid_ = true;
+    }
+    std::set<std::string> seen;
+    for (const auto& entry : searchIndex_) {
+        if (seen.contains(entry.id)) continue;
+        const bool exact = std::ranges::any_of(entry.values, [&](const QString& value) {
             return value.compare(searchQuery_, Qt::CaseInsensitive) == 0;
         });
-        const bool partial = exact || std::ranges::any_of(values, [&](const QString& value) {
+        const bool partial = exact || std::ranges::any_of(entry.values, [&](const QString& value) {
             return value.contains(searchQuery_, Qt::CaseInsensitive);
         });
-        if (partial) {
-            seen.insert(id);
-            if (exact) {
-                searchResults_.insert(searchResults_.begin(), id);
-                searchResultLabels_.insert(
-                    searchResultLabels_.begin(),
-                    label);
-            } else {
-                searchResults_.push_back(id);
-                searchResultLabels_.push_back(
-                    label);
-            }
-        }
-    };
-    const auto addEnumValues =
-        [&](const std::vector<regmap::EnumValue>& values,
-            const QString& ownerPath) {
-        for (const auto& value : values) {
-            addIfMatch(
-                value.id,
-                QStringLiteral(
-                    "Enum · %1 / %2")
-                    .arg(
-                        ownerPath,
-                        fromUtf8(
-                            value.name)),
-                {fromUtf8(value.name),
-                 fromUtf8(value.id),
-                 fromUtf8(
-                     value.value
-                         .toHexString()),
-                 fromUtf8(
-                     value.description),
-                 ownerPath});
-        }
-    };
-
-    addIfMatch(
-        workspace->id,
-        QStringLiteral("Workspace · %1")
-            .arg(
-                fromUtf8(
-                    workspace->name)),
-        {fromUtf8(workspace->name),
-         fromUtf8(workspace->id)});
-    for (const auto& page : workspace->addressSpaces) {
-        const QString pagePath =
-            fromUtf8(page.name);
-        addIfMatch(
-            page.id,
-            QStringLiteral("Page · %1 @ %2")
-                .arg(pagePath, hex(page.baseAddress)),
-            {fromUtf8(page.name),
-             fromUtf8(page.id),
-             hex(page.baseAddress),
-             fromUtf8(page.description)});
-        for (const auto& block : page.blocks) {
-            const QString blockPath =
-                QStringLiteral("%1 / %2")
-                    .arg(
-                        pagePath,
-                        fromUtf8(
-                            block.name));
-            std::uint64_t blockAbsoluteAddress = 0;
-            const bool blockAddressOverflow =
-                addOverflow(
-                    page.baseAddress,
-                    block.baseAddress,
-                    blockAbsoluteAddress);
-            const QString blockAddressText =
-                blockAddressOverflow
-                    ? QStringLiteral("overflow")
-                    : hex(blockAbsoluteAddress);
-            addIfMatch(
-                block.id,
-                QStringLiteral("Block · %1 @ %2")
-                    .arg(blockPath, blockAddressText),
-                {fromUtf8(block.name),
-                 fromUtf8(block.id),
-                 hex(block.baseAddress),
-                 blockAddressText,
-                 fromUtf8(
-                     block.description),
-                 blockPath});
-            for (const auto& reg : block.registers) {
-                std::uint64_t pageBlockAddress = 0;
-                std::uint64_t absoluteAddress = 0;
-                const bool addressOverflow =
-                    addOverflow(page.baseAddress, block.baseAddress, pageBlockAddress) ||
-                    addOverflow(pageBlockAddress, reg.offset, absoluteAddress);
-                QStringList registerValues{
-                    fromUtf8(reg.name), fromUtf8(reg.id), hex(reg.offset),
-                    addressOverflow ? QStringLiteral("overflow") : hex(absoluteAddress),
-                    registerTypeText(reg), accessText(reg.access), tagsText(reg.tags),
-                    fromUtf8(reg.description)};
-                const QString registerPath =
-                    QStringLiteral(
-                        "%1 / %2")
-                        .arg(
-                            blockPath,
-                            fromUtf8(
-                                reg.name));
-                const QString registerAddressText =
-                    addressOverflow
-                        ? QStringLiteral("overflow")
-                        : hex(absoluteAddress);
-                const QString registerResultPath =
-                    QStringLiteral("%1 @ %2")
-                        .arg(
-                            registerPath,
-                            registerAddressText);
-                registerValues.push_back(
-                    registerPath);
-                addIfMatch(
-                    reg.id,
-                    QStringLiteral(
-                        "Register · %1")
-                        .arg(
-                            registerResultPath),
-                    registerValues);
-                addEnumValues(
-                    reg.enumValues,
-                    registerResultPath);
-
-                const auto visitFields =
-                    [&](const auto& self, const std::vector<regmap::Field>& fields,
-                        const QString& parentPath) -> void {
-                    for (const auto& field : fields) {
-                        const QString path = parentPath.isEmpty()
-                            ? fromUtf8(field.name)
-                            : parentPath + QStringLiteral(".") + fromUtf8(field.name);
-                        QStringList fieldValues{
-                            fromUtf8(field.name), fromUtf8(field.id), path,
-                            QString::number(field.msb), QString::number(field.lsb),
-                            fieldTypeText(field), accessText(field.softwareAccess),
-                            fromUtf8(field.description)};
-                        const QString fieldPath =
-                            QStringLiteral(
-                                "%1 / %2 @ %3")
-                                .arg(
-                                    registerPath,
-                                    path,
-                                    registerAddressText);
-                        fieldValues.push_back(
-                            fieldPath);
-                        addIfMatch(
-                            field.id,
-                            QStringLiteral(
-                                "Field · %1")
-                                .arg(
-                                    fieldPath),
-                            fieldValues);
-                        addEnumValues(
-                            field.enumValues,
-                            fieldPath);
-                        self(self, field.members, path);
-                    }
-                };
-                visitFields(visitFields, reg.fields, {});
-            }
+        if (!partial) continue;
+        seen.insert(entry.id);
+        if (exact) {
+            searchResults_.insert(searchResults_.begin(), entry.id);
+            searchResultLabels_.insert(searchResultLabels_.begin(), entry.label);
+        } else {
+            searchResults_.push_back(entry.id);
+            searchResultLabels_.push_back(entry.label);
         }
     }
     if (!previousTargetId.empty()) {
@@ -26360,7 +26378,7 @@ bool MainWindow::fieldEditContext() const
     return lastCellTable_ != enumView_ &&
         fieldEditContextActive_ &&
         fieldPanel_ != nullptr &&
-        fieldPanel_->isVisible() &&
+        WorkbenchControls::panelRequestedVisible(fieldPanel_) &&
         fieldsAreOpen;
 }
 
@@ -27842,7 +27860,7 @@ void MainWindow::beginFieldRename(const std::string& id)
         }
         fieldView_->setCurrentIndex(name);
         fieldView_->scrollTo(name);
-        fieldView_->setFocus(Qt::OtherFocusReason);
+        WorkbenchControls::focusWhenVisible(fieldView_,Qt::OtherFocusReason);
         fieldView_->edit(name);
     });
 }
@@ -27895,7 +27913,7 @@ void MainWindow::beginEnumRename(const std::string& id, const std::string& owner
                 }
                 enumView_->setCurrentIndex(name);
                 enumView_->scrollTo(name);
-                enumView_->setFocus(Qt::OtherFocusReason);
+                WorkbenchControls::focusWhenVisible(enumView_,Qt::OtherFocusReason);
                 enumView_->edit(name);
                 return;
             }

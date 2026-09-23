@@ -215,6 +215,19 @@ if(REGMAP_BUILD_APP)
 endif()
 
 if(REGMAP_BUILD_APP AND REGMAP_ENABLE_ELA)
+    qt_add_executable(regmap_ela_native_tests ela_native_capabilities_test.cpp test_profile.cpp)
+    set_target_properties(regmap_ela_native_tests PROPERTIES AUTOMOC ON)
+    target_link_libraries(regmap_ela_native_tests PRIVATE RegMap::WorkbenchUi Qt6::Test Ela::WidgetTools)
+    foreach(scale 1 2)
+        add_test(NAME regmap_ela_native_${scale} COMMAND regmap_ela_native_tests
+            -o "${CMAKE_CURRENT_BINARY_DIR}/regmap_ela_native_${scale}.log,txt")
+        set_tests_properties(regmap_ela_native_${scale} PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen;REGMAP_UI_STYLE=ela;QT_SCALE_FACTOR=${scale};QT_FONT_DPI=96;QT_SCREEN_SCALE_FACTORS=1"
+            ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+    endforeach()
+    qt_add_executable(regmap_ui_performance ui_performance.cpp)
+    set_target_properties(regmap_ui_performance PROPERTIES AUTOMOC ON)
+    target_link_libraries(regmap_ui_performance PRIVATE RegMap::WorkbenchUi Qt6::Test)
     qt_add_executable(regmap_ela_remaining_tests ela_remaining_controls_test.cpp)
     set_target_properties(regmap_ela_remaining_tests PROPERTIES AUTOMOC ON)
     target_link_libraries(regmap_ela_remaining_tests PRIVATE RegMap::WorkbenchUi Qt6::Test)
@@ -237,7 +250,7 @@ if(REGMAP_BUILD_APP AND REGMAP_ENABLE_ELA)
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen;REGMAP_UI_STYLE=classic"
         ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
     if(WIN32)
-        foreach(target regmap_gui_tests regmap_ui_snapshot regmap_suiteapp_integration_test
+        foreach(target regmap_ela_native_tests regmap_ui_performance regmap_gui_tests regmap_ui_snapshot regmap_suiteapp_integration_test
                        regmap_suiteui_control_test regmap_ela_control_tests regmap_ela_remaining_tests)
             if(TARGET ${target})
                 add_custom_command(TARGET ${target} POST_BUILD

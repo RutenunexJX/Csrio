@@ -10,6 +10,10 @@
 #include <QHeaderView>
 #include <QTableView>
 #include <QTreeView>
+#include <QWheelEvent>
+#include <QLabel>
+#include <QVBoxLayout>
+#include <QKeyEvent>
 #include <QMenu>
 #include <QMenuBar>
 #include <QPainter>
@@ -25,6 +29,7 @@
 #include <ElaApplication.h>
 #include <ElaCheckBox.h>
 #include <ElaComboBox.h>
+#include <ElaContentDialog.h>
 #include <ElaLineEdit.h>
 #include <ElaMenu.h>
 #include <ElaMenuBar.h>
@@ -34,6 +39,8 @@
 #include <ElaTheme.h>
 #include <ElaToolBar.h>
 #include <ElaToolButton.h>
+#include <ElaTreeView.h>
+#include <ElaText.h>
 #endif
 
 namespace WorkbenchControls {
@@ -90,9 +97,6 @@ public:
 class ChoiceBox final : public FocusControl<ElaComboBox> {
 public:
     using FocusControl::FocusControl;
-    // Keep Qt's interruptible popup ownership, dismissal and keyboard semantics.
-    void showPopup() override { QComboBox::showPopup(); }
-    void hidePopup() override { QComboBox::hidePopup(); }
 };
 
 class StableScrollBar final : public ElaScrollBar {
@@ -103,8 +107,53 @@ public:
         setIsAnimation(false);
     }
 protected:
-    void wheelEvent(QWheelEvent* event) override { QScrollBar::wheelEvent(event); }
+    void wheelEvent(QWheelEvent* event) override
+    {
+        if (smoothWheelEnabled() && !WorkbenchTheme::reducedMotionEnabled())
+            ElaScrollBar::wheelEvent(event);
+        else {
+            stopSmoothWheel();
+            QScrollBar::wheelEvent(event);
+        }
+    }
     void contextMenuEvent(QContextMenuEvent* event) override { QScrollBar::contextMenuEvent(event); }
+};
+
+class PrecisionWheelRouter final : public QObject {
+public:
+    explicit PrecisionWheelRouter(QAbstractScrollArea* area) : QObject(area), area_(area)
+    {
+        area->installEventFilter(this);
+        area->viewport()->installEventFilter(this);
+    }
+protected:
+    bool eventFilter(QObject*, QEvent* event) override
+    {
+        if (event->type() == QEvent::KeyPress || event->type() == QEvent::MouseButtonPress) {
+            if (auto* tree = qobject_cast<QTreeView*>(area_)) ElaTreeView::finishExpansion(tree);
+            for (auto* bar : {area_->horizontalScrollBar(), area_->verticalScrollBar()})
+                if (auto* ela = qobject_cast<ElaScrollBar*>(bar)) ela->stopSmoothWheel();
+        }
+        if (event->type() != QEvent::Wheel) return false;
+        auto* wheel = static_cast<QWheelEvent*>(event);
+        if (wheel->pixelDelta().isNull()) return false;
+        const bool horizontal = qAbs(wheel->pixelDelta().x()) > qAbs(wheel->pixelDelta().y())
+            || wheel->modifiers().testFlag(Qt::ShiftModifier);
+        auto* bar = horizontal ? area_->horizontalScrollBar() : area_->verticalScrollBar();
+        QApplication::sendEvent(bar, wheel);
+        return wheel->isAccepted();
+    }
+private:
+    QAbstractScrollArea* area_;
+};
+
+class ContentDialog final : public ElaContentDialog {
+public:
+    using ElaContentDialog::ElaContentDialog;
+protected:
+    // Preserve QDialog's default button and Escape contracts; stock Ela buttons
+    // are deliberately replaced with the application's existing button roles.
+    void keyPressEvent(QKeyEvent* event) override { QDialog::keyPressEvent(event); }
 };
 
 class TextInput final : public FocusControl<ElaLineEdit> {
@@ -256,6 +305,60 @@ QComboBox* comboBox(QWidget* parent)
 #endif
     return new QComboBox(parent);
 }
+
+QLabel* label(QWidget* parent)
+{
+#ifdef REGMAP_ENABLE_ELA
+    if (backend() == Backend::ela) {
+        auto* text = new ElaText(parent);
+        text->setThemeColorEnabled(false);
+        text->setStyleSheet({});
+        text->setPalette(QPalette());
+        text->setFont(qApp->font());
+        text->setWordWrap(false);
+        return text;
+    }
+#endif
+    return new QLabel(parent);
+}
+
+QLabel* label(const QString& text, QWidget* parent)
+{
+    auto* result = label(parent);
+    result->setText(text);
+    return result;
+}
+
+QDialog* contentDialog(QWidget* parent)
+{
+#ifdef REGMAP_ENABLE_ELA
+    if (backend() == Backend::ela) {
+        auto* dialog = new ContentDialog(parent);
+        dialog->setStandardButtonsVisible(false);
+        dialog->setFont(qApp->font());
+        auto* central = new QWidget(dialog);
+        auto* shell = new QVBoxLayout(central);
+        shell->setContentsMargins(0, 0, 0, 0);
+        auto* title = label(dialog->windowTitle(), central);
+        title->setObjectName(QStringLiteral("contentDialogTitle"));
+        title->setContentsMargins(16, 16, 16, 0);
+        auto font = title->font(); font.setBold(true); title->setFont(font);
+        QObject::connect(dialog, &QWidget::windowTitleChanged, title, &QLabel::setText);
+        auto* body = new QWidget(central);
+        body->setObjectName(QStringLiteral("contentDialogBody"));
+        shell->addWidget(title); shell->addWidget(body);
+        dialog->setCentralWidget(central);
+        return dialog;
+    }
+#endif
+    return new QDialog(parent);
+}
+
+QWidget* dialogContent(QDialog* dialog)
+{
+    if (auto* body = dialog->findChild<QWidget*>(QStringLiteral("contentDialogBody"))) return body;
+    return dialog;
+}
 QCheckBox* checkBox(const QString& text, QWidget* parent)
 {
 #ifdef REGMAP_ENABLE_ELA
@@ -272,6 +375,7 @@ QMenu* menu(QWidget* parent)
 #ifdef REGMAP_ENABLE_ELA
     if (backend() == Backend::ela) {
         auto* menu = new ElaMenu(parent);
+        menu->setNativeMenuBehavior(true);
         menu->setFont(qApp->font());
         menu->setMenuItemHeight(WorkbenchTheme::metrics().standardControlHeight);
         return menu;
@@ -375,6 +479,44 @@ void styleScrollArea(QAbstractScrollArea* area)
     area->setProperty("regmapElaScrollBars", true);
 #else
     Q_UNUSED(area);
+#endif
+}
+
+void enableSmoothScrolling(QAbstractScrollArea* area)
+{
+#ifdef REGMAP_ENABLE_ELA
+    if (!area || backend() != Backend::ela || area->property("regmapSmoothScrolling").toBool()) return;
+    styleScrollArea(area);
+    area->setProperty("regmapSmoothScrolling", true);
+    new PrecisionWheelRouter(area);
+    if (auto* view = qobject_cast<QAbstractItemView*>(area)) {
+        view->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+        view->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    }
+    for (auto* bar : {area->horizontalScrollBar(), area->verticalScrollBar()}) {
+        if (auto* ela = qobject_cast<ElaScrollBar*>(bar)) {
+            ela->setSmoothWheelEnabled(true);
+            ela->setWheelAnimationDuration(160);
+        }
+    }
+#else
+    Q_UNUSED(area);
+#endif
+}
+
+void styleHierarchy(QTreeView* view)
+{
+#ifdef REGMAP_ENABLE_ELA
+    if (!view || backend() != Backend::ela) return;
+    auto* style = ElaTreeView::createStyle(qApp, qMax(28, view->fontMetrics().height() + 10));
+    view->setStyle(style);
+    QObject::connect(view, &QObject::destroyed, style, &QObject::deleteLater);
+    view->setProperty("regmapElaItemView", true);
+    view->setProperty("ElaUseQtItemSemantics", true);
+    view->setAnimated(!WorkbenchTheme::reducedMotionEnabled());
+    enableSmoothScrolling(view);
+#else
+    Q_UNUSED(view);
 #endif
 }
 

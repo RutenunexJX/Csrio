@@ -542,7 +542,8 @@ int main(int argumentCount, char* arguments[])
             }
             QCoreApplication::processEvents();
             QTimer::singleShot(
-                120, &window,
+                // Capture the final layout after the 300 ms drawer transition.
+                400, &window,
                 [&application, &window,
                  &result, output,
                  pageHeader, expectedSize = window.size()] {
@@ -555,7 +556,12 @@ int main(int argumentCount, char* arguments[])
                             if (!scroll || !scroll->widget() ||
                                 scroll->widget()->height() < scroll->widget()->minimumSizeHint().height() ||
                                 scroll->widget()->width() < scroll->widget()->minimumSizeHint().width()) {
-                                QTextStream(stderr) << "Panel content clipped: " << name << '\n';
+                                QTextStream(stderr) << "Panel content clipped: " << name
+                                    << " content=" << (scroll && scroll->widget() ? scroll->widget()->width() : -1)
+                                    << 'x' << (scroll && scroll->widget() ? scroll->widget()->height() : -1)
+                                    << " minimum=" << (scroll && scroll->widget() ? scroll->widget()->minimumSizeHint().width() : -1)
+                                    << 'x' << (scroll && scroll->widget() ? scroll->widget()->minimumSizeHint().height() : -1)
+                                    << " visible=" << (scroll && scroll->isVisible()) << '\n';
                                 result = 13; application.exit(result); return;
                             }
                             if (scroll->widget()->height() > scroll->viewport()->height() &&

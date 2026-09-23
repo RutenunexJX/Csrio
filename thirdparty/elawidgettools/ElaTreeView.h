@@ -16,6 +16,10 @@ class ELA_EXPORT ElaTreeView : public QTreeView
 public:
     explicit ElaTreeView(QWidget* parent = nullptr);
     ~ElaTreeView();
+    // Reuse Ela rendering without replacing a host's QTreeWidget item model.
+    static QStyle* createStyle(QObject* owner, int itemHeight = 28);
+    static void finishExpansion(QTreeView* view);
+    void setNativeItemContent(bool enabled);
 };
 
 #endif // ELAWORKSPACE_ELAWIDGETTOOLS_ELATREEVIEW_H_

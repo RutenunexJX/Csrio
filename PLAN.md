@@ -1,6 +1,14 @@
 # RegMapWorkbench Plan
 
-Current version: `0.3.4`.
+Current version: `0.3.5`.
+
+Completed UI implementation and validation (2026-09-24):
+[native Ela capabilities and release evidence](docs/ela-native-capabilities.md).
+Release CTest passed 10/10, including 168 GUI cases and the 100%/200% native
+interaction suites. The 16 main-window light/dark × size × DPI hard checks and
+120 state captures retain exact-size, 10pt-font and clipping contracts.
+Final delivery uses a clean Release/ELA test-OFF directory staging; no ZIP.
+The coordinating task owns AppSuite replacement and shared manifests.
 
 External disk-change accept/reject, large-map editing and semantic UI/density are implemented.
 No previous competition-UI delivery remains an active task.

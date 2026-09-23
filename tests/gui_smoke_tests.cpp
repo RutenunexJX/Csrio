@@ -2678,7 +2678,7 @@ void GuiSmokeTests::blocksDivergentSourcesWithoutBaseline()
         controller->diagnostics(), [](const regmap::Diagnostic& diagnostic) {
             return diagnostic.code == "RM5301";
         }));
-    QVERIFY(conflictBar->isVisible());
+    QTRY_VERIFY_WITH_TIMEOUT(conflictBar->isVisible(), 1000);
     QVERIFY(keepWorkbench->isVisible());
     QVERIFY(useRtl->isVisible());
     QVERIFY(conflictSummary->text().contains(QStringLiteral("No synchronization baseline")));
@@ -3537,7 +3537,7 @@ void GuiSmokeTests::keepsEnumEditorCompact()
     QTRY_VERIFY_WITH_TIMEOUT(
         fieldPanel->isVisible(), 2000);
     QVERIFY(!fields->isVisible());
-    QVERIFY(enumPanel->isVisible());
+    QTRY_VERIFY_WITH_TIMEOUT(enumPanel->isVisible(), 1000);
     QVERIFY(enumContext->isVisible());
     QVERIFY(enums->isVisible());
     QCOMPARE(enums->model()->rowCount(), 2);
@@ -4080,7 +4080,7 @@ void GuiSmokeTests::navigatesHierarchyAndOpensFieldsExplicitly()
     QTest::mouseClick(registers->viewport(), Qt::LeftButton, Qt::NoModifier,
                       openFieldsRectangle.center());
     QTRY_VERIFY_WITH_TIMEOUT(fieldPanel->isVisible(), 2000);
-    QVERIFY(fields->isVisible());
+    QTRY_VERIFY_WITH_TIMEOUT(fields->isVisible(), 1000);
     QTRY_VERIFY_WITH_TIMEOUT(fields->hasFocus(), 2000);
     QVERIFY(fieldContext->text().contains(QStringLiteral("STATUS")));
     QVERIFY(fieldContext->text().contains(QStringLiteral("1 field")));
@@ -5620,7 +5620,7 @@ void GuiSmokeTests::opensStartupProjectWithFeedbackAndHistory()
         QStringLiteral(
             "field-ready"),
         2000);
-    QVERIFY(validFields->isVisible());
+    QTRY_VERIFY_WITH_TIMEOUT(validFields->isVisible(), 1000);
     QTRY_VERIFY_WITH_TIMEOUT(
         validFields->hasFocus(),
         2000);
@@ -12620,6 +12620,9 @@ void GuiSmokeTests::deletesSelectedRowsAtomically()
     QString fieldDialogText;
     bool fieldDialogDefaultsToNo =
         false;
+    window.activateWindow();
+    fields->setFocus(Qt::OtherFocusReason);
+    QTRY_VERIFY_WITH_TIMEOUT(fields->hasFocus(), 1000);
     QTimer::singleShot(
         0, &window, [&] {
             auto* dialog =
@@ -12643,12 +12646,6 @@ void GuiSmokeTests::deletesSelectedRowsAtomically()
                       QMessageBox::Yes)
                 ->click();
         });
-    window.activateWindow();
-    fields->setFocus(
-        Qt::OtherFocusReason);
-    QTRY_VERIFY_WITH_TIMEOUT(
-        fields->hasFocus(),
-        1000);
     QTest::keyClick(
         fields,
         Qt::Key_Delete);
@@ -16703,8 +16700,9 @@ void GuiSmokeTests::showsUnifiedSyncStateAndGeneratedResults()
         }
     }
     const int failureTab = tabs->currentIndex();
-    const bool retryVisible = retry->isVisible();
     CloseHandle(lockedWorkbook);
+    QTRY_VERIFY_WITH_TIMEOUT(retry->isVisible(), 1000);
+    const bool retryVisible = retry->isVisible();
 
     QVERIFY(workbookFailed);
     QVERIFY(workbookFailure.contains(QStringLiteral("open in Excel")));
@@ -18394,7 +18392,7 @@ void GuiSmokeTests::detectsExternallyChangedGeneratedOutputs()
         generated->model()->index(markdownRow, 2)
             .data(Qt::ToolTipRole).toString()
             .contains(QStringLiteral("Retry outputs")));
-    QVERIFY(retry->isVisible());
+    QTRY_VERIFY_WITH_TIMEOUT(retry->isVisible(), 1000);
     QCOMPARE(tabs->currentIndex(), 1);
     QVERIFY(window.statusBar()->currentMessage().contains(
         QStringLiteral("changed outside Workbench")));

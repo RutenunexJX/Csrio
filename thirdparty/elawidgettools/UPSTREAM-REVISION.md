@@ -51,3 +51,26 @@ The active adapters are `src/app/workbench_controls.cpp`,
 `workbench_feedback.cpp`, `workbench_item_views.cpp`, `workbench_cell_editors.cpp`
 and `workbench_window_chrome.cpp`; the ZeroSlack adapter path above describes
 historical source provenance, not a build dependency.
+
+Apply `patches/11-regmap-native-capabilities.patch` after RegMap patch 10.
+This incrementally merges applicable shared patches 08/10/12/15/23/24/26/27
+from ZeroSlack `75180fad5e5f5142684cf092649deffe5720994d` and the xIPs
+patch-28 ElaListView style lifetime fix and the verified Wave patch-29 overlay
+origin-scrollbar/area lifetime fix. Patch 29 SHA-256:
+`c292256d9d23cc391b2a185b88d7335f79410ef08e491f727916829c627a88f8`.
+It does not replace the vendor tree.
+Existing RegMap semantic painting, scrollbar hit regions, feedback, tab ownership
+and AppBar fixes remain. Deferred application-owned combo/menu/toolbar/list
+styles supersede the older manual teardown sequences in the overlapping files.
+RegMap preserves its reduced-motion policy for menus and combo indicators.
+The same increment also includes shared patch 30, contributed by RegMap: add the
+Ela layout padding to Qt's freshly calculated popup endpoint and make repeated
+visible show requests idempotent, preventing last-row clipping and height growth.
+Patch 30 SHA-256: `e69b815ba035831e2a84484acb0c46f957c83f346fff230a8c2b3034d4a44046`.
+
+The native drawer, combo, menu, tree expansion and wheel contracts, local
+extensions and application boundaries are recorded in
+`docs/ela-native-capabilities.md`. Tree expansion observes the existing Qt private
+animation; exact Qt 6.10.2 remains required. Runtime ABI interface level is p27;
+patches 28/29/30 do not change public layout or signatures. Original MIT and font OFL license
+texts are unchanged; ZeroSlack Apache 2.0 attribution remains installed.

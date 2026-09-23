@@ -25,7 +25,7 @@ void prepareView(QAbstractItemView* view)
     view->setStyleSheet({});
     view->setTextElideMode(Qt::ElideRight);
     view->setFocusPolicy(Qt::StrongFocus);
-    styleScrollArea(view);
+    enableSmoothScrolling(view);
 }
 }
 #endif

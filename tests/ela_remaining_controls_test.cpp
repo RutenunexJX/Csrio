@@ -160,7 +160,19 @@ private slots:
         QApplication::sendEvent(editor->lineEdit(), &input);
         QCOMPARE(editor->currentText(), QString("uint24"));
         editor->showPopup();
+        QTest::qWait(220); // Capture after the 180 ms popup transition, not its 1px start.
         if (!output_.isEmpty()) QVERIFY(editor->view()->window()->grab().save(output_ + "/cell-popup.png"));
+        for (int row = 0; row < editor->count(); ++row) {
+            const auto rect = editor->view()->visualRect(editor->model()->index(row, 0));
+            QVERIFY(!rect.isEmpty());
+            if (!editor->view()->viewport()->rect().contains(rect))
+                qWarning() << "Popup row" << row << rect << "viewport" << editor->view()->viewport()->rect()
+                           << "popup" << editor->view()->window()->size();
+            QVERIFY(editor->view()->viewport()->rect().contains(rect));
+        }
+        QCOMPARE(editor->view()->font().pointSizeF(), 10.0);
+        editor->hidePopup();
+        editor->showPopup(); // Keep destruction-during-animation coverage.
         QPointer<QComboBox> guard(editor);
         delete editor;
         QVERIFY(guard.isNull());

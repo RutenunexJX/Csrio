@@ -1,6 +1,6 @@
 # Register Map Workbench
 
-Current version: `0.3.4`.
+Current version: `0.3.5`.
 
 Register Map Workbench is a standalone Qt desktop application for FPGA and SystemVerilog
 register-map development. Workbench, guarded `regmapc` property patches, and a controlled region
@@ -676,29 +676,29 @@ showing an empty `CMAKE_CXX_COMPILER` cannot configure the project; set the comp
 **Preferences > Kits > Compilers**, then select it in the kit and run **Build > Reconfigure
 Project**. Keep `REGMAP_BUILD_APP`, `REGMAP_BUILD_CLI`, and `REGMAP_BUILD_TESTS` enabled.
 
-### Windows portable package
+### Windows portable directory package
 
-Configure the Release preset once, then build the package target:
+Release 0.3.5 uses a clean directory staging for coordinated AppSuite publication,
+not a ZIP. Validate the test-enabled Release/ELA build, then configure a separate
+Release directory with the same Qt/compiler/SuiteApp dependencies and
+`REGMAP_UI_BACKEND=ELA` / `REGMAP_BUILD_TESTS=OFF`. Commit the validated sources and run:
 
 ```powershell
-cmake --preset dev-release -DCMAKE_PREFIX_PATH="C:\Qt\6.10.2\mingw_64"
-cmake --build --preset package-win
+./tests/stage_directory_package.ps1 -BuildDirectory build/ela-release-0.3.5
 ```
 
-The package target uses Qt's deployment API to collect the Qt plugins, MinGW runtime, and other
-runtime dependencies required by the built executable. It writes these files under `out`:
-
-```text
-RegMapWorkbench-<version>-win64-<git-revision>[-dirty|-source-unknown].zip
-RegMapWorkbench-<version>-win64-<git-revision>[-dirty|-source-unknown].zip.sha256
-```
-
-The archive contains `RegMapWorkbench.exe`, `regmapc.exe`, `README.md`, `docs/cli.md`,
-the Ela migration record and license notices, `BUILD-INFO.txt`, and the deployed libraries
-and plugins. `BUILD-INFO.txt` records the control backend, revision
-and whether tracked or untracked source changes existed at package time. A dirty package receives
-the `-dirty` filename suffix; a package whose source state could not be inspected receives
-`-source-unknown`. Neither can be mistaken for an artifact built exactly from the named commit.
+The script requires a clean checkout and Release/ELA/test-OFF cache, uses Qt's deployment
+API, and creates `out/RegMapWorkbench-<version>-<revision>-staging/RegMapWorkbench`.
+It refuses to overwrite existing staging. The directory contains both executables,
+Qt/MinGW libraries and plugins, documentation, Ela patches/attribution, runtime
+license notices, `BUILD-INFO.txt` with the full revision, and per-file `SHA256SUMS.txt`.
+The directory smoke check uses an isolated profile/project and a Windows-only PATH
+to verify executable version/help and CLI init/validate/generate/current contracts.
+It does not operate the desktop mouse. The coordinating task owns replacement of
+`AppSuite/Apps/RegMapWorkbench` and shared manifests; this script does not write them.
+The legacy archive target remains available for historical builds but is not used
+for this delivery. Only the Ela backend is maintained; older backends are retained
+for compatibility checks.
 `regmapc --json version` reports both its API version and supported project
 schema versions before a host opens a project.
 

@@ -52,3 +52,24 @@ Third-slice changes, 2026-09-22 (`patches/10-regmap-remaining-surfaces.patch`):
 - Win32 hit testing uses message coordinates and the current window's DPR;
   resize borders, caption controls, maximize work-area bounds and frame geometry
   are adapted for the pinned Qt 6.10.2 integration.
+
+Native-capability changes, 2026-09-24 (`patches/11-regmap-native-capabilities.patch`):
+
+- Incremental merge from committed ZeroSlack `75180fad5e5f5142684cf092649deffe5720994d`:
+  interruptible native combo/menu animations, smooth wheel contracts, tree style
+  factory/expansion interruption, host label palettes, bounded drawer snapshots
+  and content-dialog lifecycle. These include local compatibility APIs; they are
+  not represented as unmodified upstream components.
+- Deferred styles keep combo popups, menus and toolbar action widgets alive
+  through Qt destruction. The additional xIPs patch 28 applies this lifetime
+  contract to ElaListView; Wave patch 29 guards overlay origin bar/area pointers
+  and stops/hides the overlay when its original scrollbar is destroyed.
+  Public API/ABI remains at shared p27 capability level.
+- Shared patch 30 (RegMap contribution) accounts for Ela's popup content padding,
+  constrains the endpoint to the screen, and settles repeated visible show requests
+  without accumulating height. RegMap's reduced-motion branch remains intact.
+- RegMap reduced-motion, scrollbar groove/hit-area, semantic item content,
+  feedback, fixed result-tab ownership and AppBar patches remain intact.
+- App adapters retain precision editing, validation, model/undo/CLI/generator
+  contracts and protected examples. A small panel adapter restores requested
+  focus after content animation without owning business layout or transactions.

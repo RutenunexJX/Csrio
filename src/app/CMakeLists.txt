@@ -25,6 +25,7 @@ add_library(
     workbench_controls.hpp
     workbench_feedback.cpp
     workbench_item_views.cpp
+    workbench_panel_motion.cpp
     workbench_cell_editors.cpp
     workbench_window_chrome.cpp
 )
@@ -56,6 +57,7 @@ if(REGMAP_ENABLE_ELA)
         "${PROJECT_SOURCE_DIR}/thirdparty/elawidgettools/Font/FontAwesome-LICENSE.txt"
         DESTINATION licenses/ElaWidgetTools COMPONENT Runtime)
     install(FILES "${PROJECT_SOURCE_DIR}/docs/ela-migration.md"
+        "${PROJECT_SOURCE_DIR}/docs/ela-native-capabilities.md"
         DESTINATION docs COMPONENT Runtime)
     install(DIRECTORY "${PROJECT_SOURCE_DIR}/thirdparty/elawidgettools/patches"
         DESTINATION licenses/ElaWidgetTools COMPONENT Runtime)
@@ -111,6 +113,8 @@ if(WIN32)
         COMPONENT Runtime
     )
     install(FILES "${PROJECT_SOURCE_DIR}/README.md" DESTINATION . COMPONENT Runtime)
+    install(DIRECTORY "${PROJECT_SOURCE_DIR}/thirdparty/runtime-licenses/"
+        DESTINATION licenses COMPONENT Runtime)
     install(
         FILES "${PROJECT_SOURCE_DIR}/docs/cli.md"
         DESTINATION docs

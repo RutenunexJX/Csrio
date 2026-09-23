@@ -2,7 +2,7 @@ set(_regmap_revision "unknown")
 execute_process(
     COMMAND
         "@GIT_EXECUTABLE@" -C "@PROJECT_SOURCE_DIR@"
-        rev-parse --short=7 HEAD
+        rev-parse HEAD
     RESULT_VARIABLE _regmap_git_result
     OUTPUT_VARIABLE _regmap_git_output
     OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -47,6 +47,7 @@ Platform: @REGMAP_PACKAGE_PLATFORM@
 Build type: ${_regmap_build_type}
 Qt: @Qt6_VERSION@
 UI backend: @REGMAP_UI_BACKEND@
+Tests: @REGMAP_BUILD_TESTS@
 Compiler: @CMAKE_CXX_COMPILER_ID@ @CMAKE_CXX_COMPILER_VERSION@
 ")
 file(WRITE "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/BUILD-INFO.txt" "${_regmap_build_info}")
