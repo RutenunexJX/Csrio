@@ -4262,6 +4262,7 @@ MainWindow::MainWindow(QWidget* parent)
     buildUi();
     buildActions();
     connectSignals();
+    buildWorkflowActions();
     refreshRangeClipboardState();
     resize(1500, 920);
     restoreUiState();
@@ -5943,7 +5944,7 @@ void MainWindow::buildActions()
             }
         }
         controller_.reload();
-        if (!controller_.isDirty()) {
+        if (!controller_.isDirty() && !controller_.recoveryDraftDeferred()) {
             controller_.discardRecoveryDraft();
         }
     });
@@ -7001,7 +7002,7 @@ void MainWindow::connectSignals()
                 ignoreProgrammaticEditorSplitterMoves_) {
                 return;
             }
-            if (enumOnlyEditorLayout_ ||
+            if (compactLayout_ || enumOnlyEditorLayout_ ||
                 !WorkbenchControls::panelRequestedVisible(fieldPanel_)) {
                 return;
             }
@@ -8188,6 +8189,13 @@ bool MainWindow::eventFilter(
     QObject* watched,
     QEvent* event)
 {
+    if (watched == diffView_ && event->type() == QEvent::Show)
+        QTimer::singleShot(0, this, &MainWindow::refreshChangeDetails);
+    if (watched->property("requiresEditorCommit").toBool() &&
+        event->type() == QEvent::MouseButtonPress && !commitActiveEditor()) {
+        event->accept();
+        return true;
+    }
     const auto isViewportOf =
         [watched](const QAbstractItemView* view) {
             return view != nullptr &&
@@ -8628,9 +8636,10 @@ void MainWindow::updateResponsiveLayout()
         nextCompact
             ? Qt::Vertical
             : Qt::Horizontal;
-    if (editorSplitter_->orientation() !=
-        nextOrientation) {
-        if (uiStateRestoreComplete_ &&
+    const bool orientationChanged =
+        editorSplitter_->orientation() != nextOrientation;
+    if (orientationChanged) {
+        if (!compactLayout_ && !enumOnlyEditorLayout_ && uiStateRestoreComplete_ &&
             fieldPanel_ != nullptr &&
             WorkbenchControls::panelRequestedVisible(fieldPanel_)) {
             const QList<int> oldSizes =
@@ -8681,8 +8690,7 @@ void MainWindow::updateResponsiveLayout()
             !compactLayout_);
     }
     if (syncStateLabel_ != nullptr) {
-        syncStateLabel_->setVisible(
-            !compactLayout_);
+        syncStateLabel_->setVisible(true);
     }
     if (quickNavigationButton_ != nullptr) {
         quickNavigationButton_->setText(
@@ -8735,8 +8743,7 @@ void MainWindow::updateResponsiveLayout()
     if (saveSyncButton_ != nullptr) {
         fileStateLabel_->setFixedWidth(
             compactLayout_ ? 96 : 112);
-        syncStateLabel_->setFixedWidth(
-            compactLayout_ ? 0 : 250);
+        syncStateLabel_->setFixedWidth(compactLayout_ ? 190 : 250);
         saveSyncButton_->setText(
             QStringLiteral("Save + Sync"));
         synchronizeButton_->setText(
@@ -8765,6 +8772,15 @@ void MainWindow::updateResponsiveLayout()
     }
     updateHierarchyAddAction();
     updateContextBar();
+    updateFocusedEditorLayout();
+    if (orientationChanged && !compactLayout_ && !enumOnlyEditorLayout_ &&
+        WorkbenchControls::panelRequestedVisible(fieldPanel_)) {
+        const QSignalBlocker blocker(editorSplitter_);
+        const int total = std::max(2, editorSplitter_->width() - editorSplitter_->handleWidth());
+        const int inspector = std::clamp(
+            static_cast<int>(total * expandedEditorLowerFraction_ + 0.5), 1, total - 1);
+        editorSplitter_->setSizes({total - inspector, inspector});
+    }
     ensureSafeSplitterSizes();
     updateSyncPresentation();
 }
@@ -8785,7 +8801,7 @@ void MainWindow::ensureSafeSplitterSizes()
             }
             const int total =
                 sizes[0] + sizes[1];
-            if (total <= 1 ||
+            if (total <= 1 || !splitter->widget(0)->isVisible() ||
                 !splitter->widget(1)
                      ->isVisible()) {
                 return;
@@ -8850,6 +8866,8 @@ void MainWindow::updateProjectHeader(
             fileStateLabel_);
         fileStateLabel_->style()->polish(
             fileStateLabel_);
+        syncStateLabel_->setText(fileStateLabel_->text());
+        syncStateLabel_->setProperty("state", fileStateLabel_->property("state"));
         return;
     }
 
@@ -8970,7 +8988,7 @@ void MainWindow::saveUiState() const
         workspaceSplitter_->saveState());
     QByteArray editorState =
         expandedEditorSplitterState_;
-    if (!enumOnlyEditorLayout_ &&
+    if (!compactLayout_ && !enumOnlyEditorLayout_ &&
         WorkbenchControls::panelRequestedVisible(fieldPanel_)) {
         editorState = editorSplitter_->saveState();
     }
@@ -8982,7 +9000,7 @@ void MainWindow::saveUiState() const
         editorState);
     double editorLowerFraction =
         expandedEditorLowerFraction_;
-    if (!enumOnlyEditorLayout_ &&
+    if (!compactLayout_ && !enumOnlyEditorLayout_ &&
         WorkbenchControls::panelRequestedVisible(fieldPanel_)) {
         const QList<int> sizes =
             editorSplitter_->sizes();
@@ -9034,6 +9052,7 @@ void MainWindow::saveUiState() const
 void MainWindow::updateEditorPanelMode(
     bool hasOpenFieldEditor, bool hasEnumEditor)
 {
+    updateFocusedEditorLayout();
     const auto updateContextDescriptionVisibility =
         [this](const bool inspectorVisible) {
             if (pageDescriptionLabel_ ==
@@ -9057,7 +9076,7 @@ void MainWindow::updateEditorPanelMode(
     const bool returningFromEnumOnly =
         enumOnlyEditorLayout_ &&
         hasOpenFieldEditor;
-    if (!enumOnlyEditorLayout_ &&
+    if (!compactLayout_ && !enumOnlyEditorLayout_ &&
         WorkbenchControls::panelRequestedVisible(fieldPanel_)) {
         if (!preserveRestoredEditorState_) {
             expandedEditorSplitterState_ =
@@ -9357,7 +9376,7 @@ bool MainWindow::keepCurrentProjectIfSame(
 void MainWindow::promptRecoveryDraft()
 {
     const auto info =
-        controller_.recoveryDraftInfo();
+        controller_.recoveryDraftInfo(true);
     if (!info) {
         return;
     }
@@ -9489,16 +9508,40 @@ void MainWindow::promptRecoveryDraft()
             ? restoreDraft
             : later);
     dialog.setEscapeButton(later);
+    if (controller_.isDirty()) {
+        dialog.setText(dialog.text().replace("saved project", "current Workbench"));
+        dialog.setInformativeText(dialog.informativeText() +
+            QStringLiteral("\nCurrent values include your pending Workbench edits."));
+        if (restoreDiskConflicts) restoreDiskConflicts->setText("Use Current for Conflicts");
+    }
+    QStringList preview;
+    for (const auto& conflict : info->conflicts) {
+        preview << QStringLiteral("CONFLICT: %1 / %2\n  Current: %3\n  Draft: %4\n  Base: %5\n")
+            .arg(QString::fromStdString(conflict.objectName),
+                 QString::fromStdString(conflict.property),
+                 QString::fromStdString(conflict.rtlValue.value_or("<absent>")),
+                 QString::fromStdString(conflict.workbenchValue.value_or("<absent>")),
+                 QString::fromStdString(conflict.baseValue.value_or("<absent>")));
+    }
+    for (const auto& difference : info->differences) {
+        preview << QStringLiteral("%1 / %2\n  Current: %3\n  Draft: %4\n")
+            .arg(difference.path, difference.property, difference.before, difference.after);
+    }
+    dialog.setDetailedText(preview.join('\n'));
+    for (auto* button : dialog.buttons()) {
+        if (dialog.buttonRole(button) == QMessageBox::ActionRole && button != restoreDraft)
+            button->click();
+    }
     dialog.exec();
 
     if (dialog.clickedButton() ==
         restoreDraft) {
         if (!controller_.restoreRecoveryDraft(
                 regmap::MergePreference::
-                    workbench)) {
+                    workbench, info->revision)) {
             QMessageBox::warning(
                 this, QStringLiteral("Restore Recovery Draft"),
-                QStringLiteral("The recovery draft could not be restored."));
+                QStringLiteral("The recovery draft could not be restored. If the preview changed, open Recovery Draft again to review the latest values."));
         }
         return;
     }
@@ -9506,7 +9549,7 @@ void MainWindow::promptRecoveryDraft()
         restoreDiskConflicts) {
         if (!controller_.restoreRecoveryDraft(
                 regmap::MergePreference::
-                    rtl)) {
+                    rtl, info->revision)) {
             QMessageBox::warning(
                 this,
                 QStringLiteral(
@@ -9521,8 +9564,9 @@ void MainWindow::promptRecoveryDraft()
         statusBar()->showMessage(QStringLiteral("Recovery draft discarded"), 5000);
         return;
     }
+    controller_.deferRecoveryDraft();
     statusBar()->showMessage(
-        QStringLiteral("Recovery draft kept for the next project open"), 5000);
+        QStringLiteral("Recovery draft kept · Project > Recovery Draft opens it again"), 5000);
 }
 bool MainWindow::openStartupProjectPath(
     const QString& path,
@@ -9798,7 +9842,7 @@ bool MainWindow::refreshIncrementalEdit()
     if (const auto* reg = regmap::findRegister(
             *workspace, pendingIncrementalObjectId_);
         reg != nullptr &&
-        propertyAllowed({"description"})) {
+        propertyAllowed({"description", "access", "initial", "reset"})) {
         const int row = rowForObject(registerModel_, reg->id);
         if (row < 0) {
             return false;
@@ -9825,7 +9869,7 @@ bool MainWindow::refreshIncrementalEdit()
             return false;
         }
         const QScopedValueRollback refreshGuard(refreshing_, true);
-        const QSignalBlocker modelBlocker(registerModel_);
+        QSignalBlocker modelBlocker(registerModel_);
         std::uint64_t blockAddress = 0;
         std::uint64_t address = 0;
         const bool overflow =
@@ -9850,8 +9894,11 @@ bool MainWindow::refreshIncrementalEdit()
         setText(registerModel_, row, registerTagsColumn,
                 tagsText(reg->tags));
         setText(registerModel_, row, registerDescriptionColumn,
-                fromUtf8(reg->description));
+                 fromUtf8(reg->description));
         applyInlineDiagnosticsToRow(registerModel_, row, true);
+        modelBlocker.unblock();
+        Q_EMIT registerModel_->dataChanged(registerModel_->index(row, 0),
+            registerModel_->index(row, registerModel_->columnCount() - 1));
         if (reg->id == selectedRegisterId_) {
             bitfieldView_->setRegister(reg);
             if (openFieldsRegisterId_ == reg->id) {
@@ -9862,7 +9909,8 @@ bool MainWindow::refreshIncrementalEdit()
     } else if (const auto* field = regmap::findField(
                    *workspace, pendingIncrementalObjectId_);
                field != nullptr &&
-               propertyAllowed({"description"})) {
+                propertyAllowed({"description", "sw_access", "hw_access",
+                                 "read_side_effect", "write_side_effect"})) {
         const int row = rowForObject(fieldModel_, field->id);
         if (row < 0) {
             return false;
@@ -9888,7 +9936,7 @@ bool MainWindow::refreshIncrementalEdit()
             return false;
         }
         const QScopedValueRollback refreshGuard(refreshing_, true);
-        const QSignalBlocker modelBlocker(fieldModel_);
+        QSignalBlocker modelBlocker(fieldModel_);
         setText(fieldModel_, row, fieldMsbColumn,
                 QString::number(field->msb));
         setText(fieldModel_, row, fieldLsbColumn,
@@ -9923,6 +9971,9 @@ bool MainWindow::refreshIncrementalEdit()
             : std::nullopt;
         setText(fieldModel_, row, fieldResetColumn, valueText(reset));
         applyInlineDiagnosticsToRow(fieldModel_, row, false);
+        modelBlocker.unblock();
+        Q_EMIT fieldModel_->dataChanged(fieldModel_->index(row, 0),
+            fieldModel_->index(row, fieldModel_->columnCount() - 1));
         bitfieldView_->setRegister(owner);
         if (field->id == selectedFieldId_) {
             bitfieldView_->setSelectedField(field);
@@ -9958,6 +10009,7 @@ bool MainWindow::refreshIncrementalEdit()
 
 void MainWindow::refreshProject()
 {
+    updateNavigationActions();
     rebuildInlineDiagnosticIndex();
     const auto& manifestPath = controller_.manifestPath();
     if (manifestPath == displayedManifestPath_ &&
@@ -13545,6 +13597,8 @@ void MainWindow::updateSyncPresentation(const QString& message)
         syncStateLabel_->style()->unpolish(syncStateLabel_);
         syncStateLabel_->style()->polish(syncStateLabel_);
     }
+    syncStateLabel_->setFixedWidth(std::max(
+        compactLayout_ ? 190 : 250, syncStateLabel_->minimumSizeHint().width()));
     updateProjectHeader();
     updateOpenXlsxAction();
 }
@@ -13552,7 +13606,18 @@ void MainWindow::updateSyncPresentation(const QString& message)
 void MainWindow::updateRecoveryPresentation(
     const QString& message)
 {
+    if (recoveryDraftAction_)
+        recoveryDraftAction_->setEnabled(controller_.workspace() != nullptr);
     if (recoveryStateLabel_ == nullptr) {
+        return;
+    }
+    if (controller_.recoveryDraftDeferred()) {
+        recoveryStateLabel_->setText(controller_.isDirty()
+            ? QStringLiteral("Earlier draft kept · new edits not backed up")
+            : QStringLiteral("Earlier draft available · Project > Recovery Draft"));
+        recoveryStateLabel_->setToolTip(QStringLiteral(
+            "Review or discard the earlier draft in Project > Recovery Draft to resume automatic backups."));
+        recoveryStateLabel_->setVisible(true);
         return;
     }
     if (controller_.workspace() == nullptr ||
@@ -24010,7 +24075,7 @@ void MainWindow::deleteObject(const std::string& id)
     }
 }
 
-bool MainWindow::navigateToObject(
+bool MainWindow::navigateToObjectImpl(
     const std::string& id,
     const bool focusTarget)
 {
@@ -24597,6 +24662,7 @@ void MainWindow::refreshSearchCompletion()
             result);
     }
     if (searchQuery_.isEmpty()) {
+        if (auto* action = findChild<QAction*>("allResultsToolbarAction")) action->setVisible(false);
         searchResultLabel_->clear();
         searchResultLabel_->setProperty(
             "state", QStringLiteral("idle"));
@@ -24612,6 +24678,11 @@ void MainWindow::refreshSearchCompletion()
     }
     const bool hasMatches =
         !searchResults_.empty();
+    if (allSearchResultsButton_) {
+        allSearchResultsButton_->setVisible(hasMatches);
+        if (auto* action = findChild<QAction*>("allResultsToolbarAction")) action->setVisible(hasMatches);
+        allSearchResultsButton_->setText(QStringLiteral("All (%1)").arg(searchResults_.size()));
+    }
     searchResultLabel_->setText(
         hasMatches
             ? (searchResultIndex_ >= 0
@@ -24726,6 +24797,8 @@ void MainWindow::runSearch(bool reverse)
 
 void MainWindow::clearSearch()
 {
+    if (auto* action = findChild<QAction*>("allResultsToolbarAction")) action->setVisible(false);
+    if (allSearchResultsButton_) allSearchResultsButton_->hide();
     globalSearchEdit_->clear();
     searchQuery_.clear();
     lastTypedSearchText_.clear();
@@ -26038,7 +26111,8 @@ void MainWindow::updateAddressSpaceView()
         addressSpaceView_->sizeHint().height());
     if (addressSpaceScroll_ != nullptr) {
         addressSpaceScroll_->setVisible(
-            workspace != nullptr);
+            workspace != nullptr && (!compactLayout_ ||
+                (addressMapToggle_ && addressMapToggle_->isChecked())));
     }
 }
 

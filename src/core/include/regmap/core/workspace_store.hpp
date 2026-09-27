@@ -45,7 +45,7 @@ public:
 private:
     struct HistoryEntry {
         Workspace workspace;
-        std::string state;
+        std::string compressedState;
         std::string description;
     };
 

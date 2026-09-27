@@ -1,6 +1,6 @@
 # Register Map Workbench
 
-Current version: `0.3.5`.
+Current version: `0.3.6`.
 
 Register Map Workbench is a standalone Qt desktop application for FPGA and SystemVerilog
 register-map development. Workbench, guarded `regmapc` property patches, and a controlled region
@@ -145,6 +145,10 @@ contracts.
 - One visible **Save & Sync** action and a persistent state badge for unsaved, synchronizing,
   synchronized, blocked, partial-output-failure, and conflict states. Valid active text and Access
   choice cell editors are committed before saving; rejected edits block the save.
+  **More** groups the separate Generate and Sync RTL commands beside the primary action.
+  Narrow windows give an open Field/Enum editor the full editing area, with **Back to Registers**
+  returning to the selected Register. The address map and implicit Boolean values expand on demand;
+  wide windows retain the side-by-side editors and their saved proportions.
 - Per-output status and update time for XLSX, C header, and Markdown, with a direct retry action.
   Unsaved edits keep these rows visible as **Out of date**; Undo back to the saved model restores
   **Synchronized** without rewriting unchanged files.
@@ -153,6 +157,10 @@ contracts.
 - Global `Ctrl+F` search across pages, blocks, register/field names, addresses, tags, enum values,
   and descriptions. Matching object type and full Page/Block path appear in a selectable list;
   Enter/F3 still cycles results and selects the matching Workbench object.
+  **All (N)** or `Ctrl+Shift+F` opens every matching result, including matches beyond the first 40
+  suggestions, with object-type and Block filters. **Back** / **Forward** (`Ctrl+Alt+Left` /
+  `Ctrl+Alt+Right`) return through object jumps, restoring the selected cell, filters, open editor,
+  and scroll position within the current project.
 - Spreadsheet-style cell selection plus tab-separated copy and paste for editable table cells.
   Copy and matrix paste follow the columns currently visible on screen, so hidden detailed
   properties cannot consume an off-screen clipboard column. **Ctrl+A** selects only visible data
@@ -224,6 +232,9 @@ contracts.
   an explicit choice between disk and draft values; disk values are the default.
   Invalid, unchanged, or mismatched drafts cannot replace the loaded project, and restored source
   links continue to target that project.
+  The recovery dialog previews changed values and actual conflicts. **Not Now** keeps the earlier
+  draft available from **Project > Recovery Draft...** and prevents later autosaves from replacing
+  it. A changed project or draft invalidates the preview and requires reopening it before restoring.
   A persistent status badge distinguishes a pending crash backup, its last successful update, and
   a backup-write failure. Every state explicitly says that the project itself remains unsaved
   until **Save & Sync** completes.
@@ -373,6 +384,8 @@ contracts.
   user was working in. Activating a Removed Diff row explains that the object is no longer in
   the current model and identifies Undo (`Ctrl+Z`) as the recovery path instead of failing
   silently.
+  Selecting a Diff row shows its object path and property-level **Before** / **After** values.
+  Double-clicking a property or pressing Enter locates its editable cell when it still exists.
   Activating a Problem or Diff row, Favorite, or recent object places keyboard focus on the
   located Page, Block, Register, Field, or Enum value so editing can continue immediately.
   Problems and Diff are hidden when empty. The complete result area stays collapsed during normal

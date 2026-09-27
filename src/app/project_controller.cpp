@@ -11,6 +11,7 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QPointer>
 #include <QSaveFile>
 
 #include <algorithm>
@@ -51,17 +52,19 @@ namespace {
     if (!file.open(QIODevice::ReadOnly)) {
         return {};
     }
-    return QCryptographicHash::hash(
-        file.readAll(),
-        QCryptographicHash::Sha256);
+    QCryptographicHash digest(QCryptographicHash::Sha256);
+    return digest.addData(&file) ? digest.result() : QByteArray{};
 }
 
 [[nodiscard]] bool writeRecoveryMetadata(
     const std::filesystem::path& metadataPath,
-    const std::filesystem::path& basePath,
-    const std::filesystem::path& draftPath,
+    const QByteArray& baseDigest,
+    const QByteArray& draftDigest,
     std::string_view workspaceId)
 {
+    if (baseDigest.isEmpty() || draftDigest.isEmpty()) {
+        return false;
+    }
     QSaveFile file(
         fromPath(
             metadataPath));
@@ -80,13 +83,11 @@ namespace {
         {QStringLiteral(
              "base_sha256"),
          QString::fromLatin1(
-             fileDigest(basePath)
-                 .toHex())},
+             baseDigest.toHex())},
         {QStringLiteral(
              "draft_sha256"),
          QString::fromLatin1(
-             fileDigest(draftPath)
-                 .toHex())},
+             draftDigest.toHex())},
     };
     const QByteArray content =
         QJsonDocument(
@@ -305,6 +306,10 @@ bool ProjectController::generatedArtifactIsCurrent(
     if (index >= artifacts_.size()) {
         return false;
     }
+    if (generatedStateSnapshot_ &&
+        generatedStateSnapshot_->revision == artifactsRevision_) {
+        return generatedStateSnapshot_->current[index];
+    }
     return regmap::inspectGeneratedArtifact(
                artifacts_[index])
         .synchronized();
@@ -360,7 +365,7 @@ bool ProjectController::recoveryDraftAvailable() const
 }
 
 std::optional<RecoveryDraftInfo>
-ProjectController::recoveryDraftInfo() const
+ProjectController::recoveryDraftInfo(bool includePreview) const
 {
     const auto* current = store_.workspace();
     if (manifestPath_.empty() || current == nullptr) {
@@ -385,6 +390,16 @@ ProjectController::recoveryDraftInfo() const
     }
 
     RecoveryDraftInfo info;
+    if (includePreview) {
+        info.differences = regmap::ui::inspectDifferences(*current, *loaded.workspace);
+        const QByteArray currentState = QByteArray::fromStdString(
+            regmap::serializeWorkspaceState(*current, false));
+        const QByteArray draftState = QByteArray::fromStdString(
+            regmap::serializeWorkspaceState(*loaded.workspace, false));
+        info.revision = QCryptographicHash::hash(currentState + draftState +
+            fileDigest(recoveryBasePathFor(manifestPath_)) +
+            fileDigest(recoveryMetadataPathFor(manifestPath_)), QCryptographicHash::Sha256);
+    }
     if (const auto base =
             loadRecoveryDraftBase();
         base &&
@@ -407,6 +422,7 @@ ProjectController::recoveryDraftInfo() const
                     workbench);
         info.conflictCount =
             merge.conflicts.size();
+        if (includePreview) info.conflicts = merge.conflicts;
     } else {
         const QDateTime savedModified =
             recoveryBaseModified_.isValid()
@@ -421,6 +437,28 @@ ProjectController::recoveryDraftInfo() const
                 savedModified;
     }
     return info;
+}
+
+std::vector<regmap::ui::PropertyDifference> ProjectController::changeDetails(
+    const QString& origin, const QString& objectId) const
+{
+    const auto* current = store_.workspace();
+    if (!current) return {};
+    if (origin == "saved" && store_.savedWorkspace())
+        return regmap::ui::inspectDifferences(*store_.savedWorkspace(), *current, objectId);
+    if (origin == "external" && externalWorkspace_)
+        return regmap::ui::inspectDifferences(*current, *externalWorkspace_, objectId);
+    if (origin == "rtl" && baseline_)
+        return regmap::ui::inspectDifferences(*baseline_, *current, objectId);
+    return {};
+}
+
+void ProjectController::deferRecoveryDraft()
+{
+    recoveryDraftDeferred_ = true;
+    recoveryDraftTimer_.stop();
+    emit recoveryDraftStatusChanged(QStringLiteral(
+        "Earlier recovery draft kept; use Project > Recovery Draft to review it"));
 }
 
 QDateTime ProjectController::recoveryDraftModified() const
@@ -574,14 +612,18 @@ void ProjectController::deferExternalProjectReload()
 }
 
 bool ProjectController::restoreRecoveryDraft(
-    regmap::MergePreference conflictPreference)
+    regmap::MergePreference conflictPreference, const QByteArray& expectedRevision)
 {
     const auto* current = store_.workspace();
     if (manifestPath_.empty() || current == nullptr) {
         return false;
     }
-    const auto info =
-        recoveryDraftInfo();
+    const auto info = recoveryDraftInfo(!expectedRevision.isEmpty());
+    if (!expectedRevision.isEmpty() && (!info || info->revision != expectedRevision)) {
+        emit recoveryDraftStatusChanged(QStringLiteral(
+            "Recovery preview changed; open Recovery Draft again before choosing values"));
+        return false;
+    }
     if (!info) {
         emit recoveryDraftStatusChanged(
             QStringLiteral(
@@ -634,6 +676,7 @@ bool ProjectController::restoreRecoveryDraft(
                 "result is already current"));
         return true;
     }
+    recoveryDraftDeferred_ = false;
     notifyModelEdited();
     QString message =
         info->mergeBaseAvailable &&
@@ -668,6 +711,7 @@ bool ProjectController::restoreRecoveryDraft(
 
 void ProjectController::discardRecoveryDraft()
 {
+    recoveryDraftDeferred_ = false;
     discardRecoveryDraft(manifestPath_);
 }
 
@@ -696,6 +740,7 @@ void ProjectController::discardRecoveryDraft(
 
 void ProjectController::writeRecoveryDraft()
 {
+    if (recoveryDraftDeferred_) return;
     if (!manifest_ || !store_.workspace() || !store_.dirty()) {
         return;
     }
@@ -712,12 +757,18 @@ void ProjectController::writeRecoveryDraft()
     draftManifest.manifestPath =
         draftPath;
     std::vector<regmap::Diagnostic> diagnostics;
+    QByteArray baseDigest;
     if (recoveryBaseWorkspace_) {
-        appendDiagnostics(
-            diagnostics,
-            regmap::saveSyncBaseline(
-                basePath,
-                *recoveryBaseWorkspace_));
+        baseDigest = fileDigest(basePath);
+        if (recoveryBaseDigest_.isEmpty() || baseDigest != recoveryBaseDigest_) {
+            appendDiagnostics(
+                diagnostics,
+                regmap::saveSyncBaseline(basePath, *recoveryBaseWorkspace_));
+            if (!containsErrors(diagnostics)) {
+                baseDigest = fileDigest(basePath);
+                recoveryBaseDigest_ = baseDigest;
+            }
+        }
     }
     appendDiagnostics(
         diagnostics,
@@ -729,8 +780,8 @@ void ProjectController::writeRecoveryDraft()
         recoveryBaseWorkspace_.has_value() &&
         writeRecoveryMetadata(
             metadataPath,
-            basePath,
-            draftPath,
+            baseDigest,
+            fileDigest(draftPath),
             store_.workspace()->id);
     emit recoveryDraftStatusChanged(
         containsErrors(diagnostics)
@@ -829,8 +880,11 @@ bool ProjectController::openProject(const QString& manifestPath)
     store_ = regmap::WorkspaceStore {};
     baseline_.reset();
     recoveryBaseWorkspace_.reset();
+    recoveryBaseDigest_.clear();
     initialSyncChoicePending_ = false;
+    recoveryDraftDeferred_ = false;
     artifacts_.clear();
+    ++artifactsRevision_;
     changes_.clear();
     savedChanges_.clear();
     externalChanges_.clear();
@@ -912,6 +966,7 @@ void ProjectController::reloadImpl(
         rebuildSavedChanges();
         recoveryBaseWorkspace_ =
             *store_.workspace();
+        recoveryBaseDigest_.clear();
         acceptedManifestDigest_ =
             loadedDigest;
         acceptedManifestDigestKnown_ =
@@ -923,6 +978,7 @@ void ProjectController::reloadImpl(
         }
         lastAcceptedModelWasValid_ = true;
         artifacts_.clear();
+        ++artifactsRevision_;
         generationDiagnostics_.clear();
         initializeSynchronization();
         rebuildDiagnostics();
@@ -1365,8 +1421,9 @@ bool ProjectController::persistSynchronizedModel(
     rebuildSavedChanges();
     recoveryBaseWorkspace_ =
         *store_.workspace();
+    recoveryBaseDigest_.clear();
     recoveryDraftTimer_.stop();
-    if (!keepRecoveryDraft) {
+    if (!keepRecoveryDraft && !recoveryDraftDeferred_) {
         discardRecoveryDraft();
         recoveryBaseModified_ =
             QFileInfo(fromPath(manifestPath_))
@@ -1436,6 +1493,7 @@ void ProjectController::generateImpl(bool automatic)
     }
     auto generation = regmap::generateArtifacts(*store_.workspace(), *manifest_);
     artifacts_ = std::move(generation.artifacts);
+    ++artifactsRevision_;
     generationDiagnostics_ = std::move(generation.diagnostics);
     if (!containsErrors(generationDiagnostics_)) {
         appendDiagnostics(
@@ -1547,7 +1605,7 @@ void ProjectController::notifyModelEdited()
         recoveryDraftTimer_.start();
     } else {
         recoveryDraftTimer_.stop();
-        discardRecoveryDraft();
+        if (!recoveryDraftDeferred_) discardRecoveryDraft();
     }
 
     rebuildDiagnostics();
@@ -1841,13 +1899,22 @@ void ProjectController::refreshGeneratedFileState()
 {
     refreshWatchPaths();
     std::size_t changedCount = 0;
+    GeneratedStateSnapshot snapshot{artifactsRevision_, {}};
+    snapshot.current.reserve(artifacts_.size());
     for (std::size_t index = 0;
          index < artifacts_.size(); ++index) {
-        if (!generatedArtifactIsCurrent(index)) {
+        const bool current = regmap::inspectGeneratedArtifact(artifacts_[index]).synchronized();
+        snapshot.current.push_back(current);
+        if (!current) {
             ++changedCount;
         }
     }
+    // Reuse this inspection only while notifying views, never across file events.
+    const QPointer<ProjectController> guard(this);
+    auto previousSnapshot = std::exchange(generatedStateSnapshot_, std::move(snapshot));
     emit generationChanged();
+    if (!guard) return;
+    generatedStateSnapshot_ = std::move(previousSnapshot);
     if (changedCount == 0) {
         return;
     }

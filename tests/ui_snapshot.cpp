@@ -469,7 +469,7 @@ int main(int argumentCount, char* arguments[])
                     96) ||
                 !criticalControlIsVisible(
                     QStringLiteral(
-                        "fileStateBadge"),
+                        "syncStateBadge"),
                     60) ||
                 (showResults &&
                  !criticalControlIsVisible(
@@ -478,12 +478,8 @@ int main(int argumentCount, char* arguments[])
                      70)) ||
                 !criticalControlIsVisible(
                     QStringLiteral(
-                        "generateButton"),
-                    88) ||
-                !criticalControlIsVisible(
-                    QStringLiteral(
-                        "synchronizeButton"),
-                    86) ||
+                        "moreProjectButton"),
+                    40) ||
                 !criticalControlIsVisible(
                     QStringLiteral(
                         "saveSyncButton"),
@@ -553,6 +549,7 @@ int main(int argumentCount, char* arguments[])
                     if (WorkbenchControls::backend() == WorkbenchControls::Backend::ela) {
                         for (const auto* name : {"registerPanelScroll", "fieldPanelScroll"}) {
                             auto* scroll = window.findChild<QScrollArea*>(name);
+                            if (scroll && !scroll->isVisible()) continue;
                             if (!scroll || !scroll->widget() ||
                                 scroll->widget()->height() < scroll->widget()->minimumSizeHint().height() ||
                                 scroll->widget()->width() < scroll->widget()->minimumSizeHint().width()) {
@@ -574,9 +571,9 @@ int main(int argumentCount, char* arguments[])
                             result = 15; application.exit(result); return;
                         }
                         auto* registers = window.findChild<QTableView*>("registerView");
-                        if (!registers || registers->height() < 104 ||
+                        if (!registers || (registers->isVisible() && (registers->height() < 104 ||
                             !registers->parentWidget()->rect().contains(registers->geometry()) ||
-                            registers->viewport()->height() < registers->verticalHeader()->defaultSectionSize()) {
+                            registers->viewport()->height() < registers->verticalHeader()->defaultSectionSize()))) {
                             QTextStream(stderr) << "Register table lost its visible data row\n";
                             result = 16; application.exit(result); return;
                         }

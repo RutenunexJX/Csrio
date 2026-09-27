@@ -111,6 +111,13 @@ void ElaDrawerContainer::setEdge(Qt::Edge edge)
 void ElaDrawerContainer::finishAnimation()
 {
     if (_settling || _preparing) return;
+    if (!isAnimating() && _pContainerPix.isNull() &&
+        _pOpacity == (_expanded ? 1 : 0) && _isShowBorder == _expanded &&
+        minimumHeight() == 0 && maximumHeight() == (_expanded ? QWIDGETSIZE_MAX : 0) &&
+        _containerWidget->isHidden() == !_expanded &&
+        _containerWidget->geometry() == rect()) {
+        return;
+    }
     _settling = true;
     const bool wasAnimating = isAnimating() || !_pContainerPix.isNull();
     _animation->stop();
@@ -122,7 +129,6 @@ void ElaDrawerContainer::finishAnimation()
     setMaximumHeight(_expanded ? QWIDGETSIZE_MAX : 0);
     _containerWidget->setVisible(_expanded);
     _containerWidget->setGeometry(rect());
-    updateGeometry();
     update();
     _settling = false;
     if (wasAnimating) Q_EMIT animationFinished(_expanded);

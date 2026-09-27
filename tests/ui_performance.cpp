@@ -10,6 +10,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLineEdit>
+#include <QMap>
 #include <QTest>
 #include <algorithm>
 #include <functional>
@@ -20,12 +21,18 @@ public:
     QWidget* root{};
     int paints{};
     int layouts{};
+    QMap<QString, int> layoutTargets;
     bool eventFilter(QObject* object, QEvent* event) override
     {
         auto* widget = qobject_cast<QWidget*>(object);
         if (root && widget && (widget == root || root->isAncestorOf(widget))) {
             paints += event->type() == QEvent::Paint;
             layouts += event->type() == QEvent::LayoutRequest;
+            if (event->type() == QEvent::LayoutRequest) {
+                const QString key = QString::fromLatin1(widget->metaObject()->className()) +
+                    ':' + widget->objectName();
+                ++layoutTargets[key];
+            }
         }
         return false;
     }
@@ -36,6 +43,7 @@ QJsonObject measure(UiEvents& events, const std::function<void(int)>& action)
     QJsonArray samples;
     std::vector<double> elapsed;
     events.paints = events.layouts = 0;
+    events.layoutTargets.clear();
     for (int iteration = 0; iteration < 24; ++iteration) {
         QElapsedTimer timer;
         timer.start();
@@ -46,9 +54,13 @@ QJsonObject measure(UiEvents& events, const std::function<void(int)>& action)
         samples.append(dispatch);
     }
     std::sort(elapsed.begin(), elapsed.end());
+    QJsonObject layoutTargets;
+    for (auto it = events.layoutTargets.cbegin(); it != events.layoutTargets.cend(); ++it)
+        layoutTargets.insert(it.key(), it.value());
     return {{"dispatchMs", samples}, {"medianDispatchMs", elapsed[12]},
             {"p95DispatchMs", elapsed[22]}, {"maxDispatchMs", elapsed.back()},
-            {"paintEvents", events.paints}, {"layoutEvents", events.layouts}};
+            {"paintEvents", events.paints}, {"layoutEvents", events.layouts},
+            {"layoutTargets", layoutTargets}};
 }
 }
 

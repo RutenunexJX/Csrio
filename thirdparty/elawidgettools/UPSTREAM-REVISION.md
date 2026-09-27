@@ -74,3 +74,8 @@ extensions and application boundaries are recorded in
 animation; exact Qt 6.10.2 remains required. Runtime ABI interface level is p27;
 patches 28/29/30 do not change public layout or signatures. Original MIT and font OFL license
 texts are unchanged; ZeroSlack Apache 2.0 attribution remains installed.
+
+Apply `patches/12-regmap-drawer-settling.patch` after patch 11 for the
+2026-09-27 local performance update. It makes settled drawer completion
+idempotent and removes redundant geometry invalidation; the public ABI,
+animation endpoints, licensing and upstream revision remain unchanged.

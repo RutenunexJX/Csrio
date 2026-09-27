@@ -87,7 +87,7 @@ private slots:
             window.resize(size); QTest::qWait(30); QCOMPARE(window.size(), size);
             auto* header = window.findChild<QWidget*>("pageHeader"); QVERIFY(header);
             QList<QRect> occupied;
-            for (const auto* name : {"generateButton", "synchronizeButton", "saveSyncButton", "fileStateBadge", "syncStateBadge"}) {
+            for (const auto* name : {"moreProjectButton", "saveSyncButton", "syncStateBadge"}) {
                 auto* widget = window.findChild<QWidget*>(name); QVERIFY(widget);
                 if (!widget->isVisibleTo(&window)) continue;
                 QRect bounds(widget->mapTo(header, QPoint(0, 0)), widget->size());
@@ -99,7 +99,7 @@ private slots:
             }
             QVERIFY(window.grab().save(output + QString("/window-%1.png").arg(size.width())));
         }
-        auto* generate = window.findChild<QToolButton*>("generateButton"); QVERIFY(generate);
+        auto* generate = window.findChild<QToolButton*>("saveSyncButton"); QVERIFY(generate);
         QSignalSpy clicks(generate, &QToolButton::clicked);
         generate->setEnabled(false);
         QTest::mouseClick(generate, Qt::LeftButton); QTest::keyClick(generate, Qt::Key_Space);
@@ -191,14 +191,15 @@ private slots:
             auto* reg = regmap::findRegister(workspace, "reg-control");
             if (reg) reg->description = "Pilot status lifecycle update";
         }));
-        QTRY_COMPARE(fileBadge->property("state").toString(), QString("dirty"));
-        QVERIFY(!fileBadge->toolTip().isEmpty());
-        auto* accessible = QAccessible::queryAccessibleInterface(fileBadge);
+        QTRY_COMPARE(syncBadge->property("state").toString(), QString("dirty"));
+        QVERIFY(!syncBadge->toolTip().isEmpty());
+        QVERIFY(!fileBadge->isVisible());
+        auto* accessible = QAccessible::queryAccessibleInterface(syncBadge);
         QVERIFY(accessible); QVERIFY(!accessible->text(QAccessible::Name).isEmpty());
-        QCOMPARE(fileBadge->focusPolicy(), Qt::NoFocus);
+        QCOMPARE(syncBadge->focusPolicy(), Qt::NoFocus);
         QVERIFY(window.grab().save(output + "/dirty.png"));
         controller->save();
-        QTRY_COMPARE(fileBadge->property("state").toString(), QString("saved"));
+        QTRY_COMPARE(syncBadge->property("state").toString(), QString("synced"));
         QVERIFY(!controller->isDirty());
         QVERIFY(!syncBadge->accessibleName().isEmpty());
         QVERIFY(window.grab().save(output + "/saved.png"));

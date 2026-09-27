@@ -1,5 +1,7 @@
 #pragma once
 
+#include "workspace_inspection.hpp"
+
 #include "regmap/core/diagnostic.hpp"
 #include "regmap/core/external_changes.hpp"
 #include "regmap/core/generation.hpp"
@@ -34,6 +36,9 @@ struct RecoveryDraftInfo {
     bool mergeBaseAvailable{false};
     bool projectChangedSinceDraft{false};
     std::size_t conflictCount{0};
+    std::vector<regmap::MergeConflict> conflicts;
+    std::vector<regmap::ui::PropertyDifference> differences;
+    QByteArray revision;
 };
 
 class ProjectController final : public QObject {
@@ -67,7 +72,11 @@ public:
     [[nodiscard]] bool requiresInitialSyncChoice() const noexcept;
     [[nodiscard]] bool recoveryDraftAvailable() const;
     [[nodiscard]] std::optional<RecoveryDraftInfo>
-    recoveryDraftInfo() const;
+    recoveryDraftInfo(bool includePreview = false) const;
+    [[nodiscard]] std::vector<regmap::ui::PropertyDifference> changeDetails(
+        const QString& origin, const QString& objectId) const;
+    void deferRecoveryDraft();
+    [[nodiscard]] bool recoveryDraftDeferred() const noexcept { return recoveryDraftDeferred_; }
     [[nodiscard]] QDateTime recoveryDraftModified() const;
     [[nodiscard]] bool hasExternalProjectChange() const noexcept;
     [[nodiscard]] std::uint64_t externalChangeGeneration() const noexcept;
@@ -87,7 +96,8 @@ public:
         QString* failureReason = nullptr);
     bool restoreRecoveryDraft(
         regmap::MergePreference conflictPreference =
-            regmap::MergePreference::workbench);
+            regmap::MergePreference::workbench,
+        const QByteArray& expectedRevision = {});
     void discardRecoveryDraft();
     void discardRecoveryDraft(const std::filesystem::path& projectPath);
     void deferExternalProjectReload();
@@ -135,6 +145,8 @@ private:
     QTimer recoveryDraftTimer_;
     QDateTime recoveryBaseModified_;
     QByteArray acceptedManifestDigest_;
+    QByteArray recoveryBaseDigest_;
+    bool recoveryDraftDeferred_{false};
     bool acceptedManifestDigestKnown_{false};
     QSet<QString> pendingFiles_;
     QHash<QString, std::pair<qint64, QDateTime>> fileSnapshots_;
@@ -148,6 +160,12 @@ private:
     std::vector<regmap::Diagnostic> generationDiagnostics_;
     std::vector<regmap::Diagnostic> diagnostics_;
     std::vector<regmap::GeneratedArtifact> artifacts_;
+    struct GeneratedStateSnapshot {
+        std::uint64_t revision;
+        std::vector<bool> current;
+    };
+    std::uint64_t artifactsRevision_{0};
+    std::optional<GeneratedStateSnapshot> generatedStateSnapshot_;
     std::vector<regmap::ModelChange> changes_;
     std::vector<regmap::ModelChange> savedChanges_;
     std::vector<regmap::ModelChange> externalChanges_;

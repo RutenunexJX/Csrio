@@ -22,6 +22,13 @@ target_compile_definitions(
 )
 regmap_enable_warnings(regmap_core_tests)
 
+qt_add_executable(regmap_workspace_performance workspace_performance.cpp)
+target_link_libraries(regmap_workspace_performance PRIVATE RegMap::Core)
+if(WIN32)
+    target_link_libraries(regmap_workspace_performance PRIVATE psapi)
+endif()
+regmap_enable_warnings(regmap_workspace_performance)
+
 add_test(NAME regmap_core_tests COMMAND regmap_core_tests)
 set_tests_properties(
     regmap_core_tests
@@ -80,6 +87,14 @@ endif()
 
 if(TARGET RegMap::WorkbenchUi)
     find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets)
+    qt_add_executable(regmap_usability_tests usability_tests.cpp)
+    set_target_properties(regmap_usability_tests PROPERTIES AUTOMOC ON)
+    target_link_libraries(regmap_usability_tests PRIVATE RegMap::WorkbenchUi Qt6::Test)
+    regmap_enable_warnings(regmap_usability_tests)
+    add_test(NAME regmap_usability_tests COMMAND regmap_usability_tests)
+    set_tests_properties(regmap_usability_tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
     qt_add_executable(regmap_gui_tests gui_smoke_tests.cpp)
     set_target_properties(regmap_gui_tests PROPERTIES AUTOMOC ON)
     target_link_libraries(

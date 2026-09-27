@@ -8,7 +8,10 @@ add_library(
     bitfield_view.cpp
     bitfield_view.hpp
     main_window.cpp
+    main_window_workflows.cpp
     main_window.hpp
+    workspace_inspection.cpp
+    workspace_inspection.hpp
     project_controller.cpp
     project_controller.hpp
     source_navigation.cpp

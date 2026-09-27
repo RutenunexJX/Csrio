@@ -260,6 +260,8 @@ private slots:
     void movesSelectedRegistersTogether();
     void reordersRegistersWithKeyboardAndNormalizesMixedLocks();
     void recoversAutosavedDrafts();
+    void reusesAndRepairsRecoveryBaseline();
+    void doesNotCacheOutputChecksAcrossRefreshes();
     void showsPersistentRecoveryDraftState();
     void mergesRecoveryDraftsAfterExternalChanges();
     void persistsFavoritesRecentAndShowsAddressOccupancy();
@@ -1224,10 +1226,10 @@ void GuiSmokeTests::structuresCompetitionShellResponsively()
     QVERIFY(pageDescription != nullptr);
     const auto& density = WorkbenchTheme::metrics();
     // QSS min-height excludes the border; verify the rendered control bounds.
-    QVERIFY(generate->height() >= density.standardControlHeight);
-    QVERIFY(synchronize->height() >= density.primaryControlHeight);
+    QVERIFY(!generate->isVisible());
+    QVERIFY(!synchronize->isVisible());
     QVERIFY(save->height() >= density.primaryControlHeight);
-    for (auto* button : {generate, synchronize, save}) {
+    for (auto* button : {save}) {
         QVERIFY(button->height() >= button->minimumSizeHint().height());
         QVERIFY(button->width() >= button->minimumSizeHint().width());
         QVERIFY(pageHeader->rect().contains(QRect(button->mapTo(pageHeader, QPoint()), button->size())));
@@ -1246,7 +1248,7 @@ void GuiSmokeTests::structuresCompetitionShellResponsively()
              Qt::Horizontal);
     QVERIFY(pageDescription->isVisible());
     for (QToolButton* action :
-         {generate, synchronize, save}) {
+         {save}) {
         QVERIFY(action->width() >=
                 action->minimumWidth());
         QVERIFY(action->width() >=
@@ -1273,12 +1275,13 @@ void GuiSmokeTests::structuresCompetitionShellResponsively()
              QSize(960, 720));
     QVERIFY(!projectPath->isVisible());
     QVERIFY(!pageDescription->isVisible());
-    QVERIFY(fileState->isVisible());
-    QVERIFY(!syncState->isVisible());
-    QVERIFY(generate->isVisible());
-    QVERIFY(synchronize->isVisible());
+    QVERIFY(!fileState->isVisible());
+    QVERIFY(syncState->isVisible());
+    QVERIFY(!generate->isVisible());
+    QVERIFY(!synchronize->isVisible());
     QVERIFY(save->isVisible());
     QVERIFY(summary->isVisible());
+    QTRY_COMPARE_WITH_TIMEOUT(editor->sizes()[0], 0, 2000);
     const QList<int> workspaceSizes =
         workspace->sizes();
     const QList<int> editorSizes =
@@ -1287,12 +1290,10 @@ void GuiSmokeTests::structuresCompetitionShellResponsively()
     QCOMPARE(editorSizes.size(), 2);
     QVERIFY(workspaceSizes[0] >= 190);
     QVERIFY(workspaceSizes[1] >= 360);
-    QVERIFY(editorSizes[0] >= 150);
-    QVERIFY(editorSizes[1] >= 150);
+    QCOMPARE(editorSizes[0], 0);
+    QVERIFY(editorSizes[1] >= 300);
     for (QWidget* action :
-         {static_cast<QWidget*>(generate),
-          static_cast<QWidget*>(synchronize),
-          static_cast<QWidget*>(save)}) {
+         {static_cast<QWidget*>(save)}) {
         const QRect actionRect(
             action->mapTo(pageHeader,
                           QPoint(0, 0)),
@@ -1320,13 +1321,11 @@ void GuiSmokeTests::structuresCompetitionShellResponsively()
     QVERIFY(fileState->text().startsWith(
         QStringLiteral("Dirty · ")));
     const QRect fileStateRect(
-        fileState->mapTo(pageHeader,
+        syncState->mapTo(pageHeader,
                          QPoint(0, 0)),
-        fileState->size());
+        syncState->size());
     for (QWidget* action :
-         {static_cast<QWidget*>(generate),
-          static_cast<QWidget*>(synchronize),
-          static_cast<QWidget*>(save)}) {
+         {static_cast<QWidget*>(save)}) {
         const QRect actionRect(
             action->mapTo(pageHeader,
                           QPoint(0, 0)),
@@ -1529,8 +1528,8 @@ void GuiSmokeTests::boundsInvalidPersistedSplitterState()
         editor->widget(1)->isVisible(),
         2000);
     QTRY_VERIFY_WITH_TIMEOUT(
-        editor->sizes()[0] >= 150 &&
-            editor->sizes()[1] >= 150,
+        editor->sizes()[0] == 0 &&
+            editor->sizes()[1] >= 300,
         2000);
     QVERIFY(workspace->sizes()[0] >= 190);
     QVERIFY(workspace->sizes()[1] >= 360);
@@ -3068,7 +3067,7 @@ void GuiSmokeTests::opensProjectAndPopulatesEditableViews()
     QVERIFY(tabs->isTabVisible(1));
     QVERIFY(!tabs->isTabVisible(2));
     const QList<QSplitter*> splitters = window.findChildren<QSplitter*>();
-    QCOMPARE(splitters.size(), 3);
+    QCOMPARE(splitters.size(), 4);
     for (const auto* splitter : splitters) {
         QCOMPARE(
             splitter->childrenCollapsible(),
@@ -3107,7 +3106,7 @@ void GuiSmokeTests::persistsWorkbenchLayoutPreferences()
     {
         MainWindow first;
         QVERIFY(first.openProjectPath(manifest));
-        first.resize(700, 650);
+        first.resize(1440, 900);
         first.move(20, 20);
         first.show();
         first.activateWindow();
@@ -3309,6 +3308,9 @@ void GuiSmokeTests::persistsWorkbenchLayoutPreferences()
     MainWindow restored;
     QVERIFY(restored.openProjectPath(manifest));
     QVERIFY(restored.saveGeometry() != defaultGeometry);
+    // Offscreen platforms can clamp restored geometry to their virtual screen.
+    // Compare the saved wide-layout proportions at the same viewport size.
+    restored.resize(1440, 900);
     restored.show();
     restored.activateWindow();
     QTest::qWait(50);
@@ -3577,6 +3579,10 @@ void GuiSmokeTests::keepsEnumEditorCompact()
         fieldPanel->height() >
             enumPanel->height() + 40,
         2000);
+    QTRY_COMPARE_WITH_TIMEOUT(editor->sizes()[0], 0, 2000);
+    window.resize(1200, 800);
+    QTRY_COMPARE_WITH_TIMEOUT(editor->orientation(), Qt::Horizontal, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(registers->isVisible(), 2000);
     const QList<int> restoredSizes =
         editor->sizes();
     QCOMPARE(restoredSizes.size(), 2);
@@ -3593,6 +3599,7 @@ void GuiSmokeTests::keepsEnumEditorCompact()
     QVERIFY(enumPanel->y() >
             fields->geometry().bottom());
 
+    window.resize(960, 720);
     closeFields->click();
     QTRY_VERIFY_WITH_TIMEOUT(
         !fieldPanel->isVisible(), 2000);
@@ -3728,6 +3735,11 @@ void GuiSmokeTests::customizesImplicitBooleanValuesInPlace()
         registers->visualRect(
             details)
             .center());
+    auto* valuesToggle = window.findChild<QToolButton*>("enumValuesToggle");
+    QVERIFY(valuesToggle != nullptr);
+    QTRY_VERIFY_WITH_TIMEOUT(valuesToggle->isVisible(), 2000);
+    QVERIFY(!enums->isVisible());
+    valuesToggle->click();
     QTRY_VERIFY_WITH_TIMEOUT(
         enums->isVisible(), 2000);
     QVERIFY(!fields->isVisible());
@@ -14891,11 +14903,19 @@ void GuiSmokeTests::editsTagsAndAccessFromDoubleClick()
                                         QStringLiteral("WO"), QStringLiteral("RW")}));
     QVERIFY(readWrite != nullptr);
     QSignalSpy accessResetSpy(registers->model(), &QAbstractItemModel::modelReset);
+    const QPersistentModelIndex stableAccessIndex(accessIndex);
+    const auto previousIncremental =
+        window.property("incrementalTableRefreshCount").toULongLong();
     QTest::mouseClick(access->viewport(), Qt::LeftButton, Qt::NoModifier,
                       access->visualItemRect(readWrite).center());
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 9).data().toString(),
                               QStringLiteral("RW"), 2000);
-    QTRY_VERIFY_WITH_TIMEOUT(accessResetSpy.count() > 0, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        window.property("incrementalTableRefreshCount").toULongLong() > previousIncremental,
+        2000);
+    QCOMPARE(accessResetSpy.count(), 0);
+    QVERIFY(stableAccessIndex.isValid());
+    QCOMPARE(stableAccessIndex.data().toString(), QStringLiteral("RW"));
 
     QTRY_VERIFY_WITH_TIMEOUT(QApplication::activePopupWidget() == nullptr, 2000);
     accessIndex = registers->model()->index(0, 9);
@@ -16462,6 +16482,28 @@ void GuiSmokeTests::refreshesRowsIncrementallyAndMarksInlineProblems()
     QVERIFY(controller->isDirty());
     QTRY_VERIFY_WITH_TIMEOUT(
         diffHasOrigin(QStringLiteral("Since save")), 2000);
+
+    QSignalSpy registerResets(registers->model(), &QAbstractItemModel::modelReset);
+    const QPersistentModelIndex preservedCell(registers->model()->index(controlRow, 0));
+    for (const auto& edit : std::array<std::pair<int, QString>, 3>{
+             {{9, QStringLiteral("ro")}, {7, QStringLiteral("0x2")},
+              {8, QStringLiteral("0x1")}}}) {
+        const auto previousIncremental =
+            window.property("incrementalTableRefreshCount").toULongLong();
+        QVERIFY(registers->model()->setData(
+            registers->model()->index(controlRow, edit.first), edit.second));
+        QTRY_VERIFY(window.property("incrementalTableRefreshCount").toULongLong() >
+                    previousIncremental);
+        QVERIFY(preservedCell.isValid());
+        QCOMPARE(preservedCell.data().toString(), QStringLiteral("CONTROL"));
+    }
+    QCOMPARE(registerResets.count(), 0);
+    QCOMPARE(window.property("fullTableRefreshCount").toULongLong(), fullRefreshes);
+    const auto* editedRegister = regmap::findRegister(*controller->workspace(), "reg-control");
+    QCOMPARE(editedRegister->access, regmap::AccessMode::readOnly);
+    QCOMPARE(editedRegister->initialValue->toHexString(), std::string{"0x2"});
+    QCOMPARE(editedRegister->resetValue->toHexString(), std::string{"0x1"});
+    for (int index = 0; index < 3; ++index) controller->undo();
 
     QVERIFY(controller->editWorkspace(
         QStringLiteral("Create overlap for inline validation"),
@@ -22212,7 +22254,7 @@ void GuiSmokeTests::duplicatesFocusedObjectsWithShortcut()
 
     MainWindow window;
     QVERIFY(window.openProjectPath(manifest));
-    window.resize(1100, 720);
+    window.resize(1440, 900);
     window.show();
     window.activateWindow();
     QTest::qWait(50);
@@ -24184,7 +24226,7 @@ void GuiSmokeTests::selectsOnlyVisibleDataCells()
     QVERIFY(
         window.openProjectPath(
             manifest));
-    window.resize(1100, 720);
+    window.resize(1440, 900);
     window.show();
     QTest::qWait(50);
     auto* registers =
@@ -28804,6 +28846,102 @@ void GuiSmokeTests::reordersRegistersWithKeyboardAndNormalizesMixedLocks()
         directory.path());
 }
 
+void GuiSmokeTests::doesNotCacheOutputChecksAcrossRefreshes()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath("project.regmap.yaml");
+    createTwoRegisterProject(manifest);
+    ProjectController controller;
+    QVERIFY(controller.openProject(manifest));
+    const auto markdown = std::ranges::find_if(controller.artifacts(), [](const auto& artifact) {
+        return artifact.kind == regmap::GenerationTargetKind::markdown;
+    });
+    QVERIFY(markdown != controller.artifacts().end());
+    const auto index = static_cast<std::size_t>(markdown - controller.artifacts().begin());
+    const QString path = QString::fromStdWString(markdown->path.wstring());
+    bool notifiedCurrent = false;
+    connect(&controller, &ProjectController::generationChanged, &controller, [&] {
+        notifiedCurrent = controller.generatedArtifactIsCurrent(index);
+    });
+    QVERIFY(QMetaObject::invokeMethod(&controller, "refreshGeneratedFileState", Qt::DirectConnection));
+    QVERIFY(notifiedCurrent);
+    const auto permissions = QFile::permissions(path);
+    const auto modified = QFileInfo(path).lastModified();
+    QVERIFY(QFile::setPermissions(path, permissions | QFileDevice::WriteOwner));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::ReadWrite));
+    const QByteArray original = file.readAll();
+    QVERIFY(!original.isEmpty());
+    QVERIFY(file.seek(0));
+    QCOMPARE(file.write(original.front() == '#' ? "!" : "#", 1), qint64{1});
+    QVERIFY(file.setFileTime(modified, QFileDevice::FileModificationTime));
+    file.close();
+    QVERIFY(QFile::setPermissions(path, permissions));
+    // Same size and timestamp must not hide a change after the previous notification.
+    QVERIFY(!controller.generatedArtifactIsCurrent(index));
+    QVERIFY(QMetaObject::invokeMethod(&controller, "refreshGeneratedFileState", Qt::DirectConnection));
+    QVERIFY(!notifiedCurrent);
+    controller.generateNow();
+    QVERIFY(controller.generatedArtifactIsCurrent(index));
+    QPointer<ProjectController> closing = new ProjectController;
+    QVERIFY(closing->openProject(manifest));
+    connect(closing.data(), &ProjectController::generationChanged, closing.data(),
+            [closing] { delete closing.data(); });
+    QVERIFY(QMetaObject::invokeMethod(closing.data(), "refreshGeneratedFileState", Qt::DirectConnection));
+    QVERIFY(closing.isNull());
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::reusesAndRepairsRecoveryBaseline()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath("project.regmap.yaml");
+    createTwoRegisterProject(manifest);
+    const QString basePath = directory.filePath(
+        ".regmap-workbench/project.regmap.yaml.autosave.base.json");
+    ProjectController editing;
+    QVERIFY(editing.openProject(manifest));
+    const auto edit = [&](const std::string& description) {
+        return editing.editWorkspace("Edit recovery description", [&](regmap::Workspace& workspace) {
+            regmap::findRegister(workspace, "reg-control")->description = description;
+        });
+    };
+    QVERIFY(edit("First draft"));
+    QVERIFY(QMetaObject::invokeMethod(&editing, "writeRecoveryDraft", Qt::DirectConnection));
+    QFile base(basePath);
+    QVERIFY(base.open(QIODevice::ReadWrite));
+    const QByteArray original = base.readAll();
+    QVERIFY(!original.isEmpty());
+    QVERIFY(base.setFileTime(QDateTime::fromSecsSinceEpoch(946684800),
+                             QFileDevice::FileModificationTime));
+    base.close();
+    const auto retainedTime = QFileInfo(basePath).lastModified();
+    QVERIFY(edit("Second draft"));
+    QVERIFY(QMetaObject::invokeMethod(&editing, "writeRecoveryDraft", Qt::DirectConnection));
+    QCOMPARE(QFileInfo(basePath).lastModified(), retainedTime);
+    QVERIFY(base.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    QCOMPARE(base.write("corrupted", 9), qint64{9});
+    base.close();
+    QVERIFY(QMetaObject::invokeMethod(&editing, "writeRecoveryDraft", Qt::DirectConnection));
+    QVERIFY(base.open(QIODevice::ReadOnly));
+    QCOMPARE(base.readAll(), original);
+    base.close();
+    QVERIFY(QFile::remove(basePath));
+    QVERIFY(edit("Latest draft"));
+    QVERIFY(QMetaObject::invokeMethod(&editing, "writeRecoveryDraft", Qt::DirectConnection));
+    ProjectController recovered;
+    QVERIFY(recovered.openProject(manifest));
+    const auto recoveryInfo = recovered.recoveryDraftInfo();
+    QVERIFY(recoveryInfo.has_value());
+    QVERIFY(recoveryInfo->mergeBaseAvailable);
+    QVERIFY(recovered.restoreRecoveryDraft());
+    QCOMPARE(regmap::findRegister(*recovered.workspace(), "reg-control")->description,
+             std::string{"Latest draft"});
+    makeGeneratedFilesWritable(directory.path());
+}
+
 void GuiSmokeTests::recoversAutosavedDrafts()
 {
     QTemporaryDir directory;
@@ -30082,7 +30220,7 @@ void GuiSmokeTests::protectsDetailControlsDuringInvalidEditing()
 
         MainWindow window;
         QVERIFY(window.openProjectPath(manifest));
-        window.resize(1100, 720);
+        window.resize(1440, 900);
         window.show();
         window.activateWindow();
         QTest::qWait(50);
@@ -30198,7 +30336,7 @@ void GuiSmokeTests::protectsDetailControlsDuringInvalidEditing()
 
         MainWindow window;
         QVERIFY(window.openProjectPath(manifest));
-        window.resize(1100, 720);
+        window.resize(1440, 900);
         window.show();
         window.activateWindow();
         QTest::qWait(50);
@@ -30304,7 +30442,7 @@ void GuiSmokeTests::protectsDetailControlsDuringInvalidEditing()
 
         MainWindow window;
         QVERIFY(window.openProjectPath(manifest));
-        window.resize(1100, 720);
+        window.resize(1440, 900);
         window.show();
         window.activateWindow();
         QTest::qWait(50);
@@ -30888,7 +31026,7 @@ void GuiSmokeTests::protectsActiveEditorDuringContextMenus()
 
     MainWindow window;
     QVERIFY(window.openProjectPath(manifest));
-    window.resize(1100, 720);
+    window.resize(1440, 900);
     window.show();
     window.activateWindow();
     QTest::qWait(50);
@@ -31135,7 +31273,7 @@ void GuiSmokeTests::protectsAuxiliaryActionsDuringInvalidEditing()
 
     MainWindow window;
     QVERIFY(window.openProjectPath(manifest));
-    window.resize(1100, 720);
+    window.resize(1440, 900);
     window.show();
     window.activateWindow();
     QTest::qWait(50);
@@ -32909,7 +33047,7 @@ void GuiSmokeTests::protectsActiveEditorDuringTableNavigation()
     QVERIFY(
         window.openProjectPath(
             manifest));
-    window.resize(1100, 720);
+    window.resize(1440, 900);
     window.show();
     window.activateWindow();
     QTest::qWait(50);

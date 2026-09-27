@@ -73,3 +73,12 @@ Native-capability changes, 2026-09-24 (`patches/11-regmap-native-capabilities.pa
 - App adapters retain precision editing, validation, model/undo/CLI/generator
   contracts and protected examples. A small panel adapter restores requested
   focus after content animation without owning business layout or transactions.
+
+Drawer settling optimization, 2026-09-27 (`patches/12-regmap-drawer-settling.patch`):
+
+- Settled drawers ignore repeated finish requests when visibility, geometry and
+  constraints already match the endpoint. Actual animation completion still
+  releases snapshots and emits its completion signal.
+- Height constraints and content visibility invalidate layouts when required;
+  settling no longer adds a redundant geometry invalidation. Animation duration,
+  reversal, input, resize, destruction and reduced-motion behavior are retained.

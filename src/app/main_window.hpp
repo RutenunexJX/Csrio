@@ -6,6 +6,7 @@
 
 #include <QByteArray>
 #include <QMainWindow>
+#include <QPointer>
 #include <QString>
 
 #include <filesystem>
@@ -148,6 +149,12 @@ private:
     QToolButton* generateButton_{nullptr};
     QToolButton* synchronizeButton_{nullptr};
     QToolButton* saveSyncButton_{nullptr};
+    QToolButton* moreProjectButton_{nullptr};
+    QToolButton* allSearchResultsButton_{nullptr};
+    QToolButton* addressMapToggle_{nullptr};
+    QToolButton* enumValuesToggle_{nullptr};
+    QTableView* diffDetailsView_{nullptr};
+    QStandardItemModel* diffDetailsModel_{nullptr};
     QLineEdit* globalSearchEdit_{nullptr};
     QLabel* searchResultLabel_{nullptr};
     QLabel* activeContextLabel_{nullptr};
@@ -180,6 +187,10 @@ private:
     QCompleter* searchCompleter_{nullptr};
 
     QAction* reloadAction_{nullptr};
+    QAction* recoveryDraftAction_{nullptr};
+    QAction* navigateBackAction_{nullptr};
+    QAction* navigateForwardAction_{nullptr};
+    QAction* allSearchResultsAction_{nullptr};
     QAction* newProjectAction_{nullptr};
     QAction* openProjectAction_{nullptr};
     QAction* saveAction_{nullptr};
@@ -283,6 +294,25 @@ private:
     bool resultsPanelRequested_{false};
     bool resultsPanelAutoOpenedForProblems_{false};
     bool compactLayout_{false};
+    bool restoringNavigation_{false};
+    std::filesystem::path navigationHistoryPath_;
+    struct NavigationTableState {
+        QString id;
+        QString property;
+        int column{0};
+        int horizontal{0};
+        int vertical{0};
+    };
+    struct NavigationPosition {
+        std::string page, block, reg, field, openFields, tag, active;
+        NavigationTableState registers, fields, enums;
+        int registerPanelScroll{0}, fieldPanelScroll{0};
+        int hierarchyScroll{0};
+        int focusTable{0};
+    };
+    std::vector<NavigationPosition> navigationHistory_;
+    int navigationHistoryIndex_{-1};
+    QPointer<QWidget> allSearchResultsDialog_;
     bool uiStateRestoreComplete_{false};
     enum class EmptyStateAction {
         none,
@@ -300,6 +330,16 @@ private:
 
     void buildUi();
     void buildActions();
+    void buildWorkflowActions();
+    void updateFocusedEditorLayout();
+    void showAllSearchResults();
+    void refreshChangeDetails();
+    void activateChangeDetail(const QModelIndex& index);
+    bool navigateToObjectImpl(const std::string& id, bool focusTarget);
+    NavigationPosition captureNavigationPosition() const;
+    void restoreNavigationPosition(const NavigationPosition& position);
+    void navigateHistory(int direction);
+    void updateNavigationActions();
     void connectSignals();
     void restoreUiState();
     void saveUiState() const;

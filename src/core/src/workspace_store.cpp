@@ -3,6 +3,8 @@
 #include "regmap/core/three_way_merge.hpp"
 #include "regmap/core/validation.hpp"
 
+#include <QByteArray>
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -247,9 +249,12 @@ bool WorkspaceStore::transact(std::string description, const Mutation& mutation)
         return false;
     }
 
+    const QByteArray compressed = qCompress(
+        reinterpret_cast<const uchar*>(workspaceState_.data()),
+        static_cast<qsizetype>(workspaceState_.size()), 1);
     appendHistory(
         undo_,
-        HistoryEntry{*workspace_, workspaceState_, std::move(description)});
+        HistoryEntry{std::move(*workspace_), compressed.toStdString(), std::move(description)});
     workspace_ = std::move(candidate);
     workspaceState_ = std::move(candidateState);
     dirty_ = workspaceState_ != savedState_;
@@ -279,11 +284,16 @@ bool WorkspaceStore::undo()
     }
     HistoryEntry entry = std::move(undo_.back());
     undo_.pop_back();
+    const QByteArray compressed = qCompress(
+        reinterpret_cast<const uchar*>(workspaceState_.data()),
+        static_cast<qsizetype>(workspaceState_.size()), 1);
     appendHistory(
         redo_,
-        HistoryEntry{*workspace_, workspaceState_, entry.description});
+        HistoryEntry{std::move(*workspace_), compressed.toStdString(), std::move(entry.description)});
     workspace_ = std::move(entry.workspace);
-    workspaceState_ = std::move(entry.state);
+    workspaceState_ = qUncompress(
+        reinterpret_cast<const uchar*>(entry.compressedState.data()),
+        static_cast<qsizetype>(entry.compressedState.size())).toStdString();
     dirty_ = workspaceState_ != savedState_;
     ++revision_;
     revalidate();
@@ -297,11 +307,16 @@ bool WorkspaceStore::redo()
     }
     HistoryEntry entry = std::move(redo_.back());
     redo_.pop_back();
+    const QByteArray compressed = qCompress(
+        reinterpret_cast<const uchar*>(workspaceState_.data()),
+        static_cast<qsizetype>(workspaceState_.size()), 1);
     appendHistory(
         undo_,
-        HistoryEntry{*workspace_, workspaceState_, entry.description});
+        HistoryEntry{std::move(*workspace_), compressed.toStdString(), std::move(entry.description)});
     workspace_ = std::move(entry.workspace);
-    workspaceState_ = std::move(entry.state);
+    workspaceState_ = qUncompress(
+        reinterpret_cast<const uchar*>(entry.compressedState.data()),
+        static_cast<qsizetype>(entry.compressedState.size())).toStdString();
     dirty_ = workspaceState_ != savedState_;
     ++revision_;
     revalidate();
