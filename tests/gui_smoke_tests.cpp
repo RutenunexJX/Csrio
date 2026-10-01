@@ -1752,7 +1752,7 @@ void GuiSmokeTests::parsesStartupProjectArguments()
     QVERIFY(
         usage.contains(
             QStringLiteral(
-                "RegMapWorkbench --project")));
+                "Csrio --project")));
     QVERIFY(
         usage.contains(
             QStringLiteral(
@@ -1840,7 +1840,7 @@ void GuiSmokeTests::parsesStartupProjectArguments()
     QVERIFY(
         helpOutput.contains(
             QStringLiteral(
-                "RegMapWorkbench --project")));
+                "Csrio --project")));
 
     const auto [versionFinished,
                 versionExit,
@@ -1855,7 +1855,7 @@ void GuiSmokeTests::parsesStartupProjectArguments()
     QVERIFY(
         versionOutput.contains(
             QStringLiteral(
-                "Register Map Workbench " REGMAP_EXPECTED_VERSION)));
+                "Csrio " REGMAP_EXPECTED_VERSION)));
 
     const auto [errorFinished,
                 errorExit,
@@ -5249,7 +5249,7 @@ void GuiSmokeTests::identifiesCurrentProjectInWindowTitle()
     MainWindow emptyWindow;
     QCOMPARE(
         emptyWindow.windowTitle(),
-        QStringLiteral("Register Map Workbench"));
+        QStringLiteral("Csrio"));
     QVERIFY(emptyWindow.windowFilePath().isEmpty());
     QVERIFY(!emptyWindow.isWindowModified());
 

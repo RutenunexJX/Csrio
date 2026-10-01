@@ -2,12 +2,14 @@
 param(
     [Parameter(Mandatory)][string]$Directory,
     [Parameter(Mandatory)][string]$ExpectedVersion,
-    [Parameter(Mandatory)][string]$ExpectedRevision
+    [Parameter(Mandatory)][string]$ExpectedRevision,
+    [ValidateSet('clean','dirty')][string]$ExpectedSourceState = 'clean'
 )
 $ErrorActionPreference = 'Stop'
 $packageRoot = (Resolve-Path -LiteralPath $Directory).Path
+if ([IO.Path]::GetFileName($packageRoot) -cne 'Csrio') { throw 'Expected a Csrio package root' }
 $repository = Split-Path -Parent $PSScriptRoot
-$smokeRoot = Join-Path $repository ".tmp/directory-smoke/$([guid]::NewGuid().ToString('N'))"
+$smokeRoot = Join-Path $repository "build/validation/directory-smoke/$([guid]::NewGuid().ToString('N'))"
 $null = New-Item -ItemType Directory -Path $smokeRoot
 $files = @(Get-ChildItem -LiteralPath $packageRoot -File -Recurse)
 $sums = Join-Path $packageRoot 'SHA256SUMS.txt'
@@ -25,6 +27,9 @@ foreach ($line in [IO.File]::ReadAllLines($sums)) {
 if ($checked.Count -ne $files.Count - 1) { throw 'Checksum inventory is incomplete' }
 foreach ($file in $files) {
     $relative = [IO.Path]::GetRelativePath($packageRoot, $file.FullName).Replace('\', '/')
+    if ($file.Extension -ieq '.exe' -and $relative -cnotin @('Csrio.exe', 'regmapc.exe')) {
+        throw "Unexpected executable in Csrio runtime: $relative"
+    }
     if ($relative -ne 'SHA256SUMS.txt' -and -not $checked.Contains($relative)) {
         throw "Unlisted file: $relative"
     }
@@ -32,7 +37,7 @@ foreach ($file in $files) {
         throw "Development content in runtime: $relative"
     }
 }
-foreach ($relative in @('RegMapWorkbench.exe', 'regmapc.exe', 'ElaWidgetTools.dll',
+foreach ($relative in @('Csrio.exe', 'regmapc.exe', 'ElaWidgetTools.dll',
     'Qt6Core.dll', 'Qt6Gui.dll', 'Qt6Widgets.dll', 'plugins/platforms/qwindows.dll',
     'README.md', 'docs/cli.md', 'docs/ela-native-capabilities.md', 'BUILD-INFO.txt',
     'licenses/ElaWidgetTools/LICENSE', 'licenses/ElaWidgetTools/FontAwesome-LICENSE.txt',
@@ -46,9 +51,14 @@ foreach ($relative in @('RegMapWorkbench.exe', 'regmapc.exe', 'ElaWidgetTools.dl
     }
 }
 $info = Get-Content -LiteralPath (Join-Path $packageRoot 'BUILD-INFO.txt') -Raw
-foreach ($line in @("Version: $ExpectedVersion", "Revision: $ExpectedRevision", 'Source state: clean',
+foreach ($line in @('Csrio', "Version: $ExpectedVersion", "Revision: $ExpectedRevision", "Source state: $ExpectedSourceState",
     'Build type: Release', 'Platform: win64', 'Qt: 6.10.2', 'UI backend: ELA', 'Tests: OFF')) {
     if ($info -notmatch "(?m)^$([regex]::Escape($line))\r?$") { throw "Metadata mismatch: $line" }
+}
+$resource = [Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $packageRoot 'Csrio.exe'))
+if ($resource.ProductName -cne 'Csrio' -or $resource.FileDescription -cne 'Csrio' -or
+    $resource.OriginalFilename -cne 'Csrio.exe' -or $resource.ProductVersion -ne $ExpectedVersion) {
+    throw 'Csrio executable version resources do not match the package'
 }
 function Invoke-Packaged([string]$Executable, [string[]]$Arguments, [string]$Name) {
     $start = [Diagnostics.ProcessStartInfo]::new()
@@ -80,9 +90,9 @@ function Invoke-Packaged([string]$Executable, [string[]]$Arguments, [string]$Nam
         return $output
     } finally { $process.Dispose() }
 }
-if ((Invoke-Packaged 'RegMapWorkbench.exe' @('--version') 'gui-version').Trim() -ne
-    "Register Map Workbench $ExpectedVersion") { throw 'GUI version mismatch' }
-if ((Invoke-Packaged 'RegMapWorkbench.exe' @('--help') 'gui-help') -notmatch 'Usage:') {
+if ((Invoke-Packaged 'Csrio.exe' @('--version') 'gui-version').Trim() -ne
+    "Csrio $ExpectedVersion") { throw 'GUI version mismatch' }
+if ((Invoke-Packaged 'Csrio.exe' @('--help') 'gui-help') -notmatch 'Usage:') {
     throw 'GUI help missing'
 }
 $version = Invoke-Packaged 'regmapc.exe' @('--json', 'version') 'cli-version'

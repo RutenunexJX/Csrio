@@ -327,6 +327,7 @@ int main(int argumentCount, char* arguments[])
     QCoreApplication::setApplicationName(
         QStringLiteral(
             "RegMapWorkbenchSnapshot"));
+    QGuiApplication::setApplicationDisplayName(QStringLiteral("Csrio"));
     const auto options =
         parseOptions(
             QCoreApplication::arguments());

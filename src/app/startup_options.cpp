@@ -199,11 +199,11 @@ StartupOptions parseStartupOptions(
 QString startupUsage()
 {
     return QStringLiteral(
-        "Register Map Workbench\n"
+        "Csrio\n"
         "\n"
         "Usage:\n"
-        "  RegMapWorkbench [project.regmap.yaml]\n"
-        "  RegMapWorkbench --project <project.regmap.yaml> [--select <stable-id>]\n"
+        "  Csrio [project.regmap.yaml]\n"
+        "  Csrio --project <project.regmap.yaml> [--select <stable-id>]\n"
         "\n"
         "Options:\n"
         "  -p, --project <path>  Open one register-map project.\n"

@@ -3,6 +3,7 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets)
 add_library(
     regmap_workbench_ui
     STATIC
+    application_identity.hpp
     address_space_view.cpp
     address_space_view.hpp
     bitfield_view.cpp
@@ -71,7 +72,10 @@ regmap_enable_warnings(regmap_workbench_ui)
 
 qt_add_executable(regmap_workbench WIN32 main.cpp)
 if(WIN32)
-    target_sources(regmap_workbench PRIVATE regmap_workbench.rc)
+    configure_file(regmap_workbench_version.rc.in
+        "${CMAKE_CURRENT_BINARY_DIR}/regmap_workbench_version.rc" @ONLY)
+    target_sources(regmap_workbench PRIVATE regmap_workbench.rc
+        "${CMAKE_CURRENT_BINARY_DIR}/regmap_workbench_version.rc")
 endif()
 qt_add_resources(
     regmap_workbench
@@ -81,7 +85,7 @@ qt_add_resources(
     FILES "${CMAKE_CURRENT_SOURCE_DIR}/assets/regmap_workbench_icon.png"
 )
 set_target_properties(regmap_workbench PROPERTIES AUTOMOC ON)
-set_target_properties(regmap_workbench PROPERTIES OUTPUT_NAME RegMapWorkbench)
+set_target_properties(regmap_workbench PROPERTIES OUTPUT_NAME Csrio)
 target_link_libraries(regmap_workbench PRIVATE RegMap::WorkbenchUi)
 target_compile_definitions(
     regmap_workbench

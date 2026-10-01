@@ -1,11 +1,20 @@
-# Register Map Workbench
+# Csrio
 
-Current version: `0.3.6`.
+Current version: `0.4.0`.
 
-Register Map Workbench is a standalone Qt desktop application for FPGA and SystemVerilog
+[Source repository](https://github.com/RutenunexJX/Csrio)
+
+Csrio is a standalone Qt desktop application for FPGA and SystemVerilog
 register-map development. Workbench, guarded `regmapc` property patches, and a controlled region
 in SystemVerilog RTL operate on one internal model, which produces read-only XLSX, C header, and
 Markdown views.
+
+Csrio retains the legacy `RegMapWorkbench` organization and `Register Map Workbench`
+application storage identities, so existing preferences, layout, Favorites, and recent projects
+continue to be read and written in the same location. Only the display name and GUI executable
+change. Project-local recovery drafts remain under `.regmap-workbench`; project formats,
+`regmapc` commands, `regmap://` links, provider IDs, and `REGMAP_*` environment variables remain
+compatible. No data migration or project conversion is required.
 
 ```text
 Workbench / regmapc <-> internal model <-> managed SystemVerilog RTL
@@ -22,7 +31,7 @@ Workspace -> Page -> Register Block -> Register -> Field -> Enum Value
 
 ## Quick start
 
-1. Start `RegMapWorkbench.exe` and choose **New Project**, or open an existing
+1. Start `Csrio.exe` and choose **New Project**, or open an existing
    `.regmap.yaml` file.
 2. For a new map, use **+ First Register**. To control names and layout explicitly,
    right-click the Workspace/Page/Block tree and create the required Page, Block, and Register.
@@ -401,7 +410,7 @@ contracts.
   the corresponding **View** actions or the table-header context menu.
 
 `regmap_core` owns the model, validation, persistence, synchronization, and generators.
-`RegMapWorkbench` owns the Qt editing experience, and `regmapc` exposes the same core to
+`Csrio` owns the Qt editing experience, and `regmapc` exposes the same core to
 automation and embedding hosts.
 
 ## Use
@@ -436,9 +445,9 @@ recoverable blocked state instead of being misreported as a creation failure; fi
 invoke **Save & Sync**. An existing project can also be passed at startup:
 
 ```powershell
-RegMapWorkbench.exe "C:\projects\device.regmap.yaml"
-RegMapWorkbench.exe --project "C:\projects\device.regmap.yaml"
-RegMapWorkbench.exe --project "C:\projects\device.regmap.yaml" --select reg-status
+Csrio.exe "C:\projects\device.regmap.yaml"
+Csrio.exe --project "C:\projects\device.regmap.yaml"
+Csrio.exe --project "C:\projects\device.regmap.yaml" --select reg-status
 ```
 
 Only one startup project is accepted. Missing `--project` values, unknown options, and additional
@@ -466,7 +475,7 @@ the dialog exposes **Use Disk for Conflicts** and **Use Draft for Conflicts** in
 silently.
 
 ```powershell
-build\dev-debug\src\app\RegMapWorkbench.exe examples\minimal\.regmap.yaml
+build\dev-debug\src\app\Csrio.exe examples\minimal\.regmap.yaml
 ```
 
 Click a register or field cell once to select it; double-click an editable cell or press `F2` to
@@ -650,7 +659,7 @@ See [architecture.md](docs/architecture.md), [manifest-schema.md](docs/manifest-
 
 ## Suite application protocol
 
-RegMapWorkbench provides `regmap://project?...` resources through
+Csrio provides `regmap://project?...` resources through
 `suite-app/v1`. A URI may identify the whole project or a stable object ID.
 Register-focused navigation also accepts
 `regmap://register/<stable-id>?file=<project>&field=<optional-field-id>`.
@@ -663,7 +672,7 @@ the existing RegMap core.
 
 The optional neutral Runtime owns discovery and routing only. It does not own
 the register-map project or call `regmapc` through an application-specific
-broker branch. If the Runtime is absent, RegMapWorkbench and `regmapc` continue
+broker branch. If the Runtime is absent, Csrio and `regmapc` continue
 to run as independent products.
 
 ## Configure, build, and test
@@ -691,27 +700,39 @@ Project**. Keep `REGMAP_BUILD_APP`, `REGMAP_BUILD_CLI`, and `REGMAP_BUILD_TESTS`
 
 ### Windows portable directory package
 
-Release 0.3.5 uses a clean directory staging for coordinated AppSuite publication,
-not a ZIP. Validate the test-enabled Release/ELA build, then configure a separate
+Csrio uses a clean directory staging for coordinated AppSuite publication.
+Validate the test-enabled Release/ELA build, then configure a separate
 Release directory with the same Qt/compiler/SuiteApp dependencies and
 `REGMAP_UI_BACKEND=ELA` / `REGMAP_BUILD_TESTS=OFF`. Commit the validated sources and run:
 
 ```powershell
-./tests/stage_directory_package.ps1 -BuildDirectory build/ela-release-0.3.5
+cmake -S . -B build/csrio-release -G Ninja -DCMAKE_BUILD_TYPE=Release `
+  -DCMAKE_PREFIX_PATH="C:\Qt\6.10.2\mingw_64" -DREGMAP_UI_BACKEND=ELA -DREGMAP_BUILD_TESTS=OFF
+./tests/stage_directory_package.ps1 -BuildDirectory build/csrio-release
 ```
 
 The script requires a clean checkout and Release/ELA/test-OFF cache, uses Qt's deployment
-API, and creates `out/RegMapWorkbench-<version>-<revision>-staging/RegMapWorkbench`.
+API, and creates `out/Csrio-<version>-<revision>-staging/Csrio`.
 It refuses to overwrite existing staging. The directory contains both executables,
 Qt/MinGW libraries and plugins, documentation, Ela patches/attribution, runtime
 license notices, `BUILD-INFO.txt` with the full revision, and per-file `SHA256SUMS.txt`.
 The directory smoke check uses an isolated profile/project and a Windows-only PATH
-to verify executable version/help and CLI init/validate/generate/current contracts.
+to verify Csrio version resources, executable version/help, and CLI init/validate/generate/current
+contracts. Only `Csrio.exe` and `regmapc.exe` are allowed in the runtime, so an obsolete GUI
+executable or a test binary cannot silently enter the package.
 It does not operate the desktop mouse. The coordinating task owns replacement of
-`AppSuite/Apps/RegMapWorkbench` and shared manifests; this script does not write them.
+`AppSuite/Apps/Csrio` and shared manifests; this script does not write them.
 The legacy archive target remains available for historical builds but is not used
-for this delivery. Only the Ela backend is maintained; older backends are retained
+for coordinated directory publication. Its current archive also contains one `Csrio` root.
+Only the Ela backend is maintained; older backends are retained
 for compatibility checks.
+
+For a local preview from uncommitted sources, pass `-DevelopmentPreview`. The script creates
+`out/Csrio-<version>-<revision>-dirty-preview-<id>/Csrio` and retains `Source state: dirty`
+in `BUILD-INFO.txt`; it never relaxes the default clean-release requirement. To recheck that
+preview independently, run `check_directory_package.ps1` with `-ExpectedSourceState dirty`.
+The portable checker accepts the same explicit source-state option and a full commit SHA for
+`-ExpectedRevision`; archive filenames use the first seven characters of that SHA.
 `regmapc --json version` reports both its API version and supported project
 schema versions before a host opens a project.
 

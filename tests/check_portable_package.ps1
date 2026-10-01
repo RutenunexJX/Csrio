@@ -2,7 +2,8 @@
 param(
     [Parameter(Mandatory)][string]$Archive,
     [Parameter(Mandatory)][string]$ExpectedVersion,
-    [Parameter(Mandatory)][string]$ExpectedRevision
+    [Parameter(Mandatory)][ValidatePattern('^[0-9a-fA-F]{40}$')][string]$ExpectedRevision,
+    [ValidateSet('clean','dirty')][string]$ExpectedSourceState = 'clean'
 )
 
 $ErrorActionPreference = "Stop"
@@ -11,8 +12,9 @@ $checksumPath = "$archivePath.sha256"
 $actualHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash
 $checksum = Get-Content -LiteralPath $checksumPath -Raw
 if (($checksum -split '\s+')[0] -ne $actualHash) { throw "Archive checksum mismatch" }
-if ([IO.Path]::GetFileName($archivePath) -ne "RegMapWorkbench-$ExpectedVersion-win64-$ExpectedRevision.zip") {
-    throw "Expected a clean, revision-qualified release archive"
+$suffix = if ($ExpectedSourceState -eq 'dirty') { '-dirty' } else { '' }
+if ([IO.Path]::GetFileName($archivePath) -cne "Csrio-$ExpectedVersion-win64-$($ExpectedRevision.Substring(0,7))$suffix.zip") {
+    throw "Expected a Csrio archive qualified by revision and source state"
 }
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -25,17 +27,21 @@ try {
         if ($entry.FullName -match '(?i)(^|/)(examples|\.git|tests)/|\.(pdb|obj|a)$') {
             throw "Unexpected development content: $($entry.FullName)"
         }
+        if ($entry.FullName -notmatch '^Csrio(/|$)' -or
+            ($entry.FullName -match '(?i)\.exe$' -and $entry.FullName -cnotin @('Csrio/Csrio.exe', 'Csrio/regmapc.exe'))) {
+            throw "Unexpected package root or executable: $($entry.FullName)"
+        }
     }
 } finally { $zip.Dispose() }
 
 $repository = Split-Path -Parent $PSScriptRoot
-$smokeRoot = Join-Path $repository ".tmp/portable-smoke/$([guid]::NewGuid().ToString('N'))"
+$smokeRoot = Join-Path $repository "build/validation/portable-smoke/$([guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Path $smokeRoot | Out-Null
 Expand-Archive -LiteralPath $archivePath -DestinationPath $smokeRoot
 $roots = @(Get-ChildItem -LiteralPath $smokeRoot -Directory)
 if ($roots.Count -ne 1) { throw "Expected one package root" }
 $packageRoot = $roots[0].FullName
-foreach ($relative in @("RegMapWorkbench.exe", "regmapc.exe", "ElaWidgetTools.dll",
+foreach ($relative in @("Csrio.exe", "regmapc.exe", "ElaWidgetTools.dll",
         "Qt6Core.dll", "Qt6Gui.dll", "Qt6Widgets.dll", "plugins/platforms/qwindows.dll",
         "README.md", "docs/cli.md", "docs/ela-migration.md", "BUILD-INFO.txt",
         "licenses/ElaWidgetTools/LICENSE", "licenses/ElaWidgetTools/FontAwesome-LICENSE.txt",
@@ -46,7 +52,7 @@ foreach ($relative in @("RegMapWorkbench.exe", "regmapc.exe", "ElaWidgetTools.dl
     }
 }
 $buildInfo = Get-Content -LiteralPath (Join-Path $packageRoot "BUILD-INFO.txt") -Raw
-foreach ($line in @("Version: $ExpectedVersion", "Revision: $ExpectedRevision", "Source state: clean",
+foreach ($line in @('Csrio', "Version: $ExpectedVersion", "Revision: $ExpectedRevision", "Source state: $ExpectedSourceState",
                     "Build type: Release", "Platform: win64", "Qt: 6.10.2", "UI backend: ELA")) {
     if ($buildInfo -notmatch "(?m)^$([regex]::Escape($line))\r?$") { throw "Build metadata mismatch: $line" }
 }
@@ -85,9 +91,9 @@ function Invoke-PackagedCommand([string]$Executable, [string[]]$Arguments, [stri
     } finally { $process.Dispose() }
 }
 
-$guiVersion = Invoke-PackagedCommand 'RegMapWorkbench.exe' @('--version') 'gui-version'
-if ($guiVersion.Trim() -ne "Register Map Workbench $ExpectedVersion") { throw "GUI version mismatch" }
-$guiHelp = Invoke-PackagedCommand 'RegMapWorkbench.exe' @('--help') 'gui-help'
+$guiVersion = Invoke-PackagedCommand 'Csrio.exe' @('--version') 'gui-version'
+if ($guiVersion.Trim() -ne "Csrio $ExpectedVersion") { throw "GUI version mismatch" }
+$guiHelp = Invoke-PackagedCommand 'Csrio.exe' @('--help') 'gui-help'
 if ($guiHelp -notmatch 'Usage:') { throw "GUI help missing" }
 $cliVersion = Invoke-PackagedCommand 'regmapc.exe' @('--json', 'version') 'cli-version'
 $null = $cliVersion | ConvertFrom-Json

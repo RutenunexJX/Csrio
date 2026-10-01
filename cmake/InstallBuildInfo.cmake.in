@@ -39,7 +39,8 @@ if(_regmap_build_type STREQUAL "")
 endif()
 
 set(_regmap_build_info
-"Register Map Workbench
+"Csrio
+Repository: https://github.com/RutenunexJX/Csrio
 Version: @PROJECT_VERSION@
 Revision: ${_regmap_revision}
 Source state: ${_regmap_source_state}

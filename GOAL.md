@@ -1,4 +1,4 @@
-# RegMapWorkbench Goal
+# Csrio Goal
 
 Current version: `0.3.4`.
 

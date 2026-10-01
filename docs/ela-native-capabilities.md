@@ -1,4 +1,4 @@
-# Ela native capabilities — RegMapWorkbench
+# Ela native capabilities — Csrio
 
 Status: completed — UI implementation and validation (2026-09-24), release 0.3.5.
 Baseline: `dd413042` / 0.3.4. AppSuite publication is owned by the coordinating task.

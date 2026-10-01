@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(
-    RegMapWorkbench
-    VERSION 0.3.6
-    DESCRIPTION "Register map workbench for FPGA and SystemVerilog development"
+    Csrio
+    VERSION 0.4.0
+    DESCRIPTION "Csrio register-map editor for FPGA and SystemVerilog development"
     LANGUAGES CXX
 )
 

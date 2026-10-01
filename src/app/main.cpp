@@ -1,4 +1,5 @@
 #include "main_window.hpp"
+#include "application_identity.hpp"
 #ifdef REGMAP_HAS_SUITEAPP
 #include "suite_integration.hpp"
 #endif
@@ -19,14 +20,12 @@
 int main(int argumentCount, char* arguments[])
 {
     QApplication application(argumentCount, arguments);
-    QApplication::setApplicationName(QStringLiteral("Register Map Workbench"));
+    regmap::workbench::configureApplicationIdentity();
     QApplication::setApplicationVersion(
         QStringLiteral(REGMAP_APP_VERSION));
-    QApplication::setOrganizationName(QStringLiteral("RegMapWorkbench"));
     QApplication::setWindowIcon(
         QIcon(QStringLiteral(
             ":/icons/regmap_workbench_icon.png")));
-    WorkbenchTheme::apply(application);
 
     const regmap::workbench::StartupOptions
         startup =
@@ -55,7 +54,7 @@ int main(int argumentCount, char* arguments[])
             QStringConverter::Utf8);
         output
             << QApplication::
-                   applicationName()
+                   applicationDisplayName()
             << ' '
             << QApplication::
                    applicationVersion()
@@ -78,6 +77,7 @@ int main(int argumentCount, char* arguments[])
         return 2;
     }
 
+    WorkbenchTheme::apply(application);
     MainWindow window;
     window.show();
 

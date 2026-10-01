@@ -1,6 +1,6 @@
 # Minimal example
 
-Open `.regmap.yaml` in Register Map Workbench. The project contains a complete editable model.
+Open `.regmap.yaml` in Csrio. The project contains a complete editable model.
 
 Edit it through the page/block hierarchy, context bar, register and field tables, bit view, and
 inline enum table, then save. The tables' final `+` rows create registers and fields. Register

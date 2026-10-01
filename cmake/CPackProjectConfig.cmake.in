@@ -31,5 +31,5 @@ if(_regmap_status_result EQUAL 0)
 endif()
 set(
     CPACK_PACKAGE_FILE_NAME
-    "RegMapWorkbench-@PROJECT_VERSION@-@REGMAP_PACKAGE_PLATFORM@-${_regmap_revision}${_regmap_source_suffix}"
+    "Csrio-@PROJECT_VERSION@-@REGMAP_PACKAGE_PLATFORM@-${_regmap_revision}${_regmap_source_suffix}"
 )

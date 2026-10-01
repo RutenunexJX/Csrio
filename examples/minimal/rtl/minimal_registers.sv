@@ -2,7 +2,7 @@
 module minimal_registers ();
 
   // RMW:BEGIN schema=1
-  // This region is synchronized by Register Map Workbench.
+  // This region is synchronized by Csrio.
   // Edit RMW:OBJECT JSON for text/enumerated properties and RMW:VALUE literals for numeric properties.
   // RMW:OBJECT {"id":"block-control","kind":"block","properties":{"base":"0xF000","description":"Control and status registers.","name":"Control","order":"0","parent":"space-main","size":"0x1000"}}
   localparam logic [63:0] RMW_BLOCK_CONTROL_05569506_BASE = 64'hF000; // RMW:VALUE {"id":"block-control","property":"base"}

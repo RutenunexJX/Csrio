@@ -22,7 +22,7 @@ surface. A `.sync.json` sidecar stores the last synchronized model and is intern
   stable-ID diff, managed-RTL parsing and replacement, three-way merge, baseline persistence,
   default-project construction, and all three read-only generators. It is independent of Qt
   Widgets and application state.
-- `RegMapWorkbench` owns editing, source navigation, live diagnostics, synchronization status,
+- `Csrio` owns editing, source navigation, live diagnostics, synchronization status,
   conflict resolution, and generated-output presentation.
 - `regmapc` owns the API-versioned command envelope, stable-ID queries and project comparison,
   validation/generation entry points, revision guards, dry runs, and atomic model-patch

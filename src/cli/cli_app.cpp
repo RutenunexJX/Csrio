@@ -8624,7 +8624,7 @@ descendantCount(
 [[nodiscard]] QString usageText()
 {
     return QStringLiteral(
-        "Register Map Workbench CLI\n"
+        "Csrio CLI\n"
         "\n"
         "Usage:\n"
         "  regmapc [--json] help [command]\n"

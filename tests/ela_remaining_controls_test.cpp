@@ -230,7 +230,7 @@ private slots:
         GuardedWindow window;
         QVERIFY(window.chrome && window.chrome->inherits("ElaAppBar"));
         window.setCentralWidget(new QWidget(&window));
-        window.setWindowTitle(QString(180, 'W') + " - RegMapWorkbench");
+        window.setWindowTitle(QString(180, 'W') + " - Csrio");
         window.resize(960, 720); window.show(); QTest::qWait(30);
         auto* title = window.chrome->findChild<QLabel*>("windowTitleLabel");
         QVERIFY(title);
@@ -241,7 +241,7 @@ private slots:
         QCOMPARE(title->text(), QString("Fixture*"));
         window.setWindowModified(false);
         QCOMPARE(title->text(), QString("Fixture"));
-        window.setWindowTitle(QString(180, 'W') + " - RegMapWorkbench");
+        window.setWindowTitle(QString(180, 'W') + " - Csrio");
         for (const auto size : {QSize(960, 720), QSize(1440, 900)}) {
             window.resize(size); QTest::qWait(20);
             QCOMPARE(window.size(), size);

@@ -1,4 +1,4 @@
-# RegMapWorkbench Plan
+# Csrio Plan
 
 Current version: `0.3.5`.
 

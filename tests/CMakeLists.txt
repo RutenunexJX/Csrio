@@ -87,6 +87,14 @@ endif()
 
 if(TARGET RegMap::WorkbenchUi)
     find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets)
+    qt_add_executable(regmap_identity_tests identity_tests.cpp)
+    set_target_properties(regmap_identity_tests PROPERTIES AUTOMOC ON)
+    target_link_libraries(regmap_identity_tests PRIVATE RegMap::WorkbenchUi Qt6::Test)
+    regmap_enable_warnings(regmap_identity_tests)
+    add_test(NAME regmap_identity_tests COMMAND regmap_identity_tests)
+    set_tests_properties(regmap_identity_tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
     qt_add_executable(regmap_usability_tests usability_tests.cpp)
     set_target_properties(regmap_usability_tests PROPERTIES AUTOMOC ON)
     target_link_libraries(regmap_usability_tests PRIVATE RegMap::WorkbenchUi Qt6::Test)

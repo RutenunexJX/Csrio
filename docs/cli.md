@@ -1,7 +1,7 @@
 # `regmapc` command contract
 
 `regmapc` provides a non-interactive interface to the same project model, validation, persistence,
-and read-only output generators used by Register Map Workbench. It does not modify generated XLSX,
+and read-only output generators used by Csrio. It does not modify generated XLSX,
 C header, or Markdown content directly, and it exposes no RTL editing command.
 
 Use `--json` for automation. It may appear anywhere before the optional `--` argument
@@ -304,7 +304,7 @@ contains `workbench_navigation`. Its `arguments` array is ready to pass to the d
 The descriptor is self-contained: `kind` and `path` let a host display the exact destination
 without reopening or traversing the result, and `protocol_version` versions this handoff
 independently of the larger CLI envelope. The CLI does not start a process. A host may launch
-Register Map Workbench with `arguments`, route `project` and `stable_id` into an embedded
+Csrio with `arguments`, route `project` and `stable_id` into an embedded
 Workbench surface, or ignore the member. The `schema` response exposes its fields and version as
 `workbench_navigation_contract`.
 

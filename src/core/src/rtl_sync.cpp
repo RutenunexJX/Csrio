@@ -366,7 +366,7 @@ std::string renderManagedRtlRegion(const Workspace& workspace)
     }
     std::ostringstream output;
     output << "  " << beginMarker << '\n'
-           << "  // This region is synchronized by Register Map Workbench.\n"
+           << "  // This region is synchronized by Csrio.\n"
            << "  // Edit RMW:OBJECT JSON for text/enumerated properties and RMW:VALUE literals"
               " for numeric properties.\n";
     for (const QJsonValue& value : serializedObjects) {

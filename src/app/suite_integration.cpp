@@ -345,7 +345,7 @@ QJsonObject RegMapSuiteIntegration::appDescriptor(const QString& version,
 {
     return {
         {QStringLiteral("appId"), QStringLiteral("regmap")},
-        {QStringLiteral("displayName"), QStringLiteral("RegMapWorkbench")},
+        {QStringLiteral("displayName"), QStringLiteral("Csrio")},
         {QStringLiteral("version"), version.isEmpty()
              ? QStringLiteral("0.0.0") : version},
         {QStringLiteral("processId"),
@@ -407,7 +407,7 @@ QJsonObject RegMapSuiteIntegration::processRequest(
             != QString::fromLatin1(kOpenAction)) {
             return SuiteApp::errorResponse(
                 request, QStringLiteral("action_not_supported"),
-                QStringLiteral("Unknown RegMapWorkbench action"));
+                QStringLiteral("Unknown Csrio action"));
         }
         const bool opened = window_
             && window_->openStartupProjectPath(target.projectPath,
@@ -418,14 +418,14 @@ QJsonObject RegMapSuiteIntegration::processRequest(
                             {QStringLiteral("resource"), model}})
             : SuiteApp::errorResponse(
                   request, QStringLiteral("project_open_failed"),
-                  QStringLiteral("RegMapWorkbench could not open the project"));
+                  QStringLiteral("Csrio could not open the project"));
     }
 
     if (params.value(QStringLiteral("surfaceId")).toString()
         != QString::fromLatin1(kWorkbenchSurface)) {
         return SuiteApp::errorResponse(
             request, QStringLiteral("surface_not_supported"),
-            QStringLiteral("Unknown RegMapWorkbench surface"));
+            QStringLiteral("Unknown Csrio surface"));
     }
     if (method == QStringLiteral("surface.describe")) {
         return SuiteApp::successResponse(
@@ -445,11 +445,11 @@ QJsonObject RegMapSuiteIntegration::processRequest(
                   request, {{QStringLiteral("opened"), true}})
             : SuiteApp::errorResponse(
                   request, QStringLiteral("project_open_failed"),
-                  QStringLiteral("RegMapWorkbench could not open the surface"));
+                  QStringLiteral("Csrio could not open the surface"));
     }
     return SuiteApp::errorResponse(
         request, QStringLiteral("method_not_supported"),
-        QStringLiteral("RegMapWorkbench does not implement this provider method"));
+        QStringLiteral("Csrio does not implement this provider method"));
 }
 
 } // namespace regmap::workbench

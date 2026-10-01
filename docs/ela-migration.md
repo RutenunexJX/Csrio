@@ -1,6 +1,9 @@
 # ElaWidgetTools migration
 
 Status: all three slices completed (2026-09-22).
+This document preserves the historical 0.3.x release record. For current Csrio package names,
+commands and publication paths, use the [README](../README.md#windows-portable-directory-package).
+
 Release: 0.3.3, the first RegMapWorkbench Ela portable release. The slice evidence
 below records the pre-publication state; release validation is recorded separately
 at the end. The portable archive must identify a clean commit, include the Ela

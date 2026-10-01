@@ -4132,7 +4132,7 @@ resetMatchesFieldEnums(const std::vector<regmap::Field>& fields,
     regmap::Workspace workspace;
     workspace.id = "clipboard-workspace";
     workspace.name =
-        "Register Map Workbench Clipboard";
+        "Csrio Clipboard";
     workspace.addressSpaces.push_back(
         std::move(page));
     return serializeClipboardWorkspace(
@@ -4170,7 +4170,7 @@ resetMatchesFieldEnums(const std::vector<regmap::Field>& fields,
     regmap::Workspace workspace;
     workspace.id = "clipboard-workspace";
     workspace.name =
-        "Register Map Workbench Clipboard";
+        "Csrio Clipboard";
     workspace.addressSpaces.push_back(
         std::move(page));
     return serializeClipboardWorkspace(
@@ -4273,7 +4273,7 @@ MainWindow::MainWindow(QWidget* parent)
     statusBar()->setSizeGripEnabled(false);
     statusBar()->showMessage(QStringLiteral("Open a .regmap.yaml project to begin"));
     setAcceptDrops(true);
-    setWindowTitle(QStringLiteral("Register Map Workbench"));
+    setWindowTitle(QStringLiteral("Csrio"));
 }
 
 void MainWindow::buildUi()
@@ -5666,7 +5666,7 @@ void MainWindow::buildUi()
     projectTitleLabel_ =
         WorkbenchControls::label(
             QStringLiteral(
-                "Register Map Workbench"),
+                "Csrio"),
             pageHeader_);
     projectTitleLabel_->setObjectName(
         QStringLiteral("projectTitleLabel"));
@@ -8878,7 +8878,7 @@ void MainWindow::updateProjectHeader(
     if (workspace == nullptr) {
         projectTitleLabel_->setText(
             QStringLiteral(
-                "Register Map Workbench"));
+                "Csrio"));
         projectPathLabel_->setText(
             QStringLiteral(
                 "Open or create a project"));
@@ -10152,11 +10152,11 @@ void MainWindow::refreshProject()
                        QStringLiteral("[*] — ") +
                        compactProjectIdentity(
                            controller_.manifestPath()) +
-                       QStringLiteral(" — Register Map Workbench"));
+                       QStringLiteral(" — Csrio"));
     } else {
         setWindowFilePath(QString{});
         setWindowModified(false);
-        setWindowTitle(QStringLiteral("Register Map Workbench"));
+        setWindowTitle(QStringLiteral("Csrio"));
     }
     updateProjectHeader();
     updateSyncPresentation();
@@ -25686,7 +25686,7 @@ void MainWindow::copyHierarchySelection()
     QString label;
     regmap::Workspace clipboardWorkspace;
     clipboardWorkspace.id = "clipboard-workspace";
-    clipboardWorkspace.name = "Register Map Workbench Clipboard";
+    clipboardWorkspace.name = "Csrio Clipboard";
     if (const auto* page = regmap::findAddressSpace(*workspace, objectId)) {
         copiedPage_ = *page;
         copiedBlock_.reset();
