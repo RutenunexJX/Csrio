@@ -26,6 +26,17 @@
 #endif
 
 namespace {
+class NativeCellPopup final : public QObject {
+public:
+    NativeCellPopup() { qApp->installEventFilter(this); }
+protected:
+    bool eventFilter(QObject* object, QEvent* event) override {
+        if (event->type() == QEvent::Show && object->property("regmapCellEditor").toBool())
+            object->setProperty("regmapTestNativePopup", true);
+        return false;
+    }
+};
+
 class GuardedWindow final : public QMainWindow {
 public:
     QWidget* chrome{nullptr};
@@ -178,6 +189,204 @@ private slots:
         QVERIFY(guard.isNull());
         QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
         QVERIFY(!QApplication::activePopupWidget());
+    }
+
+    void cellChoiceEditorsOpenAndCommit_data() {
+        QTest::addColumn<bool>("field");
+        QTest::addColumn<bool>("keyboard");
+        QTest::addColumn<int>("column");
+        QTest::addColumn<QString>("choice");
+        QTest::addColumn<QString>("typedValue");
+        QTest::newRow("register-type-double-click") << false << false << 4 << QString("uint16") << QString();
+        QTest::newRow("field-type-double-click") << true << false << 5 << QString("bits") << QString();
+        QTest::newRow("register-type-keyboard") << false << true << 4 << QString("uint16") << QString();
+        QTest::newRow("field-type-keyboard") << true << true << 5 << QString("bits") << QString();
+        QTest::newRow("software-access-double-click") << true << false << 8 << QString("NONE") << QString();
+        QTest::newRow("hardware-access-double-click") << true << false << 9 << QString("NONE") << QString();
+        QTest::newRow("software-access-keyboard") << true << true << 8 << QString("NONE") << QString();
+        QTest::newRow("hardware-access-keyboard") << true << true << 9 << QString("NONE") << QString();
+        QTest::newRow("register-typed-preset") << false << true << 4 << QString("uint16") << QString("uint8");
+        QTest::newRow("field-typed-preset") << true << true << 5 << QString("bool") << QString("bits");
+        QTest::newRow("register-custom-enter") << false << true << 4 << QString() << QString("uint24");
+        QTest::newRow("field-custom-enter") << true << true << 5 << QString() << QString("uint1");
+        QTest::newRow("register-access-double-click") << false << false << 9 << QString("NONE") << QString();
+        QTest::newRow("register-access-keyboard") << false << true << 9 << QString("NONE") << QString();
+        QTest::newRow("register-tags-double-click") << false << false << 10 << QString("control") << QString();
+        QTest::newRow("register-tags-keyboard") << false << true << 10 << QString("control") << QString();
+    }
+
+    void cellChoiceEditorsOpenAndCommit() {
+        QFETCH(bool, field);
+        QFETCH(bool, keyboard);
+        QFETCH(int, column);
+        QFETCH(QString, choice);
+        QFETCH(QString, typedValue);
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto manifest = directory.filePath("type-double-click.regmap.yaml");
+        QVERIFY(createFixture(manifest));
+        MainWindow window;
+        QVERIFY(window.openProjectPath(manifest));
+        window.resize(1440, 900);
+        window.show();
+        window.activateWindow();
+        QTest::qWait(50);
+
+        auto* registers = window.findChild<QTableView*>("registerView");
+        auto* fields = window.findChild<QTableView*>("fieldView");
+        auto* controller = window.findChild<ProjectController*>();
+        QVERIFY(registers && fields && controller);
+        const auto rowNamed = [](QTableView* table, const QString& name) {
+            for (int row = 0; row < table->model()->rowCount(); ++row)
+                if (table->model()->index(row, 0).data().toString() == name) return row;
+            return -1;
+        };
+        if (field) {
+            const int controlRow = rowNamed(registers, "CONTROL");
+            QVERIFY(controlRow >= 0);
+            Q_EMIT registers->clicked(registers->model()->index(controlRow, 5));
+            QTRY_VERIFY(fields->isVisible());
+        }
+        auto* table = field ? fields : registers;
+        const int row = rowNamed(table, field ? "ENABLE" : "SAMPLE_COUNT");
+        QVERIFY(row >= 0);
+        table->setColumnHidden(column, false);
+        const auto index = table->model()->index(row, column);
+        const auto original = index.data().toString();
+        table->scrollTo(index);
+        const QPoint point = table->visualRect(index).center();
+        QVERIFY(table->viewport()->rect().contains(point));
+        NativeCellPopup enablePopup;
+        const QPoint windowPoint = table->viewport()->mapTo(&window, point);
+        if (keyboard) {
+            table->setCurrentIndex(index);
+            table->setFocus();
+            QTest::keyClick(table, Qt::Key_F2);
+        } else {
+            // Use window events so Qt routes the full double-click and mouse grab.
+            QTest::mousePress(window.windowHandle(), Qt::LeftButton, Qt::NoModifier, windowPoint, 10);
+            QTest::mouseRelease(window.windowHandle(), Qt::LeftButton, Qt::NoModifier, windowPoint, 10);
+            QTest::mousePress(window.windowHandle(), Qt::LeftButton, Qt::NoModifier, windowPoint, 10);
+        }
+        if (!field && column >= 9) {
+            QTRY_VERIFY(QApplication::activePopupWidget());
+            QPointer<QWidget> popup(QApplication::activePopupWidget());
+            QCOMPARE(popup->objectName(), column == 9 ? QString("accessPopup") : QString("tagPopup"));
+            if (!keyboard)
+                QTest::mouseRelease(window.windowHandle(), Qt::LeftButton, Qt::NoModifier, windowPoint, 10);
+            QTest::qWait(60);
+            QVERIFY(popup && popup->isVisible());
+            QCOMPARE(index.data().toString(), original);
+            QVERIFY(!controller->isDirty());
+            auto* options = popup->findChild<QListWidget*>(column == 9 ? "accessOptions" : "tagOptions");
+            QVERIFY(options);
+            const auto matches = options->findItems(choice, Qt::MatchExactly);
+            QCOMPARE(matches.size(), 1);
+            options->scrollToItem(matches.front());
+            QTest::mouseClick(options->viewport(), Qt::LeftButton, Qt::NoModifier,
+                options->visualItemRect(matches.front()).center());
+            if (popup) popup->close();
+            QTRY_COMPARE(table->model()->index(row, column).data().toString(), choice);
+            QVERIFY(controller->isDirty());
+            controller->undo();
+            QTRY_COMPARE(table->model()->index(row, column).data().toString(), original);
+            QVERIFY(!controller->isDirty());
+            return;
+        }
+        QPointer<QComboBox> editor(table->findChild<QComboBox*>(
+            field && column >= 8 ? "fieldAccessEditor" : "typeEditor"));
+        QVERIFY(editor);
+        QCOMPARE(editor->currentIndex(), editor->findText(original));
+        QTest::qWait(40);
+        QVERIFY(editor && editor->isVisible());
+        if (!keyboard) {
+            QVERIFY(!editor->view()->isVisible());
+            QTest::mouseRelease(window.windowHandle(), Qt::LeftButton, Qt::NoModifier, windowPoint, 10);
+        }
+        QTest::qWait(220);
+        QVERIFY(editor && editor->isVisible());
+        QVERIFY(editor->view()->isVisible());
+        QCOMPARE(index.data().toString(), original);
+        QVERIFY(!controller->isDirty());
+
+        if (!typedValue.isEmpty()) {
+            QTest::keyClick(editor->view(), Qt::Key_Escape);
+            QVERIFY(editor && editor->isVisible());
+            editor->lineEdit()->selectAll();
+            QTest::keyClicks(editor->lineEdit(), typedValue);
+            QCOMPARE(editor->currentText(), typedValue);
+            if (!choice.isEmpty()) {
+                QTest::keyClick(editor.data(), Qt::Key_Down, Qt::AltModifier);
+                QTest::qWait(220);
+                QVERIFY(editor && editor->isVisible());
+                QVERIFY(editor->view()->isVisible());
+                QCOMPARE(index.data().toString(), original);
+                QVERIFY(!controller->isDirty());
+            }
+        }
+        if (choice.isEmpty()) {
+            QTest::keyClick(editor->lineEdit(), Qt::Key_Return);
+        } else {
+            const int choiceRow = editor->findText(choice);
+            QVERIFY(choiceRow >= 0);
+            auto* choices = editor->view();
+            const auto choiceIndex = editor->model()->index(choiceRow, 0);
+            choices->scrollTo(choiceIndex);
+            QTest::mouseClick(choices->viewport(), Qt::LeftButton, Qt::NoModifier,
+                choices->visualRect(choiceIndex).center());
+        }
+        const QString expected = choice.isEmpty() ? typedValue : choice;
+        QTRY_COMPARE(table->model()->index(row, column).data().toString(), expected);
+        QTRY_VERIFY(!editor || !editor->isVisible());
+        QCOMPARE(controller->isDirty(), expected != original);
+        if (expected != original) controller->undo();
+        QTRY_COMPARE(table->model()->index(row, column).data().toString(), original);
+        QVERIFY(!controller->isDirty());
+    }
+
+    void keepsTagFilterUnchangedOnFocusLoss() {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto manifest = directory.filePath("tag-filter-focus.regmap.yaml");
+        QVERIFY(createFixture(manifest));
+        MainWindow window;
+        QVERIFY(window.openProjectPath(manifest));
+        window.resize(1440, 900);
+        window.show();
+        window.activateWindow();
+        QTest::qWait(50);
+        auto* filter = window.findChild<QComboBox*>("tagFilter");
+        auto* table = window.findChild<QTableView*>("registerView");
+        QVERIFY(filter && table && filter->lineEdit());
+        const int rows = table->model()->rowCount();
+        const auto original = filter->currentText();
+        QVERIFY(filter->findText("control") >= 0);
+        filter->lineEdit()->setFocus();
+        filter->lineEdit()->selectAll();
+        QTest::keyClicks(filter->lineEdit(), "control");
+        filter->completer()->popup()->hide();
+        table->setFocus();
+        QCoreApplication::processEvents();
+        QCOMPARE(filter->currentText(), original);
+        QCOMPARE(table->model()->rowCount(), rows);
+
+        filter->lineEdit()->setFocus();
+        filter->lineEdit()->selectAll();
+        QTest::keyClicks(filter->lineEdit(), "control");
+        QTest::keyClick(filter->lineEdit(), Qt::Key_Return);
+        QTRY_COMPARE(filter->currentText(), QString("control"));
+        QVERIFY(table->model()->rowCount() < rows);
+
+        filter->lineEdit()->setFocus();
+        filter->lineEdit()->selectAll();
+        QTest::keyClicks(filter->lineEdit(), "crit");
+        auto* candidates = filter->completer()->popup();
+        QTRY_VERIFY(candidates->isVisible());
+        const auto candidate = candidates->model()->index(0, 0);
+        QCOMPARE(candidate.data().toString(), QString("critical"));
+        QTest::mouseClick(candidates->viewport(), Qt::LeftButton, Qt::NoModifier,
+            candidates->visualRect(candidate).center());
+        QTRY_COMPARE(filter->currentText(), QString("critical"));
     }
 
     void applicationIntegrationAndEditCancel() {

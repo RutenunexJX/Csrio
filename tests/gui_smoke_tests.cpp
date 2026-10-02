@@ -14307,6 +14307,9 @@ void GuiSmokeTests::editsTypesWithPresetAndCustomChoices()
     QTest::mouseDClick(
         registers->viewport(), Qt::LeftButton, Qt::NoModifier,
         registers->visualRect(registerType).center());
+    QTest::mouseRelease(
+        registers->viewport(), Qt::LeftButton, Qt::NoModifier,
+        registers->visualRect(registerType).center());
     QTRY_VERIFY_WITH_TIMEOUT(
         visibleTypeEditor(registers) != nullptr, 2000);
     QPointer<QComboBox> registerEditor = visibleTypeEditor(registers);
@@ -14421,6 +14424,9 @@ void GuiSmokeTests::editsTypesWithPresetAndCustomChoices()
     QCOMPARE(fields->currentIndex(), fieldType);
     QVERIFY(visibleTypeEditor(fields) == nullptr);
     QTest::mouseDClick(
+        fields->viewport(), Qt::LeftButton, Qt::NoModifier,
+        fields->visualRect(fieldType).center());
+    QTest::mouseRelease(
         fields->viewport(), Qt::LeftButton, Qt::NoModifier,
         fields->visualRect(fieldType).center());
     QTRY_VERIFY_WITH_TIMEOUT(
@@ -15363,6 +15369,8 @@ void GuiSmokeTests::editsFieldAccessFromConstrainedChoices()
 
     QTest::mouseDClick(fields->viewport(), Qt::LeftButton, Qt::NoModifier,
                        fields->visualRect(softwareAccess).center());
+    QTest::mouseRelease(fields->viewport(), Qt::LeftButton, Qt::NoModifier,
+                        fields->visualRect(softwareAccess).center());
     const auto visibleAccessEditor = [fields]() -> QComboBox* {
         for (auto* editor :
              fields->findChildren<QComboBox*>(QStringLiteral("fieldAccessEditor"))) {

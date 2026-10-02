@@ -1613,7 +1613,7 @@ public:
     {
         Q_UNUSED(option)
         Q_UNUSED(index)
-        auto* editor = WorkbenchControls::cellComboBox(parent);
+        auto* editor = WorkbenchControls::cellComboBox(parent, true);
         editor->setObjectName(QStringLiteral("fieldAccessEditor"));
         editor->setEditable(false);
         editor->addItems({QStringLiteral("NONE"), QStringLiteral("RO"),
@@ -1683,6 +1683,11 @@ public:
         editor->setObjectName(QStringLiteral("typeEditor"));
         editor->setEditable(true);
         editor->setInsertPolicy(QComboBox::NoInsert);
+        // Preserve literal custom widths (uint1 must not become uint16).
+        editor->setCompleter(nullptr);
+        // The delegate owns focus-loss commits. QComboBox's implicit activation
+        // would instead close the popup as soon as an edited preset opens it.
+        QObject::disconnect(editor->lineEdit(), &QLineEdit::editingFinished, editor, nullptr);
         editor->addItems(choices_);
         editor->setToolTip(
             QStringLiteral(
@@ -1722,7 +1727,10 @@ public:
         if (combo == nullptr) {
             return;
         }
-        combo->setCurrentText(index.data().toString());
+        const QString value = index.data().toString();
+        // Select the matching preset too; custom widths have no selected preset.
+        combo->setCurrentIndex(combo->findText(value, Qt::MatchFixedString));
+        combo->setEditText(value);
         if (combo->lineEdit() != nullptr) {
             combo->lineEdit()->selectAll();
         }
@@ -4602,6 +4610,9 @@ void MainWindow::buildUi()
     tagFilter_->addItem(QStringLiteral("All tags"));
     if (auto* editor =
             tagFilter_->lineEdit()) {
+        // Filtering requires Enter or an explicit candidate selection. Qt's
+        // editable combo otherwise selects an exact match on focus loss.
+        QObject::disconnect(editor, &QLineEdit::editingFinished, tagFilter_, nullptr);
         editor->setObjectName(
             QStringLiteral(
                 "tagFilterSearch"));

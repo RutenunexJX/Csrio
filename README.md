@@ -1,6 +1,6 @@
 # Csrio
 
-Current version: `0.4.0`.
+Current version: `0.4.1`.
 
 [Source repository](https://github.com/RutenunexJX/Csrio)
 
