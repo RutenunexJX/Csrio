@@ -20,6 +20,7 @@
 #include <xlsxformat.h>
 
 #include <QColor>
+#include <QCryptographicHash>
 #include <QFile>
 #include <QFileDevice>
 #include <QDebug>
@@ -42,6 +43,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 
 class CoreTests final : public QObject {
     Q_OBJECT
@@ -57,6 +59,9 @@ private slots:
     void rejectsUnsafeManifestPaths();
     void rejectsPlatformOutputPathCollisions();
     void loadsStableProjectFixture();
+    void loadsOneSnapshotWithEquivalentDiagnostics_data();
+    void loadsOneSnapshotWithEquivalentDiagnostics();
+    void adoptsOnlyUnmodifiedLoadSnapshots();
     void roundTripsProjectFile();
     void roundTripsExtendedModel();
     void normalizesFixedRegisterSlotsAndLegacyArrays();
@@ -728,6 +733,110 @@ void CoreTests::loadsStableProjectFixture()
     QVERIFY(!rtl.hasErrors());
     QVERIFY(rtl.workspace.has_value());
     QVERIFY(regmap::diffWorkspaces(*result.workspace, *rtl.workspace).empty());
+}
+
+void CoreTests::loadsOneSnapshotWithEquivalentDiagnostics_data()
+{
+    QTest::addColumn<QString>("kind");
+    for (const char* kind : {"valid", "syntax", "root", "schema", "workspace", "model", "missing"})
+        QTest::newRow(kind) << QString::fromLatin1(kind);
+}
+
+void CoreTests::loadsOneSnapshotWithEquivalentDiagnostics()
+{
+    QFETCH(QString, kind);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString path = directory.filePath(QString::fromUtf8("单次加载.regmap.yaml"));
+    auto workspace = stableWorkspace();
+    const auto manifest = stableManifest(std::filesystem::path(path.toStdWString()));
+    if (kind == "model") {
+        auto& registers = workspace.addressSpaces.front().blocks.front().registers;
+        registers.back().id = registers.front().id; // Syntactically valid, semantically invalid.
+    }
+    const auto serialized = regmap::serializeProjectText(manifest, workspace);
+    QVERIFY(serialized.text.has_value());
+    QByteArray bytes = QByteArray::fromStdString(*serialized.text);
+    if (kind == "syntax") bytes = "schema_version: [unterminated";
+    if (kind == "root") bytes = "- sequence\n";
+    if (kind == "schema") {
+        QVERIFY(bytes.contains("schema_version: 2"));
+        bytes.replace("schema_version: 2", "schema_version: 99");
+    }
+    if (kind == "workspace") {
+        QVERIFY(bytes.contains("address_spaces:"));
+        bytes.replace("address_spaces:", "unexpected_spaces:");
+    }
+    if (kind != "missing") writeTextFile(path, bytes);
+
+    // Reconstruct the previous public API composition, including exact order
+    // and SourceLocation fields; do not merely compare diagnostic counts.
+    auto previousManifest = regmap::loadProjectManifest(manifest.manifestPath);
+    auto expectedDiagnostics = previousManifest.diagnostics;
+    std::optional<regmap::Workspace> expectedWorkspace;
+    if (previousManifest.manifest) {
+        auto previousModel = regmap::loadWorkspaceFromProjectFile(manifest.manifestPath);
+        expectedDiagnostics.insert(expectedDiagnostics.end(),
+            previousModel.diagnostics.begin(), previousModel.diagnostics.end());
+        expectedWorkspace = std::move(previousModel.workspace);
+        if (expectedWorkspace) {
+            const auto validation = regmap::validateWorkspace(*expectedWorkspace);
+            expectedDiagnostics.insert(expectedDiagnostics.end(), validation.begin(), validation.end());
+        }
+    }
+    const auto opened = regmap::openProject(manifest.manifestPath);
+    if (kind == "model") {
+        QVERIFY(opened.workspace.has_value());
+        QVERIFY(opened.hasErrors());
+    }
+    QVERIFY(opened.diagnostics == expectedDiagnostics);
+    QCOMPARE(opened.workspace.has_value(), expectedWorkspace.has_value());
+    auto snapshot = regmap::loadProjectSnapshot(manifest.manifestPath);
+    QCOMPARE(snapshot.metrics().fileReads, kind == "missing" ? std::size_t{0} : std::size_t{1});
+    QCOMPARE(snapshot.metrics().yamlParses, kind == "missing" ? std::size_t{0} : std::size_t{1});
+    QCOMPARE(snapshot.metrics().modelValidations, expectedWorkspace ? std::size_t{1} : std::size_t{0});
+    if (kind != "missing") {
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(snapshot.sourceSha256(), QCryptographicHash::hash(file.readAll(),
+            QCryptographicHash::Sha256).toHex().toStdString());
+    }
+    if (expectedWorkspace) {
+        QCOMPARE(regmap::serializeWorkspaceState(*snapshot.workspace(), true),
+                 regmap::serializeWorkspaceState(*expectedWorkspace, true));
+        regmap::WorkspaceStore store;
+        QVERIFY(store.resetLoadedProject(std::move(snapshot)));
+        QCOMPARE(store.validationCount(), std::uint64_t{0});
+        QVERIFY(store.diagnostics() == regmap::validateWorkspace(*store.workspace()));
+        QVERIFY(!store.dirty());
+    }
+}
+
+void CoreTests::adoptsOnlyUnmodifiedLoadSnapshots()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto opened = openStableProject(directory);
+    QVERIFY(opened.manifest && opened.workspace);
+    auto snapshot = regmap::loadProjectSnapshot(opened.manifest->manifestPath);
+    static_assert(std::is_same_v<decltype(snapshot.workspace()), const std::optional<regmap::Workspace>&>);
+    auto moved = std::move(snapshot);
+    QVERIFY(!snapshot.workspace());
+    regmap::WorkspaceStore store;
+    QVERIFY(!store.resetLoadedProject(std::move(snapshot)));
+    QVERIFY(store.resetLoadedProject(std::move(moved)));
+    QVERIFY(!moved.workspace());
+    QCOMPARE(store.validationCount(), std::uint64_t{0});
+    QVERIFY(!store.resetLoadedProject(std::move(moved)));
+    QVERIFY(store.workspace());
+    auto invalid = *store.workspace();
+    invalid.addressSpaces.front().blocks.front().registers.front().width = 0;
+    store.reset(std::move(invalid));
+    QCOMPARE(store.validationCount(), std::uint64_t{1});
+    QVERIFY(!store.diagnostics().empty());
+    QVERIFY(store.transact("Description", [](regmap::Workspace& model) { model.name += " edited"; }));
+    QCOMPARE(store.validationCount(), std::uint64_t{2});
+    QVERIFY(!store.diagnostics().empty());
 }
 
 void CoreTests::roundTripsProjectFile()

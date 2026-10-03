@@ -1,6 +1,7 @@
 #include "regmap/core/serialization.hpp"
 
 #include "regmap/core/model_tokens.hpp"
+#include "project_document.hpp"
 
 #include <QByteArray>
 #include <QDir>
@@ -802,6 +803,13 @@ WorkspaceFileLoadResult loadWorkspaceFromProjectText(
                       "workspace");
         return result;
     }
+    return detail::decodeProjectWorkspace(root, sourcePath);
+}
+
+WorkspaceFileLoadResult detail::decodeProjectWorkspace(
+    const YAML::Node& root, const std::filesystem::path& sourcePath)
+{
+    WorkspaceFileLoadResult result;
     if (!root.IsMap()) {
         addDiagnostic(result.diagnostics, invalidYamlCode, "Project root must be a mapping.",
                       sourcePath, root);

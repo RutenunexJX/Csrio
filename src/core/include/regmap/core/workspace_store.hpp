@@ -13,6 +13,8 @@
 
 namespace regmap {
 
+class ProjectLoadSnapshot;
+
 class WorkspaceStore {
 public:
     using Mutation = std::function<void(Workspace&)>;
@@ -22,6 +24,7 @@ public:
     explicit WorkspaceStore(Workspace workspace);
 
     void reset(Workspace workspace);
+    [[nodiscard]] bool resetLoadedProject(ProjectLoadSnapshot&& loaded);
 
     [[nodiscard]] const Workspace* workspace() const noexcept;
     [[nodiscard]] const Workspace* savedWorkspace() const noexcept;
@@ -33,6 +36,7 @@ public:
     [[nodiscard]] std::string_view redoText() const noexcept;
     [[nodiscard]] std::size_t undoDepth() const noexcept;
     [[nodiscard]] std::uint64_t revision() const noexcept;
+    [[nodiscard]] std::uint64_t validationCount() const noexcept { return validationCount_; }
 
     [[nodiscard]] bool transact(std::string description, const Mutation& mutation);
     [[nodiscard]] bool squashUndoSince(
@@ -58,10 +62,12 @@ private:
     std::vector<HistoryEntry> undo_;
     std::vector<HistoryEntry> redo_;
     std::uint64_t revision_ {0};
+    std::uint64_t validationCount_ {0};
 
     static void appendHistory(
         std::vector<HistoryEntry>& history,
         HistoryEntry entry);
+    void resetState(Workspace workspace);
     void revalidate();
 };
 

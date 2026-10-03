@@ -13,6 +13,7 @@
 #include <QJsonObject>
 #include <QPointer>
 #include <QSaveFile>
+#include <QVariant>
 
 #include <algorithm>
 #include <iterator>
@@ -26,11 +27,6 @@ namespace {
     return std::ranges::any_of(diagnostics, [](const regmap::Diagnostic& diagnostic) {
         return diagnostic.severity == regmap::DiagnosticSeverity::error;
     });
-}
-
-[[nodiscard]] bool isValidationDiagnostic(const regmap::Diagnostic& diagnostic)
-{
-    return diagnostic.code.size() >= 3 && diagnostic.code.starts_with("RM3");
 }
 
 [[nodiscard]] QString fromPath(const std::filesystem::path& path)
@@ -850,20 +846,18 @@ bool ProjectController::openProject(const QString& manifestPath)
     const std::filesystem::path requestedPath =
         std::filesystem::absolute(std::filesystem::path(manifestPath.toStdWString()))
             .lexically_normal();
-    const QByteArray requestedDigest =
-        fileDigest(requestedPath);
-    auto loaded = regmap::openProject(requestedPath);
+    auto loaded = regmap::loadProjectSnapshot(requestedPath);
     const std::optional<std::string> requestedWorkspaceId =
-        loaded.workspace ? std::optional<std::string>(loaded.workspace->id)
+        loaded.workspace() ? std::optional<std::string>(loaded.workspace()->id)
                          : std::nullopt;
     if (store_.workspace() != nullptr &&
-        (!loaded.manifest.has_value() || !loaded.workspace.has_value())) {
+        (!loaded.manifest().has_value() || !loaded.workspace().has_value())) {
         const auto firstError = std::ranges::find_if(
-            loaded.diagnostics, [](const regmap::Diagnostic& diagnostic) {
+            loaded.loadDiagnostics(), [](const regmap::Diagnostic& diagnostic) {
                 return diagnostic.severity == regmap::DiagnosticSeverity::error;
             });
         const QString fileName = QFileInfo(fromPath(requestedPath)).fileName();
-        const QString detail = firstError == loaded.diagnostics.end()
+        const QString detail = firstError == loaded.loadDiagnostics().end()
             ? QString {}
             : QStringLiteral(": %1").arg(fromUtf8(firstError->message));
         emit syncStatusChanged(
@@ -905,10 +899,7 @@ bool ProjectController::openProject(const QString& manifestPath)
     acceptedManifestDigest_.clear();
     acceptedManifestDigestKnown_ =
         false;
-    reloadImpl(
-        false,
-        &loaded,
-        requestedDigest);
+    reloadImpl(false, &loaded);
     return requestedWorkspaceId.has_value() && manifestPath_ == requestedPath &&
         store_.workspace() != nullptr &&
         store_.workspace()->id == *requestedWorkspaceId;
@@ -924,8 +915,7 @@ void ProjectController::reload()
 
 void ProjectController::reloadImpl(
     bool automatic,
-    regmap::ProjectOpenResult* preloaded,
-    const QByteArray& preloadedDigest)
+    regmap::ProjectLoadSnapshot* preloaded)
 {
     if (manifestPath_.empty()) {
         return;
@@ -941,27 +931,27 @@ void ProjectController::reloadImpl(
         automatic ? QStringLiteral("Synchronizing saved project data...")
                   : QStringLiteral("Loading project..."));
 
-    const QByteArray loadedDigest =
-        preloaded == nullptr
-        ? fileDigest(manifestPath_)
-        : preloadedDigest;
     auto loaded =
         preloaded == nullptr
-        ? regmap::openProject(manifestPath_)
+        ? regmap::loadProjectSnapshot(manifestPath_)
         : std::move(*preloaded);
-    loadDiagnostics_ = std::move(loaded.diagnostics);
-    std::erase_if(loadDiagnostics_, isValidationDiagnostic);
+    const QByteArray loadedDigest = QByteArray::fromHex(
+        QByteArray::fromStdString(loaded.sourceSha256()));
+    loadDiagnostics_ = loaded.loadDiagnostics();
+    setProperty("projectFileReadCount", qulonglong(loaded.metrics().fileReads));
+    setProperty("projectYamlParseCount", qulonglong(loaded.metrics().yamlParses));
+    setProperty("projectValidationCount", qulonglong(loaded.metrics().modelValidations));
     changes_.clear();
     conflicts_.clear();
     initialSyncChoicePending_ = false;
     syncDiagnostics_.clear();
 
-    if (loaded.manifest.has_value() && loaded.workspace.has_value()) {
+    if (loaded.manifest().has_value() && loaded.workspace().has_value()) {
         if (const auto* current = store_.workspace()) {
-            changes_ = regmap::diffWorkspaces(*current, *loaded.workspace);
+            changes_ = regmap::diffWorkspaces(*current, *loaded.workspace());
         }
-        manifest_ = std::move(loaded.manifest);
-        store_.reset(std::move(*loaded.workspace));
+        manifest_ = loaded.manifest();
+        static_cast<void>(store_.resetLoadedProject(std::move(loaded)));
         clearExternalComparison();
         rebuildSavedChanges();
         recoveryBaseWorkspace_ =
@@ -1009,7 +999,7 @@ void ProjectController::reloadImpl(
     setExternalProjectChangePending(
         manifestChangedOnDisk());
     if (!lastAcceptedModelWasValid_) {
-        manifest_ = std::move(loaded.manifest);
+        manifest_ = loaded.manifest();
         store_ = regmap::WorkspaceStore {};
         baseline_.reset();
         emit projectChanged();

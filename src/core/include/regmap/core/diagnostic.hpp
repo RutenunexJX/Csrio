@@ -18,6 +18,7 @@ struct Diagnostic {
     std::string message;
     ObjectId objectId;
     SourceLocation source;
+    bool operator==(const Diagnostic&) const = default;
 };
 
 } // namespace regmap

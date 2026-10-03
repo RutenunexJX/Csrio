@@ -21,6 +21,7 @@ struct SourceLocation {
     std::string cell;
 
     [[nodiscard]] bool empty() const noexcept;
+    bool operator==(const SourceLocation&) const = default;
 };
 
 using PropertySources = std::map<std::string, SourceLocation, std::less<>>;

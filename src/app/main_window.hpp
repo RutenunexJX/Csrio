@@ -7,6 +7,7 @@
 #include <QByteArray>
 #include <QMainWindow>
 #include <QPointer>
+#include <QPersistentModelIndex>
 #include <QString>
 
 #include <filesystem>
@@ -14,6 +15,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 class QAction;
@@ -44,6 +46,10 @@ class QWidget;
 
 class MainWindow final : public QMainWindow {
     Q_OBJECT
+    Q_PROPERTY(qulonglong inlineDiagnosticRowVisitCount READ inlineDiagnosticRowVisitCount)
+    Q_PROPERTY(qulonglong inlineDiagnosticCellUpdateCount READ inlineDiagnosticCellUpdateCount)
+    Q_PROPERTY(qulonglong diagnosticsRefreshCount READ diagnosticsRefreshCount)
+    Q_PROPERTY(qulonglong diffRefreshCount READ diffRefreshCount)
 
 public:
     explicit MainWindow(QWidget* parent = nullptr);
@@ -56,6 +62,11 @@ public:
         const QString& projectPath) const;
 
 private:
+    qulonglong inlineDiagnosticRowVisitCount() const { return inlineDiagnosticRowVisits_; }
+    qulonglong inlineDiagnosticCellUpdateCount() const { return inlineDiagnosticCellUpdates_; }
+    qulonglong diagnosticsRefreshCount() const { return diagnosticsRefreshCount_; }
+    qulonglong diffRefreshCount() const { return diffRefreshCount_; }
+
     enum DataRole {
         objectIdRole = Qt::UserRole + 1,
         addressIdRole,
@@ -253,6 +264,22 @@ private:
     std::filesystem::path discardedRecoveryProjectPath_;
     bool modelEditInProgress_{false};
     bool refreshPending_{false};
+    bool incrementalRefreshAmbiguous_{false};
+    QTimer* derivedRefreshTimer_{nullptr};
+    std::filesystem::path derivedRefreshPath_;
+    std::string derivedRefreshWorkspaceId_;
+    std::uint64_t derivedRefreshGeneration_{0};
+    bool diagnosticsRefreshPending_{false};
+    bool diffRefreshPending_{false};
+    bool displayedDiagnosticsValid_{false};
+    std::vector<regmap::Diagnostic> displayedDiagnostics_;
+    std::unordered_set<std::string> pendingInlineDiagnosticIds_;
+    std::unordered_multimap<std::string, QPersistentModelIndex> registerRowsById_;
+    std::unordered_multimap<std::string, QPersistentModelIndex> fieldRowsById_;
+    std::uint64_t inlineDiagnosticRowVisits_{0};
+    std::uint64_t inlineDiagnosticCellUpdates_{0};
+    std::uint64_t diagnosticsRefreshCount_{0};
+    std::uint64_t diffRefreshCount_{0};
     bool searchRefreshPending_{false};
     std::string pendingIncrementalObjectId_;
     std::string pendingIncrementalProperty_;
@@ -289,7 +316,7 @@ private:
     bool suppressNextSearchReturn_{false};
     int generatedOutputsNeedingRetry_{0};
     int totalDiagnostics_{0};
-    std::unordered_map<std::string, std::vector<std::size_t>>
+    std::unordered_map<std::string, std::vector<regmap::Diagnostic>>
         inlineDiagnosticIndex_;
     bool resultsPanelRequested_{false};
     bool resultsPanelAutoOpenedForProblems_{false};
@@ -373,6 +400,8 @@ private:
     [[nodiscard]] bool refreshIncrementalEdit();
     void updateContextBar();
     void refreshDiagnostics();
+    void synchronizeDerivedRefreshContext();
+    void requestDerivedRefresh(bool diagnostics, bool differences);
     void rebuildInlineDiagnosticIndex();
     void refreshInlineDiagnostics();
     void applyInlineDiagnosticsToRow(

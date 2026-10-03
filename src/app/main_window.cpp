@@ -6567,6 +6567,8 @@ void MainWindow::buildActions()
                 *qApp, mode);
             WorkbenchTheme::storePreference(
                 mode);
+            displayedDiagnosticsValid_ = false;
+            requestDerivedRefresh(true, true);
             refreshProject();
             update();
         };
@@ -7096,6 +7098,7 @@ void MainWindow::connectSignals()
                 &MainWindow::updateEditActions);
         });
     connect(&controller_, &ProjectController::projectChanged, this, [this] {
+        synchronizeDerivedRefreshContext();
         clearInlineFailure();
         searchRefreshPending_ =
             globalSearchEdit_ != nullptr &&
@@ -7114,13 +7117,10 @@ void MainWindow::connectSignals()
         requestProjectRefresh();
     });
     connect(&controller_, &ProjectController::diagnosticsChanged, this, [this] {
+        synchronizeDerivedRefreshContext();
+        generateAction_->setEnabled(controller_.workspace() != nullptr && !controller_.hasProjectErrors());
         rebuildInlineDiagnosticIndex();
-        refreshInlineDiagnostics();
-        if (modelEditInProgress_) {
-            QTimer::singleShot(0, this, &MainWindow::refreshDiagnostics);
-        } else {
-            refreshDiagnostics();
-        }
+        requestDerivedRefresh(true, false);
     });
     connect(&controller_, &ProjectController::generationChanged, this,
             &MainWindow::refreshGenerated);
@@ -7132,9 +7132,10 @@ void MainWindow::connectSignals()
             updateEditActions();
             updateRecoveryPresentation();
         });
-    connect(&controller_, &ProjectController::conflictsChanged, this, &MainWindow::refreshDiff);
+    const auto requestDiff = [this] { requestDerivedRefresh(false, true); };
+    connect(&controller_, &ProjectController::conflictsChanged, this, requestDiff);
     connect(&controller_, &ProjectController::comparisonChanged,
-            this, &MainWindow::refreshDiff);
+            this, requestDiff);
     connect(&controller_, &ProjectController::syncStatusChanged, this,
             [this](const QString& text) {
                 statusBar()->showMessage(text);
@@ -10001,7 +10002,7 @@ bool MainWindow::refreshIncrementalEdit()
     updateAddressSpaceView();
     updateSelectedFieldSummary();
     updateContextBar();
-    refreshDiff();
+    requestDerivedRefresh(false, true);
     updateRegisterEmptyState();
     updateRowSelectionPresentation();
     updateEditActions();
@@ -10024,13 +10025,14 @@ void MainWindow::refreshProject()
     rebuildInlineDiagnosticIndex();
     const auto& manifestPath = controller_.manifestPath();
     if (manifestPath == displayedManifestPath_ &&
-        refreshIncrementalEdit()) {
+        !incrementalRefreshAmbiguous_ && refreshIncrementalEdit()) {
         pendingIncrementalObjectId_.clear();
         pendingIncrementalProperty_.clear();
         return;
     }
     pendingIncrementalObjectId_.clear();
     pendingIncrementalProperty_.clear();
+    incrementalRefreshAmbiguous_ = false;
     ++fullTableRefreshCount_;
     setProperty("fullTableRefreshCount",
                 QVariant::fromValue<qulonglong>(fullTableRefreshCount_));
@@ -10139,7 +10141,7 @@ void MainWindow::refreshProject()
     populateRegisters();
     updateAddressSpaceView();
     updateFavoritePresentation();
-    refreshDiff();
+    requestDerivedRefresh(false, true);
     if (searchRefreshPending_) {
         searchRefreshPending_ = false;
         if (!globalSearchEdit_
@@ -10524,6 +10526,7 @@ void MainWindow::populateRegisters()
             registerView_->horizontalHeader()->saveState();
     }
     registerModel_->clear();
+    registerRowsById_.clear();
     registerModel_->setHorizontalHeaderLabels(
         {QStringLiteral("Name"), QStringLiteral("Offset"), QStringLiteral("Address"),
          QStringLiteral("Width / Bits"), QStringLiteral("Value Type"), QStringLiteral("Details"),
@@ -10893,6 +10896,8 @@ void MainWindow::populateRegisters()
                 }
                 const int rowNumber = registerModel_->rowCount();
                 registerModel_->appendRow(row);
+                registerRowsById_.emplace(
+                    reg.id, QPersistentModelIndex(registerModel_->index(rowNumber, 0)));
                 applyInlineDiagnosticsToRow(
                     registerModel_, rowNumber, true);
                 if (reg.id == preferredRegister) {
@@ -11021,6 +11026,7 @@ void MainWindow::populateFields(const regmap::Register* reg)
             fieldView_->horizontalHeader()->saveState();
     }
     fieldModel_->clear();
+    fieldRowsById_.clear();
     fieldModel_->setHorizontalHeaderLabels(
         {QStringLiteral("Name"), QStringLiteral("Parent"), QStringLiteral("MSB"),
          QStringLiteral("LSB"), QStringLiteral("Width / Bits"), QStringLiteral("Value Type"),
@@ -11294,6 +11300,8 @@ void MainWindow::populateFields(const regmap::Register* reg)
             }
             const int rowNumber = fieldModel_->rowCount();
             fieldModel_->appendRow(row);
+            fieldRowsById_.emplace(
+                field.id, QPersistentModelIndex(fieldModel_->index(rowNumber, 0)));
             applyInlineDiagnosticsToRow(
                 fieldModel_, rowNumber, false);
             if (field.id == preferredField) {
@@ -11535,7 +11543,7 @@ void MainWindow::populateEnumValues(const regmap::Register* reg, const regmap::F
 }
 void MainWindow::rebuildInlineDiagnosticIndex()
 {
-    inlineDiagnosticIndex_.clear();
+    decltype(inlineDiagnosticIndex_) next;
     const auto& diagnostics = controller_.diagnostics();
     for (std::size_t index = 0; index < diagnostics.size(); ++index) {
         const auto& diagnostic = diagnostics[index];
@@ -11543,8 +11551,19 @@ void MainWindow::rebuildInlineDiagnosticIndex()
             !diagnostic.code.starts_with("RM3")) {
             continue;
         }
-        inlineDiagnosticIndex_[diagnostic.objectId].push_back(index);
+        next[diagnostic.objectId].push_back(diagnostic);
     }
+    for (const auto& [id, previous] : inlineDiagnosticIndex_) {
+        const auto found = next.find(id);
+        if (found == next.end() || found->second != previous)
+            pendingInlineDiagnosticIds_.insert(id);
+    }
+    for (const auto& [id, current] : next) {
+        const auto found = inlineDiagnosticIndex_.find(id);
+        if (found == inlineDiagnosticIndex_.end() || found->second != current)
+            pendingInlineDiagnosticIds_.insert(id);
+    }
+    inlineDiagnosticIndex_ = std::move(next);
 }
 
 void MainWindow::applyInlineDiagnosticsToRow(
@@ -11555,12 +11574,14 @@ void MainWindow::applyInlineDiagnosticsToRow(
     if (model == nullptr || row < 0 || row >= model->rowCount()) {
         return;
     }
+    ++inlineDiagnosticRowVisits_;
     for (int column = 0; column < model->columnCount(); ++column) {
         QStandardItem* current = model->item(row, column);
         if (current == nullptr ||
             !current->data(inlineDiagnosticTextRole).isValid()) {
             continue;
         }
+        ++inlineDiagnosticCellUpdates_;
         current->setData(
             current->data(inlineOriginalToolTipRole), Qt::ToolTipRole);
         current->setData(
@@ -11617,12 +11638,7 @@ void MainWindow::applyInlineDiagnosticsToRow(
         if (code == "RM3052") return fieldMinimumColumn;
         return fieldNameColumn;
     };
-    const auto& diagnostics = controller_.diagnostics();
-    for (const std::size_t diagnosticIndex : found->second) {
-        if (diagnosticIndex >= diagnostics.size()) {
-            continue;
-        }
-        const auto& diagnostic = diagnostics[diagnosticIndex];
+    for (const auto& diagnostic : found->second) {
         const int severity =
             diagnostic.severity == regmap::DiagnosticSeverity::error
             ? 2
@@ -11642,6 +11658,7 @@ void MainWindow::applyInlineDiagnosticsToRow(
         if (current == nullptr || diagnostic.messages.isEmpty()) {
             continue;
         }
+        ++inlineDiagnosticCellUpdates_;
         const QString message = diagnostic.messages.join(QLatin1Char('\n'));
         current->setData(current->data(Qt::ToolTipRole),
                          inlineOriginalToolTipRole);
@@ -11676,18 +11693,79 @@ void MainWindow::refreshInlineDiagnostics()
     QScopedValueRollback guard(refreshing_, true);
     const QSignalBlocker registerBlocker(registerModel_);
     const QSignalBlocker fieldBlocker(fieldModel_);
-    for (int row = 0; registerModel_ != nullptr &&
-         row < registerModel_->rowCount(); ++row) {
-        applyInlineDiagnosticsToRow(registerModel_, row, true);
+    const auto changedIds = std::exchange(pendingInlineDiagnosticIds_, {});
+    for (const auto& id : changedIds) {
+        const auto update = [&](const auto& rows, QStandardItemModel* model, bool registers) {
+            // Invalid projects can contain duplicate IDs. Keep every displayed
+            // row, while unique IDs still require only one hash lookup/visit.
+            const auto [begin, end] = rows.equal_range(id);
+            for (auto current = begin; current != end; ++current) {
+                if (current->second.isValid())
+                    applyInlineDiagnosticsToRow(model, current->second.row(), registers);
+            }
+        };
+        update(registerRowsById_, registerModel_, true);
+        update(fieldRowsById_, fieldModel_, false);
     }
-    for (int row = 0; fieldModel_ != nullptr &&
-         row < fieldModel_->rowCount(); ++row) {
-        applyInlineDiagnosticsToRow(fieldModel_, row, false);
+}
+
+void MainWindow::synchronizeDerivedRefreshContext()
+{
+    const auto* workspace = controller_.workspace();
+    const std::string id = workspace ? workspace->id : std::string{};
+    if (derivedRefreshPath_ == controller_.manifestPath() &&
+        derivedRefreshWorkspaceId_ == id) return;
+    if (derivedRefreshTimer_) derivedRefreshTimer_->stop();
+    ++derivedRefreshGeneration_;
+    derivedRefreshPath_ = controller_.manifestPath();
+    derivedRefreshWorkspaceId_ = id;
+    diagnosticsRefreshPending_ = diffRefreshPending_ = false;
+    incrementalRefreshAmbiguous_ = false;
+    displayedDiagnosticsValid_ = false;
+    displayedDiagnostics_.clear();
+    pendingInlineDiagnosticIds_.clear();
+    inlineDiagnosticIndex_.clear();
+}
+
+void MainWindow::requestDerivedRefresh(bool diagnostics, bool differences)
+{
+    synchronizeDerivedRefreshContext();
+    diagnosticsRefreshPending_ |= diagnostics;
+    diffRefreshPending_ |= differences;
+    if (!derivedRefreshTimer_) {
+        derivedRefreshTimer_ = new QTimer(this);
+        derivedRefreshTimer_->setObjectName(QStringLiteral("derivedViewRefreshTimer"));
+        derivedRefreshTimer_->setSingleShot(true);
+        connect(derivedRefreshTimer_, &QTimer::timeout, this, [this] {
+            // Do not reset a model while its delegate or structural refresh is active.
+            if (modelEditInProgress_ || refreshPending_) {
+                derivedRefreshTimer_->start(1);
+                return;
+            }
+            const bool diagnostics = std::exchange(diagnosticsRefreshPending_, false);
+            const bool differences = std::exchange(diffRefreshPending_, false);
+            const auto generation = derivedRefreshGeneration_;
+            const QPointer<MainWindow> guard(this);
+            if (diagnostics) {
+                refreshInlineDiagnostics();
+                if (!guard || generation != derivedRefreshGeneration_) return;
+                if (!displayedDiagnosticsValid_ ||
+                    displayedDiagnostics_ != controller_.diagnostics()) refreshDiagnostics();
+            }
+            if (!guard || generation != derivedRefreshGeneration_) return;
+            if (differences) refreshDiff();
+        });
     }
+    // As in ZeroSlack's DiagnosticsRefreshController, accumulate scope while one
+    // delivery is pending. The timer owns no old model snapshot and dies with us.
+    if (!derivedRefreshTimer_->isActive()) derivedRefreshTimer_->start(0);
 }
 
 void MainWindow::refreshDiagnostics()
 {
+    ++diagnosticsRefreshCount_;
+    displayedDiagnostics_ = controller_.diagnostics();
+    displayedDiagnosticsValid_ = true;
     QScopedValueRollback refreshGuard(
         refreshing_, true);
     const bool sameProject =
@@ -12333,6 +12411,7 @@ void MainWindow::openGeneratedXlsx()
 
 void MainWindow::refreshDiff()
 {
+    ++diffRefreshCount_;
     QScopedValueRollback refreshGuard(
         refreshing_, true);
     const bool sameProject =
@@ -14448,6 +14527,12 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                         ? PropertyEditStatus::unchanged
                         : PropertyEditStatus::changed,
                     {}};
+            }
+            if (refreshPending_ && (!pendingIncrementalObjectId_.empty()) &&
+                (pendingIncrementalObjectId_ != objectId || pendingIncrementalProperty_ != property)) {
+                // Several edits before delivery require a scope covering all of
+                // them; keeping only the last row would miss derived cell values.
+                incrementalRefreshAmbiguous_ = true;
             }
             pendingIncrementalObjectId_ = objectId;
             pendingIncrementalProperty_ = property;
@@ -24609,6 +24694,10 @@ void MainWindow::rebuildSearchResults()
         searchIndexValid_ = true;
     }
     std::set<std::string> seen;
+    std::vector<const SearchEntry*> exactMatches;
+    std::vector<const SearchEntry*> partialMatches;
+    exactMatches.reserve(searchIndex_.size());
+    partialMatches.reserve(searchIndex_.size());
     for (const auto& entry : searchIndex_) {
         if (seen.contains(entry.id)) continue;
         const bool exact = std::ranges::any_of(entry.values, [&](const QString& value) {
@@ -24620,13 +24709,21 @@ void MainWindow::rebuildSearchResults()
         if (!partial) continue;
         seen.insert(entry.id);
         if (exact) {
-            searchResults_.insert(searchResults_.begin(), entry.id);
-            searchResultLabels_.insert(searchResultLabels_.begin(), entry.label);
+            exactMatches.push_back(&entry);
         } else {
-            searchResults_.push_back(entry.id);
-            searchResultLabels_.push_back(entry.label);
+            partialMatches.push_back(&entry);
         }
     }
+    searchResults_.reserve(exactMatches.size() + partialMatches.size());
+    searchResultLabels_.reserve(exactMatches.size() + partialMatches.size());
+    const auto append = [this](const SearchEntry* entry) {
+        searchResults_.push_back(entry->id);
+        searchResultLabels_.push_back(entry->label);
+    };
+    // Preserve the former front-insertion order without repeatedly moving all
+    // previously collected results. Partial matches retain traversal order.
+    for (auto it = exactMatches.rbegin(); it != exactMatches.rend(); ++it) append(*it);
+    for (const auto* entry : partialMatches) append(entry);
     if (!previousTargetId.empty()) {
         const auto previousTarget =
             std::ranges::find(

@@ -1,6 +1,11 @@
 # Csrio
 
-Current version: `0.4.1`.
+Current version: `0.4.2`.
+
+Release 0.4.2 reuses project parse results, coalesces derived diagnostic refreshes
+and reduces repeated search-result collection while retaining validation and
+save gates. The previously observed intermittent RM1103 Unicode atomic-save/RTL
+restore failure remains a known limitation; this release does not claim it fixed.
 
 [Source repository](https://github.com/RutenunexJX/Csrio)
 

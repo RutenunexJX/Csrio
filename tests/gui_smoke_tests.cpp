@@ -26,6 +26,7 @@
 #include <QAbstractButton>
 #include <QAbstractItemView>
 #include <QApplication>
+#include <QBrush>
 #include <QByteArray>
 #include <QClipboard>
 #include <QCheckBox>
@@ -102,6 +103,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <tuple>
@@ -228,6 +230,13 @@ private slots:
     void keepsZeroMatchTagFilterThroughUndoAndRedo();
     void insertsRegisterBetweenRows();
     void refreshesRowsIncrementallyAndMarksInlineProblems();
+    void coalescesDerivedRefreshesWithoutScanningUnchangedRows();
+    void updatesOldAndNewDiagnosticRows();
+    void updatesEveryInlineDiagnosticRowWithDuplicateIds_data();
+    void updatesEveryInlineDiagnosticRowWithDuplicateIds();
+    void dropsDerivedRefreshesOnProjectSwitchAndDestruction();
+    void detectsReplacementAfterLoadingOneSnapshot();
+    void preservesExactSearchOrderBeyondPopupLimit();
     void showsUnifiedSyncStateAndGeneratedResults();
     void keepsWarningsNonBlocking();
     void navigatesProblemsWithKeyboard();
@@ -2130,7 +2139,10 @@ void GuiSmokeTests::createsAndReopensProjectUnderUnicodePath()
         regmap::serializeWorkspaceState(
             *created.workspace(),
             false));
-    QVERIFY(!reopened.hasProjectErrors());
+    QStringList reopenMessages;
+    for (const auto& diagnostic : reopened.diagnostics())
+        reopenMessages.push_back(QString::fromStdString(diagnostic.code + ": " + diagnostic.message));
+    QVERIFY2(!reopened.hasProjectErrors(), qPrintable(reopenMessages.join('\n')));
     QVERIFY(!reopened.isDirty());
 
     makeGeneratedFilesWritable(
@@ -16425,6 +16437,417 @@ void GuiSmokeTests::insertsRegisterBetweenRows()
     makeGeneratedFilesWritable(directory.path());
 }
 
+void GuiSmokeTests::coalescesDerivedRefreshesWithoutScanningUnchangedRows()
+{
+    QTemporaryDir directory;
+    const QString manifest = directory.filePath("project.regmap.yaml");
+    createTwoRegisterProject(manifest);
+    MainWindow window;
+    QVERIFY(window.openProjectPath(manifest));
+    auto* timer = window.findChild<QTimer*>("derivedViewRefreshTimer");
+    auto* table = window.findChild<QTableView*>("registerView");
+    auto* controller = window.findChild<ProjectController*>();
+    QVERIFY(timer && table && controller);
+    QTRY_VERIFY(!timer->isActive());
+    int row = -1;
+    for (int index = 0; index < table->model()->rowCount(); ++index)
+        if (table->model()->index(index, 0).data(Qt::UserRole + 1).toString() == "reg-control") row = index;
+    QVERIFY(row >= 0);
+    const auto count = [&window](const char* name) { return window.property(name).toULongLong(); };
+    const auto diffBefore = count("diffRefreshCount");
+    const auto problemsBefore = count("diagnosticsRefreshCount");
+    const auto visitsBefore = count("inlineDiagnosticRowVisitCount");
+    const auto cellsBefore = count("inlineDiagnosticCellUpdateCount");
+    const QPersistentModelIndex preserved(table->model()->index(row, 0));
+    QSignalSpy resets(table->model(), &QAbstractItemModel::modelReset);
+    QVERIFY(table->model()->setData(table->model()->index(row, 11), "First edit"));
+    QVERIFY(table->model()->setData(table->model()->index(row, 11), "Latest edit"));
+    QCOMPARE(regmap::findRegister(*controller->workspace(), "reg-control")->description,
+             std::string("Latest edit"));
+    QVERIFY(controller->isDirty());
+    QCOMPARE(count("diffRefreshCount"), diffBefore);
+    QTRY_VERIFY(!timer->isActive());
+    QCOMPARE(count("diffRefreshCount"), diffBefore + 1);
+    QCOMPARE(count("diagnosticsRefreshCount"), problemsBefore);
+    QCOMPARE(count("inlineDiagnosticCellUpdateCount"), cellsBefore);
+    QCOMPARE(count("inlineDiagnosticRowVisitCount"), visitsBefore + 1);
+    QCOMPARE(resets.count(), 0);
+    QVERIFY(preserved.isValid());
+    QCOMPARE(preserved.data().toString(), QString("CONTROL"));
+    int statusRow = -1;
+    for (int index = 0; index < table->model()->rowCount(); ++index)
+        if (table->model()->index(index, 0).data(Qt::UserRole + 1).toString() == "reg-status") statusRow = index;
+    QVERIFY(statusRow >= 0);
+    QVERIFY(table->model()->setData(table->model()->index(row, 9), "ro"));
+    QVERIFY(table->model()->setData(table->model()->index(statusRow, 11), "Other latest edit"));
+    QTRY_VERIFY(!timer->isActive());
+    QCOMPARE(count("diffRefreshCount"), diffBefore + 2);
+    for (int index = 0; index < table->model()->rowCount(); ++index) {
+        const auto id = table->model()->index(index, 0).data(Qt::UserRole + 1).toString();
+        if (id == "reg-control") QCOMPARE(table->model()->index(index, 9).data().toString(), QString("RO"));
+        if (id == "reg-status") QCOMPARE(table->model()->index(index, 11).data().toString(), QString("Other latest edit"));
+    }
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::updatesOldAndNewDiagnosticRows()
+{
+    QTemporaryDir directory;
+    const QString manifest = directory.filePath("project.regmap.yaml");
+    createTwoRegisterProject(manifest);
+    MainWindow window;
+    QVERIFY(window.openProjectPath(manifest));
+    auto* timer = window.findChild<QTimer*>("derivedViewRefreshTimer");
+    auto* table = window.findChild<QTableView*>("registerView");
+    auto* controller = window.findChild<ProjectController*>();
+    QVERIFY(timer && table && controller);
+    QTRY_VERIFY(!timer->isActive());
+    const auto cell = [table](const QString& id, int column) {
+        for (int row = 0; row < table->model()->rowCount(); ++row)
+            if (table->model()->index(row, 0).data(Qt::UserRole + 1).toString() == id)
+                return table->model()->index(row, column);
+        return QModelIndex{};
+    };
+    const auto editDiagnostics = [controller](const regmap::WorkspaceStore::Mutation& mutation) {
+        // Isolate a diagnostics-only delivery from structural model replacement.
+        const QSignalBlocker blocker(controller);
+        return controller->editWorkspace("Diagnostic fixture", mutation);
+    };
+    QSignalSpy resets(table->model(), &QAbstractItemModel::modelReset);
+    QVERIFY(editDiagnostics([](regmap::Workspace& workspace) {
+        regmap::findRegister(workspace, "reg-control")->width = 0;
+    }));
+    QVERIFY(controller->hasProjectErrors()); // The gate is synchronous.
+    Q_EMIT controller->diagnosticsChanged();
+    QTRY_VERIFY(cell("reg-control", 3).data(Qt::AccessibleDescriptionRole).toString().contains("RM3020"));
+    const auto before = window.property("inlineDiagnosticRowVisitCount").toULongLong();
+    QVERIFY(editDiagnostics([](regmap::Workspace& workspace) {
+        auto* reg = regmap::findRegister(workspace, "reg-control");
+        reg->width = 32;
+        reg->offset = 0; // The overlap diagnostic belongs to the other register.
+    }));
+    Q_EMIT controller->diagnosticsChanged();
+    QTRY_VERIFY(cell("reg-status", 2).data(Qt::AccessibleDescriptionRole).toString().contains("RM3024"));
+    QVERIFY(!cell("reg-control", 3).data(Qt::AccessibleDescriptionRole).toString().contains("RM3020"));
+    QCOMPARE(window.property("inlineDiagnosticRowVisitCount").toULongLong(), before + 2);
+    QVERIFY(editDiagnostics([](regmap::Workspace& workspace) {
+        regmap::findRegister(workspace, "reg-control")->offset = 4;
+    }));
+    Q_EMIT controller->diagnosticsChanged();
+    QTRY_VERIFY(!cell("reg-status", 2).data(Qt::AccessibleDescriptionRole).toString().contains("RM3024"));
+    QVERIFY(!controller->hasProjectErrors());
+    QCOMPARE(resets.count(), 0);
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::updatesEveryInlineDiagnosticRowWithDuplicateIds_data()
+{
+    QTest::addColumn<bool>("registerRows");
+    QTest::newRow("registers") << true;
+    QTest::newRow("fields") << false;
+}
+
+void GuiSmokeTests::updatesEveryInlineDiagnosticRowWithDuplicateIds()
+{
+    QFETCH(bool, registerRows);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath("duplicates.regmap.yaml");
+    createTwoRegisterProject(manifest);
+    auto fixture = regmap::openProject(std::filesystem::path(manifest.toStdWString()));
+    QVERIFY(fixture.manifest && fixture.workspace);
+    if (registerRows) {
+        const auto original = *regmap::findRegister(*fixture.workspace, "reg-control");
+        auto& registers = fixture.workspace->addressSpaces.front().blocks.front().registers;
+        for (int index = 1; index <= 2; ++index) {
+            auto duplicate = original;
+            duplicate.name += std::to_string(index);
+            duplicate.offset += 4 * static_cast<std::uint64_t>(index);
+            registers.push_back(std::move(duplicate));
+        }
+    } else {
+        auto& fields = regmap::findRegister(*fixture.workspace, "reg-status")->fields;
+        const auto original = fields.front();
+        for (int index = 1; index <= 3; ++index) {
+            auto duplicate = original;
+            duplicate.name += std::to_string(index);
+            duplicate.msb = duplicate.lsb = static_cast<std::uint32_t>(index);
+            if (index == 3) duplicate.id = "field-unrelated";
+            fields.push_back(std::move(duplicate));
+        }
+    }
+    const auto serialized = regmap::serializeProjectText(*fixture.manifest, *fixture.workspace);
+    QVERIFY(serialized.text.has_value());
+    QFile file(manifest);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    const auto bytes = QByteArray::fromStdString(*serialized.text);
+    QCOMPARE(file.write(bytes), bytes.size());
+    file.close();
+
+    // Keep the deliberately invalid identities out of initial RTL reconciliation,
+    // which matches objects by ID. The loaded model must stay available for repair.
+    QVERIFY(QDir().mkpath(directory.filePath("rtl")));
+    QFile rtl(directory.filePath("rtl/gui_registers.sv"));
+    QVERIFY(rtl.open(QIODevice::WriteOnly));
+    const QByteArray unmanagedRtl("module gui_registers (); endmodule\n");
+    QCOMPARE(rtl.write(unmanagedRtl), unmanagedRtl.size());
+    rtl.close();
+
+    MainWindow window;
+    QVERIFY(window.openProjectPath(manifest)); // Duplicate IDs remain loadable for repair.
+    auto* controller = window.findChild<ProjectController*>();
+    auto* timer = window.findChild<QTimer*>("derivedViewRefreshTimer");
+    auto* registers = window.findChild<QTableView*>("registerView");
+    auto* table = registerRows ? registers : window.findChild<QTableView*>("fieldView");
+    QVERIFY(controller && timer && registers && table);
+    QTRY_VERIFY(!timer->isActive());
+    if (!registerRows) Q_EMIT registers->clicked(registers->model()->index(0, 5));
+    QTRY_VERIFY(!timer->isActive());
+    const QString id = registerRows ? "reg-control" : "field-ready";
+    const QString code = registerRows ? "RM3020" : "RM3032";
+    const int targetColumn = registerRows ? 3 : 8;
+    const auto rowsForId = [&] {
+        QList<int> rows;
+        for (int row = 0; row < table->model()->rowCount(); ++row)
+            if (table->model()->index(row, 0).data(Qt::UserRole + 1).toString() == id)
+                rows.push_back(row);
+        return rows;
+    };
+    QTRY_COMPARE(rowsForId().size(), 3);
+    constexpr int inlineDiagnosticTextRole = Qt::UserRole + 14;
+    const auto presentation = [](const QModelIndex& cell) {
+        return std::tuple{cell.data(Qt::ToolTipRole), cell.data(Qt::AccessibleDescriptionRole),
+            cell.data(inlineDiagnosticTextRole), cell.data(Qt::ForegroundRole),
+            cell.data(Qt::DecorationRole).value<QIcon>().pixmap(16, 16).toImage()};
+    };
+    const auto snapshot = [&] {
+        std::vector<decltype(presentation(QModelIndex{}))> result;
+        for (int row = 0; row < table->model()->rowCount(); ++row)
+            for (const int column : {0, targetColumn})
+                result.push_back(presentation(table->model()->index(row, column)));
+        return result;
+    };
+    const auto originalPresentation = snapshot();
+    for (const int row : rowsForId()) {
+        QVERIFY(table->model()->index(row, 0).data(inlineDiagnosticTextRole)
+                    .toString().contains("RM3001"));
+        QVERIFY(!table->model()->index(row, targetColumn).data(inlineDiagnosticTextRole).isValid());
+    }
+
+    // Repeat after a full rebuild and an unrelated valid-ID incremental edit.
+    // Diagnostics themselves revisit duplicate-ID rows without re-registering them.
+    const QString editableId = registerRows ? "reg-status" : "field-unrelated";
+    for (int phase = 0; phase < 4; ++phase) {
+        QSignalSpy resets(table->model(), &QAbstractItemModel::modelReset);
+        const auto incremental = window.property("incrementalTableRefreshCount").toULongLong();
+        int editableRow = -1;
+        for (int row = 0; row < table->model()->rowCount(); ++row)
+            if (table->model()->index(row, 0).data(Qt::UserRole + 1).toString() == editableId) editableRow = row;
+        QVERIFY(editableRow >= 0);
+        QVERIFY(table->model()->setData(table->model()->index(editableRow,
+            registerRows ? 11 : 13), QString("Duplicate ID edit %1").arg(phase)));
+        QTRY_COMPARE(window.property("incrementalTableRefreshCount").toULongLong(), incremental + 1);
+        QTRY_VERIFY(!timer->isActive());
+        const bool invalid = phase % 2 == 0;
+        const auto visits = window.property("inlineDiagnosticRowVisitCount").toULongLong();
+        {
+            const QSignalBlocker blocker(controller);
+            QVERIFY(controller->editWorkspace("Duplicate ID diagnostics", [&](regmap::Workspace& workspace) {
+                if (registerRows) {
+                    workspace.addressSpaces.front().blocks.front().registers.back().width = invalid ? 0 : 32;
+                } else {
+                    auto& field = regmap::findRegister(workspace, "reg-status")->fields.at(2);
+                    field.softwareAccess = invalid ? regmap::AccessMode::readWrite : regmap::AccessMode::readOnly;
+                }
+            }));
+        }
+        Q_EMIT controller->diagnosticsChanged();
+        QTRY_VERIFY(!timer->isActive());
+        QCOMPARE(window.property("inlineDiagnosticRowVisitCount").toULongLong(), visits + 3);
+        QCOMPARE(resets.count(), 0);
+        QStringList messages;
+        for (const auto& diagnostic : controller->diagnostics()) {
+            if (diagnostic.objectId == id.toStdString() && diagnostic.code == code.toStdString())
+                messages.push_back(QString("Error %1: %2").arg(code,
+                    QString::fromStdString(diagnostic.message)));
+        }
+        QCOMPARE(messages.size(), invalid ? 1 : 0);
+        for (const int row : rowsForId()) {
+            const auto cell = table->model()->index(row, targetColumn);
+            QCOMPARE(cell.data(inlineDiagnosticTextRole).toString(), messages.join('\n'));
+            if (invalid) {
+                QVERIFY(cell.data(Qt::ToolTipRole).toString().contains(messages.front()));
+                QCOMPARE(cell.data(Qt::AccessibleDescriptionRole).toString(), messages.front());
+                QCOMPARE(cell.data(Qt::ForegroundRole).value<QBrush>().color(),
+                    WorkbenchTheme::currentTokens().diagnosticError);
+                QVERIFY(!cell.data(Qt::DecorationRole).value<QIcon>().isNull());
+            } else {
+                QVERIFY(!cell.data(inlineDiagnosticTextRole).isValid());
+            }
+        }
+        if (!invalid) QVERIFY(snapshot() == originalPresentation);
+        const auto incrementalPresentation = snapshot();
+        // Full population applies diagnostics to every row, as the original
+        // full-row refresh did. Compare tooltip, error text, color and icon.
+        Q_EMIT controller->projectChanged();
+        QTRY_VERIFY(!timer->isActive());
+        QTRY_COMPARE(rowsForId().size(), 3);
+        const auto rebuiltPresentation = snapshot();
+        QCOMPARE(rebuiltPresentation.size(), incrementalPresentation.size());
+        for (std::size_t index = 0; index < rebuiltPresentation.size(); ++index) {
+            if (rebuiltPresentation[index] != incrementalPresentation[index])
+                qWarning() << "Duplicate diagnostic presentation differs at phase" << phase
+                           << "row" << index / 2 << "column" << (index % 2 == 0 ? 0 : targetColumn);
+            QCOMPARE(std::get<0>(rebuiltPresentation[index]), std::get<0>(incrementalPresentation[index]));
+            QCOMPARE(std::get<1>(rebuiltPresentation[index]), std::get<1>(incrementalPresentation[index]));
+            QCOMPARE(std::get<2>(rebuiltPresentation[index]), std::get<2>(incrementalPresentation[index]));
+            QCOMPARE(std::get<3>(rebuiltPresentation[index]), std::get<3>(incrementalPresentation[index]));
+            QCOMPARE(std::get<4>(rebuiltPresentation[index]), std::get<4>(incrementalPresentation[index]));
+        }
+    }
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::dropsDerivedRefreshesOnProjectSwitchAndDestruction()
+{
+    QTemporaryDir directory;
+    const QString first = directory.filePath("first.regmap.yaml");
+    const QString second = directory.filePath("second.regmap.yaml");
+    createTwoRegisterProject(first);
+    createTwoRegisterProject(second);
+    auto window = std::make_unique<MainWindow>();
+    QVERIFY(window->openProjectPath(first));
+    auto* controller = window->findChild<ProjectController*>();
+    auto* timer = window->findChild<QTimer*>("derivedViewRefreshTimer");
+    QVERIFY(controller && timer);
+    QTRY_VERIFY(!timer->isActive());
+    QVERIFY(controller->editWorkspace("Old project error", [](regmap::Workspace& workspace) {
+        regmap::findRegister(workspace, "reg-control")->width = 0;
+    }));
+    QVERIFY(timer->isActive());
+    QVERIFY(window->openProjectPath(second));
+    QTRY_VERIFY(!timer->isActive());
+    QVERIFY(!controller->hasProjectErrors());
+    auto* problems = window->findChild<QTableView*>("problemsView");
+    QVERIFY(problems);
+    QCOMPARE(problems->model()->rowCount(), 0);
+    QVERIFY(controller->editWorkspace("Pending close", [](regmap::Workspace& workspace) {
+        workspace.name += " edited";
+    }));
+    QPointer<QTimer> guardedTimer(timer);
+    QVERIFY(timer->isActive());
+    window.reset();
+    QVERIFY(!guardedTimer);
+    QCoreApplication::processEvents();
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::detectsReplacementAfterLoadingOneSnapshot()
+{
+    QTemporaryDir directory;
+    const QString manifest = directory.filePath("project.regmap.yaml");
+    createTwoRegisterProject(manifest);
+    ProjectController controller;
+    bool replaced = false;
+    connect(&controller, &ProjectController::syncStatusChanged, &controller, [&](const QString& message) {
+        if (replaced || message != "Loading project...") return;
+        QFile file(manifest);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QByteArray bytes = file.readAll();
+        file.close();
+        QVERIFY(bytes.contains("name: CONTROL"));
+        bytes.replace("name: CONTROL", "name: REPLACED");
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QCOMPARE(file.write(bytes), bytes.size());
+        file.close();
+        replaced = true;
+    });
+    QVERIFY(controller.openProject(manifest));
+    QVERIFY(replaced);
+    QCOMPARE(regmap::findRegister(*controller.workspace(), "reg-control")->name, std::string("CONTROL"));
+    QVERIFY(controller.hasExternalProjectChange());
+    QCOMPARE(controller.property("projectFileReadCount").toULongLong(), qulonglong{1});
+    QCOMPARE(controller.property("projectYamlParseCount").toULongLong(), qulonglong{1});
+    QCOMPARE(controller.property("projectValidationCount").toULongLong(), qulonglong{1});
+    controller.save();
+    QFile disk(manifest);
+    QVERIFY(disk.open(QIODevice::ReadOnly));
+    QVERIFY(disk.readAll().contains("name: REPLACED"));
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::preservesExactSearchOrderBeyondPopupLimit()
+{
+    QTemporaryDir directory;
+    const QString manifest = directory.filePath("project.regmap.yaml");
+    createTwoRegisterProject(manifest);
+    MainWindow window;
+    QVERIFY(window.openProjectPath(manifest));
+    auto* controller = window.findChild<ProjectController*>();
+    auto* search = window.findChild<QLineEdit*>("globalSearchEdit");
+    auto* completion = window.findChild<QStandardItemModel*>("searchCompletionModel");
+    auto* registers = window.findChild<QTableView*>("registerView");
+    auto* all = window.findChild<QAction*>("allSearchResultsAction");
+    auto* next = window.findChild<QAction*>("findNextAction");
+    auto* previous = window.findChild<QAction*>("findPreviousAction");
+    QVERIFY(controller && search && completion && registers && all && next && previous);
+    constexpr int count = 48;
+    QVERIFY(controller->editWorkspace("Search fixture", [](regmap::Workspace& workspace) {
+        const auto prototype = *regmap::findRegister(workspace, "reg-control");
+        auto& rows = workspace.addressSpaces.front().blocks.front().registers;
+        rows.clear();
+        for (int index = 0; index < count; ++index) {
+            auto reg = prototype;
+            reg.id = "search-" + std::to_string(index);
+            reg.name = "REG_" + std::to_string(index);
+            reg.offset = std::uint64_t(index) * 4;
+            reg.tags = index < 3 ? std::vector<std::string>{"other"} : std::vector<std::string>{"needle"};
+            reg.description = index < 3 ? "partial needle text" : "needle";
+            rows.push_back(std::move(reg));
+        }
+    }));
+    QVERIFY(!controller->hasProjectErrors());
+    QStringList expectedIds, expectedLabels;
+    const auto append = [&](int index) {
+        expectedIds.append(QStringLiteral("search-%1").arg(index));
+        expectedLabels.append(QStringLiteral("Register · Main / Control / REG_%1 @ %2")
+            .arg(index).arg(QString::fromStdString(regmap::UnsignedValue(std::uint64_t(index) * 4).toHexString())));
+    };
+    for (int index = count - 1; index >= 3; --index) append(index);
+    for (int index = 0; index < 3; ++index) append(index);
+    search->setText("needle");
+    QCOMPARE(completion->rowCount(), 40);
+    for (int row = 0; row < 40; ++row) {
+        QCOMPARE(completion->index(row, 0).data(Qt::UserRole + 1).toString(), expectedIds[row]);
+        QCOMPARE(completion->index(row, 0).data().toString(), expectedLabels[row]);
+    }
+    QStringList allIds, allLabels;
+    QTimer::singleShot(0, &window, [&] {
+        if (auto* dialog = window.findChild<QDialog*>("allSearchResultsDialog")) {
+            if (auto* table = dialog->findChild<QTableView*>("allResultsTable")) {
+                for (int row = 0; row < table->model()->rowCount(); ++row) {
+                    allIds.append(table->model()->index(row, 1).data(Qt::UserRole + 1).toString());
+                    allLabels.append(table->model()->index(row, 1).data().toString());
+                }
+            }
+            dialog->reject();
+        }
+    });
+    all->trigger();
+    QCOMPARE(allIds, expectedIds);
+    QCOMPARE(allLabels, expectedLabels);
+    // F3 reaches every result, including the eight omitted from the popup,
+    // then wraps in exactly the same order as the complete results dialog.
+    for (int index = 0; index <= count; ++index) {
+        next->trigger();
+        QCOMPARE(registers->currentIndex().data(Qt::UserRole + 1).toString(), expectedIds[index % count]);
+    }
+    previous->trigger();
+    QCOMPARE(registers->currentIndex().data(Qt::UserRole + 1).toString(), expectedIds.back());
+    QCOMPARE(search->text(), QString("needle"));
+    makeGeneratedFilesWritable(directory.path());
+}
+
 void GuiSmokeTests::refreshesRowsIncrementallyAndMarksInlineProblems()
 {
     QTemporaryDir directory;
@@ -18618,10 +19041,12 @@ void GuiSmokeTests::reportsBlockedUnsavedSyncAndRecovers()
         regmap::openProject(
             std::filesystem::path(manifest.toStdWString()));
     QVERIFY(validDiskModel.workspace.has_value());
-    QVERIFY(regmap::writeManagedRtl(
-                std::filesystem::path(rtlPath.toStdWString()),
-                "gui_registers", *validDiskModel.workspace)
-                .empty());
+    const auto restoreDiagnostics = regmap::writeManagedRtl(
+        std::filesystem::path(rtlPath.toStdWString()), "gui_registers", *validDiskModel.workspace);
+    QStringList restoreMessages;
+    for (const auto& diagnostic : restoreDiagnostics)
+        restoreMessages.push_back(QString::fromStdString(diagnostic.code + ": " + diagnostic.message));
+    QVERIFY2(restoreDiagnostics.empty(), qPrintable(restoreMessages.join('\n')));
 
     save->trigger();
     QTRY_VERIFY_WITH_TIMEOUT(!controller->isDirty(), 4000);

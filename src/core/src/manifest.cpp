@@ -1,7 +1,9 @@
 #include "regmap/core/manifest.hpp"
 
 #include "path_identity.hpp"
+#include "project_document.hpp"
 
+#include <QCryptographicHash>
 #include <QFile>
 #include <QString>
 #include <yaml-cpp/yaml.h>
@@ -497,14 +499,23 @@ bool ManifestLoadResult::hasErrors() const noexcept
 
 ManifestLoadResult loadProjectManifest(const std::filesystem::path& path)
 {
-    ManifestLoadResult result;
-    ProjectManifest manifest;
-    manifest.manifestPath = std::filesystem::absolute(path).lexically_normal();
+    auto document = detail::readProjectDocument(path);
+    if (!document.root) {
+        return {std::nullopt, std::move(document.diagnostics)};
+    }
+    return detail::decodeProjectManifest(*document.root, document.path);
+}
+
+detail::ProjectDocument detail::readProjectDocument(
+    const std::filesystem::path& path, bool computeDigest)
+{
+    ProjectDocument result;
+    result.path = std::filesystem::absolute(path).lexically_normal();
 
     YAML::Node root;
     QFile file(
         QString::fromStdWString(
-            manifest.manifestPath
+            result.path
                 .wstring()));
     if (!file.open(
             QIODevice::ReadOnly)) {
@@ -516,11 +527,12 @@ ManifestLoadResult loadProjectManifest(const std::filesystem::path& path)
                 .toUtf8()
                 .toStdString();
         diagnostic.source.workbook =
-            manifest.manifestPath;
+            result.path;
         result.diagnostics.push_back(
             std::move(diagnostic));
         return result;
     }
+    ++result.metrics.fileReads;
     const QByteArray bytes =
         file.readAll();
     if (file.error() !=
@@ -533,12 +545,17 @@ ManifestLoadResult loadProjectManifest(const std::filesystem::path& path)
                 .toUtf8()
                 .toStdString();
         diagnostic.source.workbook =
-            manifest.manifestPath;
+            result.path;
         result.diagnostics.push_back(
             std::move(diagnostic));
         return result;
     }
+    if (computeDigest) {
+        result.sha256 = QCryptographicHash::hash(bytes, QCryptographicHash::Sha256)
+                            .toHex().toStdString();
+    }
     try {
+        ++result.metrics.yamlParses;
         root = YAML::Load(
             std::string(
                 bytes.constData(),
@@ -548,10 +565,21 @@ ManifestLoadResult loadProjectManifest(const std::filesystem::path& path)
         Diagnostic diagnostic;
         diagnostic.code = invalidYamlCode;
         diagnostic.message = "Cannot parse manifest: " + std::string(error.what());
-        diagnostic.source = yamlLocation(manifest.manifestPath, error.mark);
+        diagnostic.source = yamlLocation(result.path, error.mark);
         result.diagnostics.push_back(std::move(diagnostic));
         return result;
     }
+
+    result.root = std::move(root);
+    return result;
+}
+
+ManifestLoadResult detail::decodeProjectManifest(
+    const YAML::Node& root, const std::filesystem::path& path)
+{
+    ManifestLoadResult result;
+    ProjectManifest manifest;
+    manifest.manifestPath = path;
 
     if (!root.IsMap()) {
         addDiagnostic(

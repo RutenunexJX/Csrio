@@ -29,7 +29,7 @@
 #include <vector>
 
 namespace regmap {
-struct ProjectOpenResult;
+class ProjectLoadSnapshot;
 }
 
 struct RecoveryDraftInfo {
@@ -184,8 +184,7 @@ private:
 
     void reloadImpl(
         bool automatic,
-        regmap::ProjectOpenResult* preloaded = nullptr,
-        const QByteArray& preloadedDigest = {});
+        regmap::ProjectLoadSnapshot* preloaded = nullptr);
     void generateImpl(bool automatic);
     void rebuildDiagnostics();
     void refreshWatchPaths();

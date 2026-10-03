@@ -1,4 +1,5 @@
 #include "regmap/core/workspace_store.hpp"
+#include "regmap/core/project.hpp"
 
 #include "regmap/core/three_way_merge.hpp"
 #include "regmap/core/validation.hpp"
@@ -175,6 +176,21 @@ WorkspaceStore::WorkspaceStore(Workspace workspace) { reset(std::move(workspace)
 
 void WorkspaceStore::reset(Workspace workspace)
 {
+    resetState(std::move(workspace));
+    revalidate();
+}
+
+bool WorkspaceStore::resetLoadedProject(ProjectLoadSnapshot&& loaded)
+{
+    if (!loaded.workspace_) return false;
+    resetState(std::move(*loaded.workspace_));
+    loaded.workspace_.reset();
+    diagnostics_ = std::move(loaded.modelDiagnostics_);
+    return true;
+}
+
+void WorkspaceStore::resetState(Workspace workspace)
+{
     workspace_ = std::move(workspace);
     savedWorkspace_ = workspace_;
     workspaceState_ = serializeWorkspaceState(*workspace_, false);
@@ -183,7 +199,6 @@ void WorkspaceStore::reset(Workspace workspace)
     undo_.clear();
     redo_.clear();
     ++revision_;
-    revalidate();
 }
 
 const Workspace* WorkspaceStore::workspace() const noexcept
@@ -332,6 +347,7 @@ void WorkspaceStore::markSaved()
 
 void WorkspaceStore::revalidate()
 {
+    ++validationCount_;
     diagnostics_ = workspace_ ? validateWorkspace(*workspace_) : std::vector<Diagnostic>{};
 }
 

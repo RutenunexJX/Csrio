@@ -5,6 +5,7 @@
 #include <QAction>
 #include <QComboBox>
 #include <QElapsedTimer>
+#include <QEventLoop>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -12,10 +13,40 @@
 #include <QLineEdit>
 #include <QMap>
 #include <QTest>
+#include <QTimer>
 #include <algorithm>
 #include <functional>
 
 namespace {
+void drainDerivedEvents(QWidget* root)
+{
+    auto* timer = root ? root->findChild<QTimer*>("derivedViewRefreshTimer") : nullptr;
+    const auto counters = [root] {
+        return root ? QVariantList{root->property("diagnosticsRefreshCount"),
+            root->property("diffRefreshCount"), root->property("inlineDiagnosticRowVisitCount")}
+            : QVariantList{};
+    };
+    QElapsedTimer elapsed;
+    elapsed.start();
+    int stablePasses = 0;
+    auto previous = counters();
+    // The old implementation uses queued singleShot callbacks instead of the
+    // named timer. Observe both versions until two event passes are stable.
+    while (stablePasses < 2) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        const auto current = counters();
+        stablePasses = (!timer || !timer->isActive()) && current == previous ? stablePasses + 1 : 0;
+        previous = current;
+        if (elapsed.elapsed() > 30000) qFatal("Derived UI did not settle in 30 seconds");
+    }
+}
+
+QJsonValue observedCounter(QObject* object, const char* name)
+{
+    const auto value = object->property(name);
+    return value.isValid() ? QJsonValue(double(value.toULongLong())) : QJsonValue(QJsonValue::Null);
+}
+
 class UiEvents final : public QObject {
 public:
     QWidget* root{};
@@ -41,7 +72,9 @@ public:
 QJsonObject measure(UiEvents& events, const std::function<void(int)>& action)
 {
     QJsonArray samples;
+    QJsonArray readySamples;
     std::vector<double> elapsed;
+    std::vector<double> readyElapsed;
     events.paints = events.layouts = 0;
     events.layoutTargets.clear();
     for (int iteration = 0; iteration < 24; ++iteration) {
@@ -50,24 +83,37 @@ QJsonObject measure(UiEvents& events, const std::function<void(int)>& action)
         action(iteration);
         const double dispatch = double(timer.nsecsElapsed()) / 1000000.0;
         elapsed.push_back(dispatch);
+        drainDerivedEvents(events.root);
+        const double ready = double(timer.nsecsElapsed()) / 1000000.0;
+        readyElapsed.push_back(ready);
+        readySamples.append(ready);
         QTest::qWait(350);
         samples.append(dispatch);
     }
     std::sort(elapsed.begin(), elapsed.end());
+    std::sort(readyElapsed.begin(), readyElapsed.end());
     QJsonObject layoutTargets;
     for (auto it = events.layoutTargets.cbegin(); it != events.layoutTargets.cend(); ++it)
         layoutTargets.insert(it.key(), it.value());
     return {{"dispatchMs", samples}, {"medianDispatchMs", elapsed[12]},
             {"p95DispatchMs", elapsed[22]}, {"maxDispatchMs", elapsed.back()},
+            {"readyMs", readySamples}, {"medianReadyMs", readyElapsed[12]},
+            {"p95ReadyMs", readyElapsed[22]}, {"maxReadyMs", readyElapsed.back()},
             {"paintEvents", events.paints}, {"layoutEvents", events.layouts},
             {"layoutTargets", layoutTargets}};
 }
 }
 
+#ifndef REGMAP_PERFORMANCE_NO_MAIN
 int main(int argc, char** argv)
 {
     QApplication app(argc, argv);
-    if (app.arguments().size() != 2) return 2;
+    if (app.arguments().size() < 2 || app.arguments().size() > 4) return 2;
+    const QString scenario = app.arguments().size() > 2 ? app.arguments().at(2) : "all";
+    bool countValid = true;
+    const int registerCount = app.arguments().size() > 3 ? app.arguments().at(3).toInt(&countValid) : 1000;
+    if (!countValid || registerCount < 7 || registerCount > 10000 ||
+        !QStringList{"all", "panel", "search", "search-exact", "edit", "open"}.contains(scenario)) return 2;
     QCoreApplication::setOrganizationName("RegMapPerformance");
     QCoreApplication::setApplicationName("RegMapPerformance");
     QTemporaryDir profile, project;
@@ -79,10 +125,10 @@ int main(int argc, char** argv)
     if (!createFixture(path)) return 4;
     ProjectController creator;
     if (!creator.openProject(path)) return 5;
-    if (!creator.editWorkspace("Performance workload", [](regmap::Workspace& workspace) {
+    if (!creator.editWorkspace("Performance workload", [registerCount](regmap::Workspace& workspace) {
         auto& block = workspace.addressSpaces.front().blocks.front();
         block.size = 0x10000;
-        for (int i = 6; i < 1000; ++i) {
+        for (int i = 6; i < registerCount; ++i) {
             block.registers.push_back(makeScalarRegister("perf-" + std::to_string(i),
                 "PERF_" + std::to_string(i), std::uint64_t(i) * 4,
                 regmap::AccessMode::readWrite, "Deterministic performance register"));
@@ -93,43 +139,92 @@ int main(int argc, char** argv)
     UiEvents events;
     app.installEventFilter(&events);
     QJsonArray runs;
+    QJsonArray opens;
     for (const QSize size : {QSize(960, 720), QSize(1440, 900)}) {
         QSettings().clear();
+        QElapsedTimer openTimer;
+        openTimer.start();
         MainWindow window;
+        const double constructionMs = double(openTimer.nsecsElapsed()) / 1e6;
+        openTimer.restart();
         if (!window.openProjectPath(path)) return 8;
+        const double openDispatchMs = double(openTimer.nsecsElapsed()) / 1e6;
+        drainDerivedEvents(&window);
+        const double openReadyMs = double(openTimer.nsecsElapsed()) / 1e6;
         window.resize(size); window.show(); QTest::qWait(50);
         window.resize(size); QTest::qWait(50);
         if (window.size() != size || app.font().pointSizeF() != 10.0) return 9;
         auto* results = window.findChild<QAction*>("toggleResultsAction");
         auto* table = window.findChild<QTableView*>("registerView");
         if (!results || !results->isEnabled() || !table) return 10;
+        auto* controller = window.findChild<ProjectController*>();
+        if (!controller) return 13;
+        opens.append(QJsonObject{{"registers", registerCount}, {"width", size.width()},
+            {"constructionMs", constructionMs}, {"openDispatchMs", openDispatchMs}, {"openReadyMs", openReadyMs},
+            {"loadCountersAvailable", controller->property("projectFileReadCount").isValid()},
+            {"fileReads", observedCounter(controller, "projectFileReadCount")},
+            {"yamlParses", observedCounter(controller, "projectYamlParseCount")},
+            {"modelValidations", observedCounter(controller, "projectValidationCount")}});
         events.root = &window;
-        auto result = measure(events, [results](int) { results->trigger(); });
-        result.insert("scenario", "results-panel-12-cycles");
-        result.insert("width", size.width()); result.insert("height", size.height());
-        result.insert("dpr", window.devicePixelRatioF());
-        result.insert("registers", 1000);
-        if (auto* panel = window.findChild<QWidget*>("resultsPanel")) {
-            result.insert("peakSnapshotBytes", double(panel->property("regmapPanelPeakSnapshotBytes").toLongLong()));
-            result.insert("lastCapturePreparationMs", panel->property("regmapPanelPreparationMs").toDouble());
-            result.insert("retainedSnapshotBytes", double(panel->property("regmapPanelSnapshotBytes").toLongLong()));
+        if (scenario == "all" || scenario == "panel") {
+            auto result = measure(events, [results](int) { results->trigger(); });
+            result.insert("scenario", "results-panel-12-cycles");
+            result.insert("width", size.width()); result.insert("height", size.height());
+            result.insert("dpr", window.devicePixelRatioF());
+            result.insert("registers", registerCount);
+            if (auto* panel = window.findChild<QWidget*>("resultsPanel")) {
+                result.insert("peakSnapshotBytes", double(panel->property("regmapPanelPeakSnapshotBytes").toLongLong()));
+                result.insert("lastCapturePreparationMs", panel->property("regmapPanelPreparationMs").toDouble());
+                result.insert("retainedSnapshotBytes", double(panel->property("regmapPanelSnapshotBytes").toLongLong()));
+            }
+            runs.append(result);
         }
-        runs.append(result);
         auto* search = window.findChild<QLineEdit*>("globalSearchEdit");
         if (!search) return 11;
-        result = measure(events, [search](int i) {
-            search->setText(i % 2 ? "PERF_99" : "PERF_");
-        });
-        result.insert("scenario", "search-24-edits");
-        result.insert("width", size.width()); result.insert("height", size.height());
-        result.insert("dpr", window.devicePixelRatioF()); result.insert("registers", 1000);
-        runs.append(result);
-        search->clear();
+        if (scenario == "all" || scenario == "search" || scenario == "search-exact") {
+            auto result = measure(events, [search, scenario](int i) {
+                search->setText(scenario == "search-exact"
+                    ? (i % 2 ? "rw" : "no_such_register") : (i % 2 ? "PERF_99" : "PERF_"));
+            });
+            result.insert("scenario", scenario == "search-exact" ? "search-exact-24-edits" : "search-24-edits");
+            result.insert("width", size.width()); result.insert("height", size.height());
+            result.insert("dpr", window.devicePixelRatioF()); result.insert("registers", registerCount);
+            runs.append(result);
+            search->clear();
+        }
+        if (scenario == "edit") {
+            const QString id = QStringLiteral("perf-%1").arg(registerCount - 1);
+            int row = -1;
+            for (int index = 0; index < table->model()->rowCount(); ++index)
+                if (table->model()->index(index, 0).data(Qt::UserRole + 1).toString() == id) row = index;
+            if (row < 0) return 14;
+            const QStringList counterNames{"inlineDiagnosticRowVisitCount", "inlineDiagnosticCellUpdateCount",
+                "diagnosticsRefreshCount", "diffRefreshCount", "fullTableRefreshCount", "incrementalTableRefreshCount"};
+            QMap<QString, qulonglong> before;
+            for (const auto& name : counterNames) before[name] = window.property(name.toUtf8().constData()).toULongLong();
+            bool editsAccepted = true;
+            auto result = measure(events, [&](int iteration) {
+                editsAccepted &= table->model()->setData(table->model()->index(row, 11),
+                    QStringLiteral("Measured description %1").arg(iteration));
+            });
+            if (!editsAccepted) return 15;
+            result.insert("derivedCountersAvailable", window.property("diffRefreshCount").isValid());
+            for (const auto& name : counterNames) {
+                const auto value = window.property(name.toUtf8().constData());
+                result.insert(name, value.isValid() ? QJsonValue(double(value.toULongLong() - before[name]))
+                                                   : QJsonValue(QJsonValue::Null));
+            }
+            result.insert("scenario", "description-24-edits");
+            result.insert("registers", registerCount);
+            result.insert("width", size.width()); result.insert("height", size.height());
+            runs.append(result);
+        }
         events.root = nullptr;
     }
     QFile output(app.arguments().at(1));
     if (!output.open(QIODevice::WriteOnly)) return 12;
-    output.write(QJsonDocument(QJsonObject{{"runs", runs},
-        {"measurement", "offscreen dispatch/layout/paint; not display frame rate"}}).toJson());
+    output.write(QJsonDocument(QJsonObject{{"runs", runs}, {"opens", opens},
+        {"measurement", "dispatch measures synchronous calls; ready/openReady drain both old queued callbacks and the new derived timer; openReady is before show, not first visible frame; unavailable counters are null; offscreen is not desktop frame rate"}}).toJson());
     return 0;
 }
+#endif
