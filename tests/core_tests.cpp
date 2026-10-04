@@ -13,6 +13,7 @@
 #include "regmap/core/xlsx_export.hpp"
 #include "regmap/core/workspace_store.hpp"
 #include "regmap/core/three_way_merge.hpp"
+#include "../src/core/src/atomic_file_writer.hpp"
 
 #include <xlsxcell.h>
 #include <xlsxcellrange.h>
@@ -21,6 +22,7 @@
 
 #include <QColor>
 #include <QCryptographicHash>
+#include <QDir>
 #include <QFile>
 #include <QFileDevice>
 #include <QDebug>
@@ -40,10 +42,12 @@
 #include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <type_traits>
+#include <utility>
 
 class CoreTests final : public QObject {
     Q_OBJECT
@@ -63,6 +67,13 @@ private slots:
     void loadsOneSnapshotWithEquivalentDiagnostics();
     void adoptsOnlyUnmodifiedLoadSnapshots();
     void roundTripsProjectFile();
+    void preservesExternalChangesBeforeAtomicCommit_data();
+    void preservesExternalChangesBeforeAtomicCommit();
+    void handlesAtomicCommitSharingConflicts_data();
+    void handlesAtomicCommitSharingConflicts();
+    void handlesExternalChangesDuringAtomicRetry();
+    void savesPublicFormatsThroughSharingConflicts_data();
+    void savesPublicFormatsThroughSharingConflicts();
     void roundTripsExtendedModel();
     void normalizesFixedRegisterSlotsAndLegacyArrays();
     void derivesFieldResetsFromRegister();
@@ -70,7 +81,12 @@ private slots:
     void handlesLargeWorkspaceWithCachedSaveState();
     void squashesTransactionsIntoSingleUndoStep();
     void boundsTransactionHistory();
+    void preparedEditsRejectStaleForeignAndConsumedCandidates();
+    void boundsHistoryMemoryAndPreservesSnapshots();
+    void groupsOnlyExplicitContiguousTransactions();
+    void diffSnapshotsOwnTheirInput();
     void roundTripsManagedRtl();
+    void preservesManagedRtlSourceLocations();
     void rejectsInvalidManagedRtlStructure();
     void preservesUnmanagedRtlText();
     void refusesUnmanagedRtlOverwrite();
@@ -96,6 +112,46 @@ void writeTextFile(const QString& path, const QByteArray& text)
     QCOMPARE(file.write(text), text.size());
     file.close();
 }
+
+[[nodiscard]] QByteArray readFileBytes(const QString& path)
+{
+    QFile file(path);
+    return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray{};
+}
+
+#ifdef Q_OS_WIN
+class ScopedReadSharingLock final {
+public:
+    explicit ScopedReadSharingLock(const QString& path)
+        : handle_(CreateFileW(reinterpret_cast<LPCWSTR>(path.utf16()), GENERIC_READ,
+                              FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL, nullptr))
+    {
+    }
+
+    ~ScopedReadSharingLock()
+    {
+        if (valid()) CloseHandle(handle_);
+    }
+
+    ScopedReadSharingLock(const ScopedReadSharingLock&) = delete;
+    ScopedReadSharingLock& operator=(const ScopedReadSharingLock&) = delete;
+
+    [[nodiscard]] bool valid() const noexcept { return handle_ != INVALID_HANDLE_VALUE; }
+
+    [[nodiscard]] std::jthread releaseAfter(std::chrono::milliseconds delay)
+    {
+        const HANDLE handle = std::exchange(handle_, INVALID_HANDLE_VALUE);
+        return std::jthread([handle, delay] {
+            std::this_thread::sleep_for(delay);
+            CloseHandle(handle);
+        });
+    }
+
+private:
+    HANDLE handle_;
+};
+#endif
 
 [[nodiscard]] regmap::Workspace stableWorkspace()
 {
@@ -867,6 +923,236 @@ void CoreTests::roundTripsProjectFile()
     QVERIFY(loaded.workspace.has_value());
     QVERIFY(regmap::diffWorkspaces(*source.workspace, *loaded.workspace).empty());
     QCOMPARE(loaded.manifest->rtl.path.declared, std::filesystem::path("rtl/registers.sv"));
+}
+
+void CoreTests::preservesExternalChangesBeforeAtomicCommit_data()
+{
+    QTest::addColumn<QString>("change");
+    QTest::newRow("replaced") << QStringLiteral("replaced");
+    QTest::newRow("deleted") << QStringLiteral("deleted");
+    QTest::newRow("created") << QStringLiteral("created");
+    QTest::newRow("directory") << QStringLiteral("directory");
+}
+
+void CoreTests::preservesExternalChangesBeforeAtomicCommit()
+{
+    QFETCH(QString, change);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString path = directory.filePath(QStringLiteral("target.dat"));
+    const QByteArray original("original-content");
+    const QByteArray external("external-content");
+    if (change != QStringLiteral("created")) {
+        writeTextFile(path, original);
+        QCOMPARE(readFileBytes(path), original);
+    }
+
+    regmap::detail::AtomicFileWriter writer(path);
+    QVERIFY(writer.destinationUnchanged());
+    if (change != QStringLiteral("created")) QVERIFY(QFile::remove(path));
+    if (change == QStringLiteral("directory")) {
+        QVERIFY(QDir().mkpath(path));
+    } else if (change != QStringLiteral("deleted")) {
+        writeTextFile(path, external);
+        QCOMPARE(readFileBytes(path), external);
+    }
+
+    const auto result = writer.write(QByteArrayLiteral("local-update"), QIODevice::WriteOnly);
+    QVERIFY(!result.committed);
+    QVERIFY(!writer.destinationUnchanged());
+    QVERIFY(!result.errorText.isEmpty());
+    if (change == QStringLiteral("deleted")) {
+        QVERIFY(!QFile::exists(path));
+    } else if (change == QStringLiteral("directory")) {
+        QVERIFY(QFileInfo(path).isDir());
+    } else {
+        QCOMPARE(readFileBytes(path), external);
+    }
+}
+
+void CoreTests::handlesAtomicCommitSharingConflicts_data()
+{
+    QTest::addColumn<bool>("transient");
+    QTest::newRow("transient") << true;
+    QTest::newRow("permanent") << false;
+}
+
+void CoreTests::handlesAtomicCommitSharingConflicts()
+{
+#ifndef Q_OS_WIN
+    QSKIP("Windows file sharing modes are required for this regression.");
+#else
+    QFETCH(bool, transient);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString path = directory.filePath(QStringLiteral("target.dat"));
+    const QByteArray original("original-content");
+    const QByteArray replacement("replacement-content");
+    writeTextFile(path, original);
+    QCOMPARE(readFileBytes(path), original);
+    regmap::detail::AtomicFileWriter writer(path);
+
+    std::optional<regmap::detail::AtomicWriteResult> result;
+    {
+        ScopedReadSharingLock lock(path);
+        QVERIFY2(lock.valid(), "Could not acquire the controlled Windows sharing lock.");
+        std::jthread unlock;
+        if (transient) unlock = lock.releaseAfter(std::chrono::milliseconds(60));
+        result = writer.write(replacement, QIODevice::WriteOnly);
+        // The jthread joins and the persistent lock closes before any assertion
+        // below can return from the test or destroy its temporary directory.
+    }
+
+    QVERIFY(result.has_value());
+    QCOMPARE(result->committed, transient);
+    QVERIFY(result->attempts > 1);
+    QVERIFY(result->attempts <= 4);
+    QCOMPARE(readFileBytes(path), transient ? replacement : original);
+    if (!transient) {
+        QVERIFY(result->error != QFileDevice::NoError);
+        QVERIFY(!result->errorText.isEmpty());
+    }
+#endif
+}
+
+void CoreTests::handlesExternalChangesDuringAtomicRetry()
+{
+#ifndef Q_OS_WIN
+    QSKIP("Windows file sharing modes are required for this regression.");
+#else
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString path = directory.filePath(QStringLiteral("target.dat"));
+    const QByteArray original("original-content");
+    const QByteArray external("external revision must survive");
+    writeTextFile(path, original);
+    QCOMPARE(readFileBytes(path), original);
+    regmap::detail::AtomicFileWriter writer(path);
+
+    const HANDLE rawHandle = CreateFileW(
+        reinterpret_cast<LPCWSTR>(path.utf16()), GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    QVERIFY2(rawHandle != INVALID_HANDLE_VALUE,
+             "Could not acquire the controlled Windows replacement lock.");
+    const auto closeHandle = [](HANDLE handle) { CloseHandle(handle); };
+    std::unique_ptr<void, decltype(closeHandle)> handle(rawHandle, closeHandle);
+    bool externalWriteSucceeded = false;
+    std::optional<regmap::detail::AtomicWriteResult> result;
+    {
+        std::jthread externalWriter(
+            [handle = std::move(handle), &external, &externalWriteSucceeded] {
+                std::this_thread::sleep_for(std::chrono::milliseconds(60));
+                LARGE_INTEGER beginning{};
+                DWORD written = 0;
+                externalWriteSucceeded =
+                    SetFilePointerEx(handle.get(), beginning, nullptr, FILE_BEGIN) &&
+                    WriteFile(handle.get(), external.constData(),
+                              static_cast<DWORD>(external.size()), &written, nullptr) &&
+                    written == static_cast<DWORD>(external.size()) &&
+                    SetEndOfFile(handle.get()) && FlushFileBuffers(handle.get());
+            });
+        result = writer.write(QByteArrayLiteral("local-update"), QIODevice::WriteOnly);
+        // Join also destroys the thread-owned handle before reading the result.
+    }
+
+    QVERIFY(externalWriteSucceeded);
+    QVERIFY(result.has_value());
+    QVERIFY(!result->committed);
+    QCOMPARE(QByteArray(result->operation), QByteArrayLiteral("changed"));
+    // A failed native rename can outlast the 60 ms lock: detecting the change
+    // before starting the second attempt is the required safe outcome too.
+    QVERIFY(result->attempts >= 1);
+    QVERIFY(result->attempts <= 4);
+    QCOMPARE(readFileBytes(path), external);
+#endif
+}
+
+void CoreTests::savesPublicFormatsThroughSharingConflicts_data()
+{
+    QTest::addColumn<QString>("format");
+    QTest::addColumn<bool>("transient");
+    for (const char* format : {"project", "rtl", "baseline"}) {
+        const QByteArray prefix(format);
+        QTest::newRow((prefix + "-transient").constData()) << QString::fromLatin1(format) << true;
+        QTest::newRow((prefix + "-permanent").constData()) << QString::fromLatin1(format) << false;
+    }
+}
+
+void CoreTests::savesPublicFormatsThroughSharingConflicts()
+{
+#ifndef Q_OS_WIN
+    QSKIP("Windows file sharing modes are required for this regression.");
+#else
+    QFETCH(QString, format);
+    QFETCH(bool, transient);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto manifest = stableManifest(std::filesystem::path(
+        directory.filePath(QStringLiteral("project.regmap.yaml")).toStdWString()));
+    const auto path = format == QStringLiteral("project") ? manifest.manifestPath
+        : format == QStringLiteral("rtl") ? manifest.rtl.path.resolved
+        : manifest.manifestPath.parent_path() / "baseline.sync.json";
+    const QString filePath = QString::fromStdWString(path.wstring());
+    auto workspace = stableWorkspace();
+    const auto save = [&] {
+        if (format == QStringLiteral("project")) return regmap::saveProjectFile(manifest, workspace);
+        if (format == QStringLiteral("rtl"))
+            return regmap::writeManagedRtl(path, manifest.rtl.moduleName, workspace);
+        return regmap::saveSyncBaseline(path, workspace);
+    };
+    const auto errors = [](const std::vector<regmap::Diagnostic>& diagnostics) {
+        QStringList messages;
+        for (const auto& diagnostic : diagnostics) {
+            if (diagnostic.severity == regmap::DiagnosticSeverity::error) {
+                messages.push_back(QString::fromStdString(diagnostic.code + ": " + diagnostic.message));
+            }
+        }
+        return messages.join(QLatin1Char('\n')).toUtf8();
+    };
+
+    const auto initialDiagnostics = save();
+    const QByteArray initialErrors = errors(initialDiagnostics);
+    QVERIFY2(initialErrors.isEmpty(), initialErrors.constData());
+    const QByteArray original = readFileBytes(filePath);
+    QVERIFY(!original.isEmpty());
+    workspace.addressSpaces.front().blocks.front().registers.front().description =
+        "Updated while a Windows reader holds the destination";
+
+    std::vector<regmap::Diagnostic> diagnostics;
+    {
+        ScopedReadSharingLock lock(filePath);
+        QVERIFY2(lock.valid(), "Could not acquire the controlled Windows sharing lock.");
+        std::jthread unlock;
+        if (transient) unlock = lock.releaseAfter(std::chrono::milliseconds(60));
+        diagnostics = save();
+    }
+
+    const QByteArray failure = errors(diagnostics);
+    if (!transient) {
+        QVERIFY2(!failure.isEmpty(), "A persistent sharing lock must report a save failure.");
+        QCOMPARE(readFileBytes(filePath), original);
+        return;
+    }
+    QVERIFY2(failure.isEmpty(), failure.constData());
+    QVERIFY(readFileBytes(filePath) != original);
+    std::optional<regmap::Workspace> loaded;
+    if (format == QStringLiteral("project")) {
+        auto result = regmap::openProject(path);
+        QVERIFY(!result.hasErrors());
+        loaded = std::move(result.workspace);
+    } else if (format == QStringLiteral("rtl")) {
+        auto result = regmap::parseManagedRtl(path);
+        QVERIFY(!result.hasErrors());
+        loaded = std::move(result.workspace);
+    } else {
+        auto result = regmap::loadSyncBaseline(path);
+        QVERIFY(errors(result.diagnostics).isEmpty());
+        loaded = std::move(result.workspace);
+    }
+    QVERIFY(loaded.has_value());
+    QVERIFY(regmap::diffWorkspaces(workspace, *loaded).empty());
+#endif
 }
 
 void CoreTests::roundTripsExtendedModel()
@@ -1676,6 +1962,125 @@ void CoreTests::boundsTransactionHistory()
     QCOMPARE(squashStore.workspace()->name, std::string{"group-first"});
 }
 
+void CoreTests::preparedEditsRejectStaleForeignAndConsumedCandidates()
+{
+    regmap::WorkspaceStore store(stableWorkspace());
+    regmap::WorkspaceStore other(stableWorkspace());
+    const auto beforeCount = store.validationCount();
+    auto edit = store.prepareEdit([](regmap::Workspace& workspace) {
+        workspace.name = "Prepared edit";
+    });
+    QVERIFY(edit.has_value());
+    QCOMPARE(store.validationCount(), beforeCount + 1);
+    const auto expectedDiagnostics = edit->diagnostics();
+    QVERIFY(!other.commitPreparedEdit("Foreign", std::move(*edit)));
+    auto moved = std::move(*edit);
+    QVERIFY(!store.commitPreparedEdit("Moved from", std::move(*edit)));
+    QVERIFY(store.commitPreparedEdit("Prepared", std::move(moved)));
+    QVERIFY(!store.commitPreparedEdit("Consumed", std::move(moved)));
+    QCOMPARE(store.workspace()->name, std::string("Prepared edit"));
+    QCOMPARE(store.diagnostics(), expectedDiagnostics);
+    QCOMPARE(store.validationCount(), beforeCount + 1);
+
+    auto stale = store.prepareEdit([](regmap::Workspace& workspace) { workspace.name = "Stale"; });
+    QVERIFY(stale);
+    QVERIFY(store.undo());
+    QVERIFY(!store.commitPreparedEdit("Stale after undo", std::move(*stale)));
+    const auto oldRevision = store.revision();
+    auto replacement = *store.workspace();
+    store.reset(stableWorkspace());
+    QVERIFY(!store.prepareReplacement(std::move(replacement), oldRevision));
+    const auto count = store.validationCount();
+    auto unchanged = store.prepareEdit([](regmap::Workspace&) {});
+    QVERIFY(unchanged);
+    QVERIFY(!store.commitPreparedEdit("No-op", std::move(*unchanged)));
+    QCOMPARE(store.validationCount(), count);
+    QVERIFY(!store.canUndo());
+}
+
+void CoreTests::boundsHistoryMemoryAndPreservesSnapshots()
+{
+    auto workspace = stableWorkspace();
+    auto& registers = workspace.addressSpaces.front().blocks.front().registers;
+    registers.push_back(registers.front()); // Invalid duplicate IDs must survive undo unchanged.
+    registers.back().description.assign(32768, 'x');
+    registers.back().source.workbook = std::filesystem::path(L"test-\u6765\u6e90.yaml");
+    registers.back().propertySources["description"] = registers.back().source;
+    const auto originalSource = registers.back().source;
+    regmap::WorkspaceStore store(workspace);
+    QVERIFY(store.transact("First", [](auto& candidate) { candidate.name = "first"; }));
+    const auto entryBytes = store.historyBytes();
+    QVERIFY(entryBytes > 32768);
+    store.setHistoryByteLimit(entryBytes * 2 + 1024);
+    for (int i = 0; i < 8; ++i) {
+        QVERIFY(store.transact("Edit", [i](auto& candidate) { candidate.name = std::to_string(i); }));
+    }
+    QVERIFY(store.historyTrimCount() > 0);
+    QVERIFY(store.undoDepth() < 8);
+    QVERIFY(store.historyBytes() <= entryBytes * 2 + 1024);
+    QVERIFY(store.undo());
+    QCOMPARE(store.workspace()->name, std::string("6"));
+    const auto& restored = store.workspace()->addressSpaces.front().blocks.front().registers;
+    QCOMPARE(restored.size(), registers.size());
+    QCOMPARE(restored.back().id, registers.front().id);
+    QCOMPARE(restored.back().source, originalSource);
+    QCOMPARE(restored.back().propertySources.at("description"), originalSource);
+    QCOMPARE(restored.back().description, std::string(32768, 'x'));
+    QVERIFY(store.redo());
+    QCOMPARE(store.workspace()->name, std::string("7"));
+    store.setHistoryByteLimit(1);
+    QCOMPARE(store.undoDepth(), std::size_t(1));
+    QVERIFY(store.undo()); // One over-budget snapshot is deliberately retained.
+    QVERIFY(store.redo());
+}
+
+void CoreTests::groupsOnlyExplicitContiguousTransactions()
+{
+    regmap::WorkspaceStore store(stableWorkspace());
+    const auto originalName = store.workspace()->name;
+    const auto group = store.beginUndoGroup("Grouped rename");
+    for (int i = 0; i < 5; ++i) {
+        QVERIFY(store.transact("Rename", [i](auto& candidate) {
+            candidate.name = std::to_string(i);
+        }, group));
+        QCOMPARE(store.undoDepth(), std::size_t(1));
+    }
+    QCOMPARE(store.undoText(), std::string_view("Grouped rename"));
+    QVERIFY(store.endUndoGroup(group));
+    QVERIFY(store.undo());
+    QCOMPARE(store.workspace()->name, originalName);
+    QVERIFY(store.redo());
+    QCOMPARE(store.workspace()->name, std::string("4"));
+    const auto interrupted = store.beginUndoGroup("Interrupted");
+    QVERIFY(store.transact("Grouped", [](auto& candidate) { candidate.name = "group"; }, interrupted));
+    QVERIFY(store.transact("Unrelated", [](auto& candidate) { candidate.name = "unrelated"; }));
+    QVERIFY(store.transact("Old token", [](auto& candidate) { candidate.name = "later"; }, interrupted));
+    QVERIFY(!store.endUndoGroup(interrupted));
+    QCOMPARE(store.undoDepth(), std::size_t(4));
+    QVERIFY(store.undo());
+    QCOMPARE(store.workspace()->name, std::string("unrelated"));
+    QVERIFY(store.undo());
+    QCOMPARE(store.workspace()->name, std::string("group"));
+}
+
+void CoreTests::diffSnapshotsOwnTheirInput()
+{
+    auto before = stableWorkspace();
+    auto after = before;
+    regmap::findRegister(after, "reg-control")->description = "Changed";
+    regmap::WorkspaceDiffSnapshot baseline(before);
+    regmap::WorkspaceDiffSnapshot edited(after);
+    const auto expected = regmap::diffWorkspaces(before, after);
+    QCOMPARE(expected.size(), std::size_t(1));
+    QCOMPARE(expected.front().id, std::string("reg-control"));
+    before.addressSpaces.clear();
+    after.addressSpaces.clear();
+    QCOMPARE(regmap::diffWorkspaces(baseline, edited), expected);
+    auto shared = edited;
+    QCOMPARE(regmap::diffWorkspaces(baseline, shared), expected);
+    QVERIFY(regmap::diffWorkspaces(edited, shared).empty());
+}
+
 void CoreTests::roundTripsManagedRtl()
 {
     const auto workspace = stableWorkspace();
@@ -1727,6 +2132,100 @@ void CoreTests::roundTripsManagedRtl()
     QVERIFY(reg != nullptr);
     QCOMPARE(reg->offset, std::uint64_t{0x100});
     QVERIFY(reg->propertySources.at("offset").row.has_value());
+}
+
+void CoreTests::preservesManagedRtlSourceLocations()
+{
+    auto workspace = stableWorkspace();
+    auto& registers = workspace.addressSpaces.front().blocks.front().registers;
+    registers[0].id = "reg-a";
+    registers[1].id = "reg-aa";
+    regmap::Field group;
+    group.id = "field-a";
+    group.name = "GROUP";
+    group.type = regmap::FieldType::structure;
+    group.msb = 2;
+    group.members = std::move(registers[0].fields);
+    group.members[0].id = "field-aa";
+    group.members[1].enumValues[0].id = "enum-a";
+    group.members[1].enumValues[1].id = "enum-aa";
+    registers[0].fields = {group};
+    regmap::Register enumRegister;
+    enumRegister.id = "zzz-register";
+    enumRegister.name = "ENUM_REGISTER";
+    enumRegister.offset = 0x100;
+    enumRegister.type = regmap::FieldType::enumeration;
+    regmap::EnumValue enumValue;
+    enumValue.id = "zzz-value";
+    enumValue.name = "ZERO";
+    enumRegister.enumValues = {enumValue};
+    registers.push_back(enumRegister);
+
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString path = directory.filePath(QStringLiteral("source_locations.sv"));
+    const std::filesystem::path rtlPath(path.toStdWString());
+    QStringList lines = QString::fromStdString(regmap::renderManagedRtlRegion(workspace)).split('\n');
+    // An object with no VALUE overrides must retain its OBJECT location without
+    // inheriting the properties of the next lexicographically adjacent ID.
+    lines.removeIf([](const QString& line) {
+        return line.contains(QStringLiteral("RMW:VALUE")) &&
+            line.contains(QStringLiteral("\"id\":\"enum-a\""));
+    });
+    writeTextFile(path, lines.join('\n').toUtf8());
+    const auto parsed = regmap::parseManagedRtl(rtlPath);
+    QVERIFY(!parsed.hasErrors());
+    QVERIFY(parsed.workspace.has_value());
+    QVERIFY(regmap::diffWorkspaces(workspace, *parsed.workspace).empty());
+
+    const auto checkSources = [&](const auto& object) {
+        const QString idMarker = QStringLiteral("\"id\":\"%1\"")
+                                     .arg(QString::fromStdString(object.id));
+        for (qsizetype index = 0; index < lines.size(); ++index) {
+            const QString& line = lines[index];
+            if (!line.contains(idMarker)) continue;
+            if (line.contains(QStringLiteral("RMW:OBJECT"))) {
+                QCOMPARE(object.source.row, std::optional<std::uint32_t>(index + 1));
+                QCOMPARE(object.source.workbook, rtlPath);
+                QCOMPARE(object.source.sheet, std::string("Managed RTL"));
+            }
+            const auto markerIndex = line.indexOf(QStringLiteral("RMW:VALUE "));
+            if (markerIndex < 0) continue;
+            const auto marker = QJsonDocument::fromJson(line.mid(markerIndex + 10).toUtf8()).object();
+            const std::string property = marker.value(QStringLiteral("property")).toString().toStdString();
+            QVERIFY(object.propertySources.contains(property));
+            const auto& source = object.propertySources.at(property);
+            QCOMPARE(source.row, std::optional<std::uint32_t>(index + 1));
+            QCOMPARE(source.workbook, rtlPath);
+            QCOMPARE(source.cell, "line " + std::to_string(index + 1));
+        }
+        for (const auto& [property, source] : object.propertySources) {
+            static_cast<void>(property);
+            if (source.row) QVERIFY(lines.at(*source.row - 1).contains(idMarker));
+        }
+    };
+    const auto checkField = [&](auto&& self, const regmap::Field& field) -> void {
+        checkSources(field);
+        for (const auto& value : field.enumValues) checkSources(value);
+        for (const auto& member : field.members) self(self, member);
+    };
+    for (const auto& space : parsed.workspace->addressSpaces) {
+        checkSources(space);
+        QCOMPARE(space.propertySources.at("address_space_base"), space.propertySources.at("base"));
+        for (const auto& block : space.blocks) {
+            checkSources(block);
+            QCOMPARE(block.propertySources.at("block_base"), block.propertySources.at("base"));
+            QCOMPARE(block.propertySources.at("block_size"), block.propertySources.at("size"));
+            for (const auto& reg : block.registers) {
+                checkSources(reg);
+                for (const auto& value : reg.enumValues) checkSources(value);
+                for (const auto& field : reg.fields) checkField(checkField, field);
+            }
+        }
+    }
+    const auto* mode = regmap::findField(*parsed.workspace, "field-mode");
+    QVERIFY(mode != nullptr);
+    QVERIFY(mode->enumValues.front().propertySources.empty());
 }
 
 void CoreTests::rejectsInvalidManagedRtlStructure()

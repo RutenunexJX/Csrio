@@ -257,6 +257,7 @@ private slots:
     void refreshesSearchResultsAfterModelChanges();
     void selectsOnlyVisibleDataCells();
     void copiesAndPastesEditableCells();
+    void reusesValidationAndSnapshotsForBatchEdits();
     void pastesDestructiveTypeAndRangeAtomically();
     void batchEditsAndCopiesCompleteRanges();
     void preflightsParentScopedSelectionCommands();
@@ -6627,11 +6628,17 @@ void GuiSmokeTests::decidesExternalChangesAtomicallyAndInvalidatesDigest()
         auto project = regmap::openProject(
             std::filesystem::path(manifest.toStdWString()));
         if (!project.manifest || !project.workspace) {
+            for (const auto& diagnostic : project.diagnostics) {
+                qWarning().noquote() << QString::fromStdString(diagnostic.code + ": " + diagnostic.message);
+            }
             return false;
         }
         mutate(*project.workspace);
         const auto diagnostics = regmap::saveProjectFile(
             *project.manifest, *project.workspace);
+        for (const auto& diagnostic : diagnostics) {
+            qWarning().noquote() << QString::fromStdString(diagnostic.code + ": " + diagnostic.message);
+        }
         return std::ranges::none_of(
             diagnostics,
             [](const regmap::Diagnostic& diagnostic) {
@@ -6879,7 +6886,10 @@ void GuiSmokeTests::decidesExternalChangesAtomicallyAndInvalidatesDigest()
     QTest::mouseClick(reject, Qt::LeftButton);
     QTRY_VERIFY_WITH_TIMEOUT(
         controller->rejectedExternalChangeCount() >= std::size_t{1}, 2000);
-    QVERIFY(externalRow(QStringLiteral("gui-workspace")) < 0);
+    QVERIFY(std::ranges::none_of(controller->externalChanges(), [](const auto& change) {
+        return change.id == "gui-workspace";
+    }));
+    QTRY_VERIFY_WITH_TIMEOUT(externalRow(QStringLiteral("gui-workspace")) < 0, 2000);
     QCOMPARE(controller->workspace()->name,
              std::string{"GUI Workspace"});
     QTest::mouseClick(rejectAll, Qt::LeftButton);
@@ -24767,6 +24777,50 @@ void GuiSmokeTests::selectsOnlyVisibleDataCells()
 
     makeGeneratedFilesWritable(
         directory.path());
+}
+
+void GuiSmokeTests::reusesValidationAndSnapshotsForBatchEdits()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto manifest = directory.filePath("prepared-edits.regmap.yaml");
+    createTwoRegisterProject(manifest);
+    MainWindow window;
+    QVERIFY(window.openProjectPath(manifest));
+    window.resize(1100, 720);
+    window.show();
+    QTest::qWait(50);
+    auto* table = window.findChild<QTableView*>("registerView");
+    auto* controller = window.findChild<ProjectController*>();
+    QVERIFY(table && controller);
+    QTRY_VERIFY(table->model()->rowCount() >= 2);
+    table->setCurrentIndex(table->model()->index(0, 11));
+    table->selectionModel()->select(table->model()->index(0, 11), QItemSelectionModel::ClearAndSelect);
+    table->selectionModel()->select(table->model()->index(1, 11), QItemSelectionModel::Select);
+    table->setFocus();
+    const auto validations = controller->modelValidationCount();
+    const auto undoDepth = controller->undoDepth();
+    QApplication::clipboard()->setText("Batch description");
+    QTest::keyClick(table, Qt::Key_V, Qt::ControlModifier);
+    QTRY_COMPARE(table->model()->index(0, 11).data().toString(), QString("Batch description"));
+    QCOMPARE(table->model()->index(1, 11).data().toString(), QString("Batch description"));
+    QCOMPARE(controller->modelValidationCount(), validations + 1);
+    QCOMPARE(window.property("pasteFullStateComparisons").toULongLong(), qulonglong(0));
+    QCOMPARE(controller->undoDepth(), undoDepth + 1);
+    QCOMPARE(controller->savedChanges().size(), std::size_t(2));
+
+    const auto snapshots = controller->property("diffSnapshotBuildCount").toULongLong();
+    const auto validationBeforeOffset = controller->modelValidationCount();
+    QVERIFY(table->model()->setData(table->model()->index(0, 1), "0x20"));
+    QTRY_COMPARE(table->model()->index(0, 1).data().toString(), QString("0x20"));
+    QCOMPARE(controller->modelValidationCount(), validationBeforeOffset + 1);
+    QCOMPARE(controller->property("diffSnapshotBuildCount").toULongLong(), snapshots + 1);
+    controller->undo();
+    controller->undo();
+    QTRY_VERIFY(!controller->isDirty());
+    QVERIFY(controller->savedChanges().empty());
+    controller->redo();
+    QTRY_COMPARE(controller->savedChanges().size(), std::size_t(2));
 }
 
 void GuiSmokeTests::copiesAndPastesEditableCells()

@@ -1,6 +1,7 @@
 #include "regmap/core/three_way_merge.hpp"
 
 #include "regmap/core/model_tokens.hpp"
+#include "atomic_file_writer.hpp"
 
 #include <QByteArray>
 #include <QDir>
@@ -10,7 +11,6 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QSaveFile>
 #include <QString>
 
 #include <algorithm>
@@ -979,6 +979,7 @@ std::string serializeWorkspaceState(const Workspace& workspace, bool indented)
 std::vector<Diagnostic> saveSyncBaseline(const std::filesystem::path& path,
                                          const Workspace& workspace)
 {
+    const detail::AtomicFileWriter writer(fromPath(path));
     const std::string serialized = serializeWorkspaceState(workspace, true);
     const QByteArray bytes(serialized.data(), static_cast<qsizetype>(serialized.size()));
 
@@ -989,11 +990,11 @@ std::vector<Diagnostic> saveSyncBaseline(const std::filesystem::path& path,
                           "Cannot create the synchronization baseline directory.", path);
         return diagnostics;
     }
-    QSaveFile file(fromPath(path));
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text) || file.write(bytes) != bytes.size() ||
-        !file.commit()) {
+    const auto written = writer.write(bytes, QIODevice::WriteOnly | QIODevice::Text);
+    if (!written.committed) {
         addFileDiagnostic(diagnostics, baselineWriteCode,
-                          "Cannot atomically write the synchronization baseline.", path);
+                          "Cannot atomically write the synchronization baseline: " +
+                              written.errorText.toStdString(), path);
     }
     return diagnostics;
 }

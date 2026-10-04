@@ -1,3 +1,4 @@
+#include "phase_timer.hpp"
 #include "main_window.hpp"
 
 #include "address_space_view.hpp"
@@ -3624,6 +3625,39 @@ blockSiblings(const regmap::Workspace& workspace, std::string_view blockId)
     return nullptr;
 }
 
+bool containsEditedField(const std::vector<regmap::Field>& fields, std::string_view id)
+{
+    for (const auto& field : fields) {
+        if (field.id == id || std::ranges::any_of(field.enumValues,
+                [id](const auto& value) { return value.id == id; })
+            || containsEditedField(field.members, id)) return true;
+    }
+    return false;
+}
+
+std::string cellEditState(const regmap::Workspace& workspace, std::string_view id)
+{
+    for (const auto& page : workspace.addressSpaces) {
+        for (const auto& block : page.blocks) {
+            for (const auto& reg : block.registers) {
+                if (reg.id != id && !std::ranges::any_of(reg.enumValues,
+                        [id](const auto& value) { return value.id == id; })
+                    && !containsEditedField(reg.fields, id)) continue;
+                regmap::Workspace scope;
+                scope.id = workspace.id;
+                scope.addressSpaces.emplace_back();
+                auto& scopedPage = scope.addressSpaces.back();
+                scopedPage.id = page.id;
+                scopedPage.blocks.emplace_back();
+                scopedPage.blocks.back().id = block.id;
+                scopedPage.blocks.back().registers.push_back(reg);
+                return regmap::serializeWorkspaceState(scope, false);
+            }
+        }
+    }
+    return regmap::serializeWorkspaceState(workspace, false);
+}
+
 [[nodiscard]] bool isAddressLayoutDiagnostic(std::string_view code) noexcept
 {
     return code == addressWidthDiagnosticCode ||
@@ -3657,7 +3691,8 @@ addressSpaceContaining(const regmap::Workspace& workspace,
 
 [[nodiscard]] std::vector<std::string>
 addressLayoutIssues(const regmap::Workspace& workspace,
-                    std::string_view targetId)
+                    std::string_view targetId,
+                    const std::vector<regmap::Diagnostic>* provided = nullptr)
 {
     const auto* page = addressSpaceContaining(workspace, targetId);
     if (page == nullptr) {
@@ -3673,7 +3708,8 @@ addressLayoutIssues(const regmap::Workspace& workspace,
     }
 
     std::vector<std::string> issues;
-    for (const auto& diagnostic : regmap::validateWorkspace(workspace)) {
+    const auto owned = provided ? std::vector<regmap::Diagnostic>{} : regmap::validateWorkspace(workspace);
+    for (const auto& diagnostic : provided ? *provided : owned) {
         if (!isAddressLayoutDiagnostic(diagnostic.code) ||
             !objectIds.contains(diagnostic.objectId)) {
             continue;
@@ -3696,10 +3732,12 @@ addressLayoutIssues(const regmap::Workspace& workspace,
 }
 
 [[nodiscard]] std::vector<std::string>
-validationIssueSignatures(const regmap::Workspace& workspace)
+validationIssueSignatures(const regmap::Workspace& workspace,
+                          const std::vector<regmap::Diagnostic>* provided = nullptr)
 {
     std::vector<std::string> issues;
-    for (const auto& diagnostic : regmap::validateWorkspace(workspace)) {
+    const auto owned = provided ? std::vector<regmap::Diagnostic>{} : regmap::validateWorkspace(workspace);
+    for (const auto& diagnostic : provided ? *provided : owned) {
         issues.push_back(
             diagnostic.code + '\n' + diagnostic.objectId + '\n' +
             diagnostic.message);
@@ -3710,19 +3748,23 @@ validationIssueSignatures(const regmap::Workspace& workspace)
 
 [[nodiscard]] bool workspaceEditDoesNotWorsen(
     const regmap::Workspace& before,
-    const regmap::Workspace& after)
+    const regmap::Workspace& after,
+    const std::vector<regmap::Diagnostic>* beforeDiagnostics = nullptr,
+    const std::vector<regmap::Diagnostic>* afterDiagnostics = nullptr)
 {
     return introducesNoNewIssues(
-        validationIssueSignatures(before),
-        validationIssueSignatures(after));
+        validationIssueSignatures(before, beforeDiagnostics),
+        validationIssueSignatures(after, afterDiagnostics));
 }
 
 [[nodiscard]] bool addressEditDoesNotWorsen(
     const regmap::Workspace& before, const regmap::Workspace& after,
-    std::string_view targetId)
+    std::string_view targetId,
+    const std::vector<regmap::Diagnostic>* beforeDiagnostics = nullptr,
+    const std::vector<regmap::Diagnostic>* afterDiagnostics = nullptr)
 {
-    const auto beforeIssues = addressLayoutIssues(before, targetId);
-    const auto afterIssues = addressLayoutIssues(after, targetId);
+    const auto beforeIssues = addressLayoutIssues(before, targetId, beforeDiagnostics);
+    const auto afterIssues = addressLayoutIssues(after, targetId, afterDiagnostics);
     return introducesNoNewIssues(beforeIssues, afterIssues);
 }
 
@@ -3745,7 +3787,8 @@ void collectFieldObjectIds(
 
 [[nodiscard]] std::vector<std::string>
 fieldGeometryIssues(const regmap::Workspace& workspace,
-                    std::string_view fieldId)
+                    std::string_view fieldId,
+                    const std::vector<regmap::Diagnostic>* provided = nullptr)
 {
     const auto* reg = findRegisterContainingField(workspace, fieldId);
     if (reg == nullptr) {
@@ -3755,7 +3798,8 @@ fieldGeometryIssues(const regmap::Workspace& workspace,
     std::set<std::string, std::less<>> objectIds;
     collectFieldObjectIds(reg->fields, objectIds);
     std::vector<std::string> issues;
-    for (const auto& diagnostic : regmap::validateWorkspace(workspace)) {
+    const auto owned = provided ? std::vector<regmap::Diagnostic>{} : regmap::validateWorkspace(workspace);
+    for (const auto& diagnostic : provided ? *provided : owned) {
         if (!isFieldGeometryDiagnostic(diagnostic.code) ||
             !objectIds.contains(diagnostic.objectId)) {
             continue;
@@ -3770,19 +3814,23 @@ fieldGeometryIssues(const regmap::Workspace& workspace,
 
 [[nodiscard]] bool fieldGeometryEditDoesNotWorsen(
     const regmap::Workspace& before, const regmap::Workspace& after,
-    std::string_view fieldId)
+    std::string_view fieldId,
+    const std::vector<regmap::Diagnostic>* beforeDiagnostics = nullptr,
+    const std::vector<regmap::Diagnostic>* afterDiagnostics = nullptr)
 {
-    const auto beforeIssues = fieldGeometryIssues(before, fieldId);
-    const auto afterIssues = fieldGeometryIssues(after, fieldId);
+    const auto beforeIssues = fieldGeometryIssues(before, fieldId, beforeDiagnostics);
+    const auto afterIssues = fieldGeometryIssues(after, fieldId, afterDiagnostics);
     return introducesNoNewIssues(beforeIssues, afterIssues);
 }
 
 [[nodiscard]] std::vector<std::string>
 numericRangeIssues(const regmap::Workspace& workspace,
-                   std::string_view objectId)
+                   std::string_view objectId,
+                    const std::vector<regmap::Diagnostic>* provided = nullptr)
 {
     std::vector<std::string> issues;
-    for (const auto& diagnostic : regmap::validateWorkspace(workspace)) {
+    const auto owned = provided ? std::vector<regmap::Diagnostic>{} : regmap::validateWorkspace(workspace);
+    for (const auto& diagnostic : provided ? *provided : owned) {
         if (diagnostic.code != numericRangeDiagnosticCode ||
             diagnostic.objectId != objectId) {
             continue;
@@ -3797,10 +3845,12 @@ numericRangeIssues(const regmap::Workspace& workspace,
 
 [[nodiscard]] bool numericRangeEditDoesNotWorsen(
     const regmap::Workspace& before, const regmap::Workspace& after,
-    std::string_view objectId)
+    std::string_view objectId,
+    const std::vector<regmap::Diagnostic>* beforeDiagnostics = nullptr,
+    const std::vector<regmap::Diagnostic>* afterDiagnostics = nullptr)
 {
-    const auto beforeIssues = numericRangeIssues(before, objectId);
-    const auto afterIssues = numericRangeIssues(after, objectId);
+    const auto beforeIssues = numericRangeIssues(before, objectId, beforeDiagnostics);
+    const auto afterIssues = numericRangeIssues(after, objectId, afterDiagnostics);
     return introducesNoNewIssues(beforeIssues, afterIssues);
 }
 
@@ -10021,6 +10071,7 @@ bool MainWindow::refreshIncrementalEdit()
 
 void MainWindow::refreshProject()
 {
+    const PhaseTimer phaseTimer(this, "phaserefreshProjectMs");
     updateNavigationActions();
     rebuildInlineDiagnosticIndex();
     const auto& manifestPath = controller_.manifestPath();
@@ -10283,6 +10334,7 @@ void MainWindow::updateContextBar()
 
 void MainWindow::populateHierarchy()
 {
+    const PhaseTimer phaseTimer(this, "phasepopulateHierarchyMs");
     QScopedValueRollback guard(refreshing_, true);
     const bool restoreExpansion =
         hierarchyInitialized_;
@@ -10517,6 +10569,7 @@ void MainWindow::updateHierarchyAddAction()
 
 void MainWindow::populateRegisters()
 {
+    const PhaseTimer phaseTimer(this, "phasepopulateRegistersMs");
     QScopedValueRollback guard(refreshing_, true);
     const TableSelectionSnapshot previousSelection =
         captureTableSelection(registerView_, objectIdRole, propertyRole);
@@ -11017,6 +11070,7 @@ void MainWindow::populateRegisters()
 
 void MainWindow::populateFields(const regmap::Register* reg)
 {
+    const PhaseTimer phaseTimer(this, "phasepopulateFieldsMs");
     QScopedValueRollback guard(refreshing_, true);
     const TableSelectionSnapshot previousSelection =
         captureTableSelection(fieldView_, objectIdRole, propertyRole);
@@ -12596,7 +12650,6 @@ void MainWindow::refreshDiff()
                 .arg(conflictCount));
     }
     if (conflictCount > 0) {
-        tabs_->setCurrentIndex(2);
         resultsPanelRequested_ = true;
     }
     const bool firstExternalPresentation =
@@ -12609,8 +12662,11 @@ void MainWindow::refreshDiff()
         resultsPanelRequested_ = true;
     }
     updateBottomPanelVisibility();
-    if (firstExternalPresentation) {
+    // A newly populated Diff tab may still be hidden until visibility is updated.
+    if (conflictCount > 0 || firstExternalPresentation) {
         tabs_->setCurrentIndex(2);
+    }
+    if (firstExternalPresentation) {
         presentedExternalGeneration_ =
             controller_.externalChangeGeneration();
     }
@@ -14505,9 +14561,15 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                 }
             });
     };
+    const auto editRevision = controller_.modelRevision();
+    std::optional<ProjectController::PreparedEdit> preparedEdit;
+    const auto prepareCandidate = [this, &preparedEdit](const regmap::WorkspaceStore::Mutation& mutation) {
+        if (!preparedEdit) preparedEdit = controller_.prepareEdit(mutation);
+        return preparedEdit ? &*preparedEdit : nullptr;
+    };
     const auto commit =
         [this, &description, &objectId, &property, applyChanges,
-         stagedWorkspace](
+         stagedWorkspace, &preparedEdit, editRevision](
             const regmap::WorkspaceStore::Mutation& mutation) {
             if (!applyChanges) {
                 return PropertyEditResult{
@@ -14515,13 +14577,21 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                     {}};
             }
             if (stagedWorkspace != nullptr) {
-                const std::string before =
-                    regmap::serializeWorkspaceState(
-                        *stagedWorkspace, false);
+                // A duplicate ID can alias an object outside this register in
+                // the legacy flattened state. Preserve that behavior on invalid input.
+                const bool scoped = std::ranges::none_of(controller_.modelDiagnostics(),
+                    [](const auto& diagnostic) {
+                        return diagnostic.code == "RM3000" || diagnostic.code == "RM3001";
+                    });
+                const auto state = [&] {
+                    if (scoped) return cellEditState(*stagedWorkspace, objectId);
+                    setProperty("pasteFullStateComparisons",
+                        this->property("pasteFullStateComparisons").toULongLong() + 1);
+                    return regmap::serializeWorkspaceState(*stagedWorkspace, false);
+                };
+                const std::string before = state();
                 mutation(*stagedWorkspace);
-                const std::string after =
-                    regmap::serializeWorkspaceState(
-                        *stagedWorkspace, false);
+                const std::string after = state();
                 return PropertyEditResult{
                     before == after
                         ? PropertyEditStatus::unchanged
@@ -14536,7 +14606,14 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
             }
             pendingIncrementalObjectId_ = objectId;
             pendingIncrementalProperty_ = property;
-            if (controller_.editWorkspace(description, mutation)) {
+            if (preparedEdit && controller_.modelRevision() != editRevision) {
+                statusBar()->showMessage(QStringLiteral("Edit cancelled: the project changed; retry the edit"), 6000);
+                return PropertyEditResult{PropertyEditStatus::rejected, QStringLiteral("the current project revision")};
+            }
+            const bool changed = preparedEdit
+                ? controller_.commitPreparedEdit(description, std::move(*preparedEdit))
+                : controller_.editWorkspace(description, mutation);
+            if (changed) {
                 return PropertyEditResult{PropertyEditStatus::changed, {}};
             }
             pendingIncrementalObjectId_.clear();
@@ -14566,60 +14643,69 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
                 PropertyEditStatus::rejected, expectation};
         };
     const auto acceptsNumericRange =
-        [workspace, stagedWorkspace](std::string_view targetId,
+        [this, workspace, stagedWorkspace, &prepareCandidate](std::string_view targetId,
                     const std::optional<std::string>& minimum,
-                    const std::optional<std::string>& maximum) {
+                    const std::optional<std::string>& maximum,
+                    bool retainCandidate = true) {
             if (stagedWorkspace != nullptr) {
                 return true;
             }
-            regmap::Workspace candidate = *workspace;
-            if (auto* field = regmap::findField(candidate, targetId)) {
-                field->minimumValue = minimum;
-                field->maximumValue = maximum;
-            } else if (auto* reg = regmap::findRegister(candidate, targetId)) {
-                reg->minimumValue = minimum;
-                reg->maximumValue = maximum;
-            } else {
-                return false;
+            const auto mutation = [&](regmap::Workspace& candidate) {
+                if (auto* field = regmap::findField(candidate, targetId)) {
+                    field->minimumValue = minimum;
+                    field->maximumValue = maximum;
+                } else if (auto* reg = regmap::findRegister(candidate, targetId)) {
+                    reg->minimumValue = minimum;
+                    reg->maximumValue = maximum;
+                }
+            };
+            // Checking each bound in isolation temporarily removes the other
+            // bound. Such a probe is not the state the user asked to commit.
+            if (!retainCandidate) {
+                auto probe = *workspace;
+                mutation(probe);
+                const auto diagnostics = regmap::validateWorkspace(probe);
+                return std::ranges::none_of(diagnostics, [targetId](const auto& diagnostic) {
+                    return diagnostic.code == numericRangeDiagnosticCode && diagnostic.objectId == targetId;
+                });
             }
-            const auto diagnostics = regmap::validateWorkspace(candidate);
+            const auto* prepared = prepareCandidate(mutation);
+            if (!prepared) return false;
             return std::ranges::none_of(
-                diagnostics, [targetId](const regmap::Diagnostic& diagnostic) {
+                prepared->diagnostics(), [targetId](const regmap::Diagnostic& diagnostic) {
                     return diagnostic.code == numericRangeDiagnosticCode &&
                            diagnostic.objectId == targetId;
                 });
         };
     const auto acceptsAddressEdit =
-        [workspace, stagedWorkspace](std::string_view targetId,
+        [this, workspace, stagedWorkspace, &prepareCandidate](std::string_view targetId,
                     const regmap::WorkspaceStore::Mutation& mutation) {
             if (stagedWorkspace != nullptr) {
                 return true;
             }
-            regmap::Workspace candidate = *workspace;
-            mutation(candidate);
-            return addressEditDoesNotWorsen(*workspace, candidate, targetId);
+            const auto* prepared = prepareCandidate(mutation);
+            return prepared && addressEditDoesNotWorsen(*workspace, prepared->workspace(), targetId,
+                &controller_.modelDiagnostics(), &prepared->diagnostics());
         };
     const auto acceptsFieldGeometryEdit =
-        [workspace, stagedWorkspace](std::string_view fieldId,
+        [this, workspace, stagedWorkspace, &prepareCandidate](std::string_view fieldId,
                     const regmap::WorkspaceStore::Mutation& mutation) {
             if (stagedWorkspace != nullptr) {
                 return true;
             }
-            regmap::Workspace candidate = *workspace;
-            mutation(candidate);
-            return fieldGeometryEditDoesNotWorsen(
-                *workspace, candidate, fieldId);
+            const auto* prepared = prepareCandidate(mutation);
+            return prepared && fieldGeometryEditDoesNotWorsen(*workspace, prepared->workspace(), fieldId,
+                &controller_.modelDiagnostics(), &prepared->diagnostics());
         };
     const auto acceptsNumericRangeEdit =
-        [workspace, stagedWorkspace](std::string_view targetId,
+        [this, workspace, stagedWorkspace, &prepareCandidate](std::string_view targetId,
                     const regmap::WorkspaceStore::Mutation& mutation) {
             if (stagedWorkspace != nullptr) {
                 return true;
             }
-            regmap::Workspace candidate = *workspace;
-            mutation(candidate);
-            return numericRangeEditDoesNotWorsen(
-                *workspace, candidate, targetId);
+            const auto* prepared = prepareCandidate(mutation);
+            return prepared && numericRangeEditDoesNotWorsen(*workspace, prepared->workspace(), targetId,
+                &controller_.modelDiagnostics(), &prepared->diagnostics());
         };
 
     if (workspace->id == objectId && property == "name") {
@@ -14756,12 +14842,12 @@ MainWindow::applyPropertyEdit(const std::string& objectId, const std::string& pr
             (property == "minimum" ? minimum : maximum) = range;
             const bool editedBoundValid =
                 property == "minimum"
-                    ? acceptsNumericRange(objectId, minimum, std::nullopt)
-                    : acceptsNumericRange(objectId, std::nullopt, maximum);
+                    ? acceptsNumericRange(objectId, minimum, std::nullopt, false)
+                    : acceptsNumericRange(objectId, std::nullopt, maximum, false);
             const bool otherBoundValid =
                 property == "minimum"
-                    ? acceptsNumericRange(objectId, std::nullopt, maximum)
-                    : acceptsNumericRange(objectId, minimum, std::nullopt);
+                    ? acceptsNumericRange(objectId, std::nullopt, maximum, false)
+                    : acceptsNumericRange(objectId, minimum, std::nullopt, false);
             if (!editedBoundValid ||
                 (otherBoundValid &&
                  !acceptsNumericRange(objectId, minimum, maximum))) {
@@ -17636,8 +17722,8 @@ void MainWindow::editRegisterTags(const QModelIndex& index)
     }
     available.sort(Qt::CaseInsensitive);
 
-    const std::size_t tagSessionUndoDepth =
-        controller_.undoDepth();
+    const auto tagUndoGroup = controller_.beginUndoGroup(
+        QStringLiteral("Edit tags for %1").arg(fromUtf8(reg->name)));
     const std::filesystem::path
         tagSessionManifest =
             controller_.manifestPath();
@@ -17650,7 +17736,7 @@ void MainWindow::editRegisterTags(const QModelIndex& index)
         popup,
         &QObject::destroyed,
         this,
-        [this, tagSessionUndoDepth,
+        [this, tagUndoGroup,
          tagSessionManifest,
          registerId,
          registerName] {
@@ -17664,12 +17750,7 @@ void MainWindow::editRegisterTags(const QModelIndex& index)
                     nullptr) {
                 return;
             }
-            if (controller_.squashUndoSince(
-                    tagSessionUndoDepth,
-                    QStringLiteral(
-                        "Edit tags for %1")
-                        .arg(
-                            registerName))) {
+            if (controller_.endUndoGroup(tagUndoGroup)) {
                 statusBar()->showMessage(
                     QStringLiteral(
                         "Updated Tags for %1 · Ctrl+Z restores the complete Tag edit")
@@ -17728,7 +17809,7 @@ void MainWindow::editRegisterTags(const QModelIndex& index)
     };
     const auto commit =
         [this, guardedPopup, list,
-         registerId] {
+         registerId, tagUndoGroup] {
         std::vector<std::string> tags;
         for (int itemIndex = 0; itemIndex < list->count(); ++itemIndex) {
             if (list->item(itemIndex)->data(selectedRole).toBool()) {
@@ -17744,7 +17825,7 @@ void MainWindow::editRegisterTags(const QModelIndex& index)
                 if (auto* target = regmap::findRegister(candidate, registerId)) {
                     target->tags = tags;
                 }
-            });
+            }, tagUndoGroup);
         if (!changed || selectedTagFilter_.empty()) {
             return;
         }
@@ -25567,6 +25648,8 @@ void MainWindow::pasteSelection()
         return;
     }
 
+    setProperty("pasteFullStateComparisons", qulonglong(0));
+    const auto sourceRevision = controller_.modelRevision();
     regmap::Workspace candidate =
         *currentWorkspace;
     std::size_t changed = 0;
@@ -25633,6 +25716,12 @@ void MainWindow::pasteSelection()
             8000);
         return;
     }
+    auto prepared = controller_.prepareReplacement(std::move(candidate), sourceRevision);
+    if (!prepared) {
+        statusBar()->showMessage(QStringLiteral("Paste cancelled: the project changed; retry the paste"), 6000);
+        return;
+    }
+    const auto& validatedCandidate = prepared->workspace();
     std::set<std::string, std::less<>> addressTargets;
     std::set<std::string, std::less<>> fieldGeometryTargets;
     std::set<std::string, std::less<>> numericRangeTargets;
@@ -25648,7 +25737,7 @@ void MainWindow::pasteSelection()
              target.property == "field_width" ||
              target.property == "type") &&
             (regmap::findField(*currentWorkspace, target.objectId) != nullptr ||
-             regmap::findField(candidate, target.objectId) != nullptr)) {
+             regmap::findField(validatedCandidate, target.objectId) != nullptr)) {
             fieldGeometryTargets.insert(target.objectId);
         }
         if (target.property == "minimum" ||
@@ -25663,28 +25752,31 @@ void MainWindow::pasteSelection()
             addressTargets,
             [&](const std::string& id) {
                 return addressEditDoesNotWorsen(
-                    *currentWorkspace, candidate, id);
+                    *currentWorkspace, validatedCandidate, id,
+                    &controller_.modelDiagnostics(), &prepared->diagnostics());
             });
     const bool fieldGeometryTargetsValid =
         std::ranges::all_of(
             fieldGeometryTargets,
             [&](const std::string& id) {
                 return fieldGeometryEditDoesNotWorsen(
-                    *currentWorkspace, candidate, id);
+                    *currentWorkspace, validatedCandidate, id,
+                    &controller_.modelDiagnostics(), &prepared->diagnostics());
             });
     const bool numericRangeTargetsValid =
         std::ranges::all_of(
             numericRangeTargets,
             [&](const std::string& id) {
                 return numericRangeEditDoesNotWorsen(
-                    *currentWorkspace, candidate, id);
+                    *currentWorkspace, validatedCandidate, id,
+                    &controller_.modelDiagnostics(), &prepared->diagnostics());
             });
     if (!addressTargetsValid ||
         !fieldGeometryTargetsValid ||
         !numericRangeTargetsValid ||
         !workspaceEditDoesNotWorsen(
             *currentWorkspace,
-            candidate)) {
+            validatedCandidate, &controller_.modelDiagnostics(), &prepared->diagnostics())) {
         statusBar()->showMessage(
             QStringLiteral(
                 "Paste cancelled: the combined values would introduce or replace a validation Problem; no cells changed"),
@@ -25712,16 +25804,13 @@ void MainWindow::pasteSelection()
     if (changed > 0) {
         const QScopedValueRollback editGuard(
             modelEditInProgress_, true);
-        if (!controller_.editWorkspace(
+        if (!controller_.commitPreparedEdit(
                 QStringLiteral("Paste %1")
                     .arg(quantityLabel(
                         changed,
                         QStringLiteral("cell"),
                         QStringLiteral("cells"))),
-                [candidate = std::move(candidate)](
-                    regmap::Workspace& workspace) mutable {
-                    workspace = std::move(candidate);
-                })) {
+                std::move(*prepared))) {
             statusBar()->showMessage(
                 QStringLiteral(
                     "Paste cancelled: the combined values did not produce a valid project; no cells changed"),
@@ -26752,6 +26841,9 @@ void MainWindow::updateEditActions()
     useWorkbenchAction_->setEnabled(controller_.hasConflicts());
     useRtlAction_->setEnabled(controller_.hasConflicts());
     undoAction_->setEnabled(controller_.canUndo());
+    undoAction_->setToolTip(controller_.historyTrimCount() > 0
+        ? QStringLiteral("Undo the latest edit. Oldest history was discarded to keep undo storage bounded.")
+        : QStringLiteral("Undo the latest edit"));
     redoAction_->setEnabled(controller_.canRedo());
     undoAction_->setText(controller_.canUndo()
                              ? QStringLiteral("Undo %1").arg(controller_.undoText())

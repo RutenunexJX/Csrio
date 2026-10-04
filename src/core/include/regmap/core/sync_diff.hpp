@@ -3,6 +3,7 @@
 #include "regmap/core/model.hpp"
 
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -40,7 +41,22 @@ struct ModelChange {
     std::size_t beforeDepth{0};
     std::size_t afterDepth{0};
     std::vector<ObjectId> dependencies;
+    bool operator==(const ModelChange&) const = default;
 };
+
+// Owns comparison data; never retains pointers into a mutable Workspace.
+class WorkspaceDiffSnapshot {
+public:
+    explicit WorkspaceDiffSnapshot(const Workspace& workspace);
+private:
+    struct Data;
+    std::shared_ptr<const Data> data_;
+    friend std::vector<ModelChange> diffWorkspaces(
+        const WorkspaceDiffSnapshot&, const WorkspaceDiffSnapshot&);
+};
+
+[[nodiscard]] std::vector<ModelChange> diffWorkspaces(
+    const WorkspaceDiffSnapshot& before, const WorkspaceDiffSnapshot& after);
 
 [[nodiscard]] std::vector<ModelChange> diffWorkspaces(
     const Workspace& before,

@@ -1,3 +1,4 @@
+#include "phase_timer.hpp"
 #include "project_controller.hpp"
 
 #include "regmap/core/project.hpp"
@@ -820,12 +821,49 @@ std::size_t ProjectController::undoDepth() const noexcept
 
 bool ProjectController::editWorkspace(
     const QString& description,
-    const regmap::WorkspaceStore::Mutation& mutation)
+    const regmap::WorkspaceStore::Mutation& mutation,
+    std::uint64_t undoGroup)
 {
-    const bool changed = store_.transact(description.toUtf8().toStdString(), mutation);
+    const bool changed = store_.transact(description.toUtf8().toStdString(), mutation, undoGroup);
     if (changed) {
         notifyModelEdited();
     }
+    return changed;
+}
+
+std::optional<ProjectController::PreparedEdit> ProjectController::prepareEdit(
+    const regmap::WorkspaceStore::Mutation& mutation)
+{
+    return store_.prepareEdit(mutation);
+}
+
+std::optional<ProjectController::PreparedEdit> ProjectController::prepareReplacement(
+    regmap::Workspace candidate, std::uint64_t sourceRevision)
+{
+    return store_.prepareReplacement(std::move(candidate), sourceRevision);
+}
+
+bool ProjectController::commitPreparedEdit(const QString& description, PreparedEdit&& edit)
+{
+    const bool changed = store_.commitPreparedEdit(description.toUtf8().toStdString(), std::move(edit));
+    if (changed) notifyModelEdited();
+    return changed;
+}
+
+const std::vector<regmap::Diagnostic>& ProjectController::modelDiagnostics() const noexcept
+{
+    return store_.diagnostics();
+}
+
+std::uint64_t ProjectController::beginUndoGroup(const QString& description)
+{
+    return store_.beginUndoGroup(description.toUtf8().toStdString());
+}
+
+bool ProjectController::endUndoGroup(std::uint64_t token)
+{
+    const bool changed = store_.endUndoGroup(token);
+    if (changed) emit editStateChanged();
     return changed;
 }
 
@@ -846,7 +884,10 @@ bool ProjectController::openProject(const QString& manifestPath)
     const std::filesystem::path requestedPath =
         std::filesystem::absolute(std::filesystem::path(manifestPath.toStdWString()))
             .lexically_normal();
-    auto loaded = regmap::loadProjectSnapshot(requestedPath);
+    auto loaded = [&] {
+        const PhaseTimer timer(this, "phaseLoadSnapshotMs");
+        return regmap::loadProjectSnapshot(requestedPath);
+    }();
     const std::optional<std::string> requestedWorkspaceId =
         loaded.workspace() ? std::optional<std::string>(loaded.workspace()->id)
                          : std::nullopt;
@@ -873,6 +914,7 @@ bool ProjectController::openProject(const QString& manifestPath)
     manifest_.reset();
     store_ = regmap::WorkspaceStore {};
     baseline_.reset();
+    baselineDiffSnapshot_.reset();
     recoveryBaseWorkspace_.reset();
     recoveryBaseDigest_.clear();
     initialSyncChoicePending_ = false;
@@ -883,6 +925,7 @@ bool ProjectController::openProject(const QString& manifestPath)
     savedChanges_.clear();
     externalChanges_.clear();
     externalWorkspace_.reset();
+    externalDiffSnapshot_.reset();
     externalManifestDigest_.clear();
     externalChangeGeneration_ = 0;
     rejectedExternalChangeIds_.clear();
@@ -951,7 +994,10 @@ void ProjectController::reloadImpl(
             changes_ = regmap::diffWorkspaces(*current, *loaded.workspace());
         }
         manifest_ = loaded.manifest();
-        static_cast<void>(store_.resetLoadedProject(std::move(loaded)));
+        {
+            const PhaseTimer timer(this, "phaseAdoptStoreMs");
+            static_cast<void>(store_.resetLoadedProject(std::move(loaded)));
+        }
         clearExternalComparison();
         rebuildSavedChanges();
         recoveryBaseWorkspace_ =
@@ -1002,6 +1048,7 @@ void ProjectController::reloadImpl(
         manifest_ = loaded.manifest();
         store_ = regmap::WorkspaceStore {};
         baseline_.reset();
+        baselineDiffSnapshot_.reset();
         emit projectChanged();
         emit editStateChanged();
     }
@@ -1027,6 +1074,7 @@ void ProjectController::reloadImpl(
 
 void ProjectController::initializeSynchronization()
 {
+    const PhaseTimer phaseTimer(this, "phaseSynchronizationMs");
     const auto* current = store_.workspace();
     if (!manifest_ || current == nullptr) {
         return;
@@ -1034,16 +1082,21 @@ void ProjectController::initializeSynchronization()
     initialSyncChoicePending_ = false;
     const std::filesystem::path statePath = baselinePath();
     if (QFileInfo::exists(fromPath(statePath))) {
-        auto loaded = regmap::loadSyncBaseline(statePath);
+        auto loaded = [&] {
+            const PhaseTimer timer(this, "phaseSyncLoadBaselineMs");
+            return regmap::loadSyncBaseline(statePath);
+        }();
         syncDiagnostics_ = std::move(loaded.diagnostics);
         if (!loaded.workspace) {
             baseline_.reset();
+            baselineDiffSnapshot_.reset();
             rebuildDiagnostics();
             emit syncStatusChanged(
                 QStringLiteral("Synchronization baseline is invalid; automatic RTL merge is blocked"));
             return;
         }
         baseline_ = std::move(loaded.workspace);
+        baselineDiffSnapshot_.reset();
         synchronizeRtl(true, true);
         return;
     }
@@ -1051,6 +1104,7 @@ void ProjectController::initializeSynchronization()
     const std::filesystem::path rtlPath = manifest_->rtl.path.resolved;
     if (!QFileInfo::exists(fromPath(rtlPath))) {
         baseline_ = *current;
+        baselineDiffSnapshot_.reset();
         synchronizeRtl(true, true);
         return;
     }
@@ -1059,6 +1113,7 @@ void ProjectController::initializeSynchronization()
     syncDiagnostics_ = std::move(parsed.diagnostics);
     if (!parsed.workspace || containsErrors(syncDiagnostics_)) {
         baseline_.reset();
+        baselineDiffSnapshot_.reset();
         rebuildDiagnostics();
         emit syncStatusChanged(
             QStringLiteral("Managed RTL is invalid; initial synchronization is blocked"));
@@ -1068,11 +1123,14 @@ void ProjectController::initializeSynchronization()
     if (regmap::serializeWorkspaceState(*current, false) ==
         regmap::serializeWorkspaceState(*parsed.workspace, false)) {
         baseline_ = *current;
+        baselineDiffSnapshot_.reset();
         synchronizeRtl(true, true);
         return;
     }
 
     baseline_.reset();
+
+    baselineDiffSnapshot_.reset();
     initialSyncChoicePending_ = true;
     changes_ = regmap::diffWorkspaces(*current, *parsed.workspace);
     regmap::MergeConflict conflict;
@@ -1186,7 +1244,10 @@ void ProjectController::synchronizeRtl(bool automatic, bool persistWhenClean)
     const std::filesystem::path rtlPath = manifest_->rtl.path.resolved;
     regmap::Workspace rtlWorkspace = *store_.workspace();
     if (QFileInfo::exists(fromPath(rtlPath))) {
-        auto parsed = regmap::parseManagedRtl(rtlPath);
+        auto parsed = [&] {
+            const PhaseTimer timer(this, "phaseSyncParseRtlMs");
+            return regmap::parseManagedRtl(rtlPath);
+        }();
         syncDiagnostics_ = std::move(parsed.diagnostics);
         if (!parsed.workspace || containsErrors(syncDiagnostics_)) {
             rebuildDiagnostics();
@@ -1206,8 +1267,11 @@ void ProjectController::synchronizeRtl(bool automatic, bool persistWhenClean)
         rtlWorkspace = std::move(*parsed.workspace);
     }
 
-    auto merge = regmap::mergeWorkspaces(
-        *baseline_, *store_.workspace(), rtlWorkspace, regmap::MergePreference::workbench);
+    auto merge = [&] {
+        const PhaseTimer timer(this, "phaseSyncMergeMs");
+        return regmap::mergeWorkspaces(
+            *baseline_, *store_.workspace(), rtlWorkspace, regmap::MergePreference::workbench);
+    }();
     conflicts_ = std::move(merge.conflicts);
     emit conflictsChanged();
     if (!conflicts_.empty() || !merge.merged) {
@@ -1222,12 +1286,14 @@ void ProjectController::synchronizeRtl(bool automatic, bool persistWhenClean)
     }
 
     const regmap::Workspace mergedWorkspace = *merge.merged;
-    const bool modelChanged =
-        store_.transact("Merge managed RTL", [mergedWorkspace](regmap::Workspace& workspace) {
+    const bool modelChanged = [&] {
+        const PhaseTimer timer(this, "phaseSyncAdoptMergeMs");
+        return store_.transact("Merge managed RTL", [mergedWorkspace](regmap::Workspace& workspace) {
             workspace = mergedWorkspace;
         });
+    }();
     if (modelChanged) {
-        changes_ = regmap::diffWorkspaces(*baseline_, *store_.workspace());
+        changes_ = diffFromBaseline();
         rebuildSavedChanges();
         emit projectChanged();
         emit editStateChanged();
@@ -1286,9 +1352,10 @@ void ProjectController::resolveConflicts(regmap::MergePreference preference)
                 [resolved](regmap::Workspace& workspace) { workspace = resolved; }));
         }
         baseline_ = retryBaseline;
+        baselineDiffSnapshot_.reset();
         initialSyncChoicePending_ = false;
         conflicts_.clear();
-        changes_ = regmap::diffWorkspaces(*baseline_, *store_.workspace());
+        changes_ = diffFromBaseline();
         rebuildSavedChanges();
         emit conflictsChanged();
         emit projectChanged();
@@ -1341,6 +1408,7 @@ void ProjectController::resolveConflicts(regmap::MergePreference preference)
 bool ProjectController::persistSynchronizedModel(
     bool preserveDivergentRecoveryDraft)
 {
+    const PhaseTimer phaseTimer(this, "phaseSyncPersistMs");
     if (!manifest_ || !store_.workspace()) {
         return false;
     }
@@ -1375,8 +1443,11 @@ bool ProjectController::persistSynchronizedModel(
         watcher_.removePaths(watcher_.directories());
     }
     syncDiagnostics_.clear();
-    appendDiagnostics(
-        syncDiagnostics_, regmap::saveProjectFile(*manifest_, *store_.workspace()));
+    {
+        const PhaseTimer timer(this, "phaseSyncSaveProjectMs");
+        appendDiagnostics(
+            syncDiagnostics_, regmap::saveProjectFile(*manifest_, *store_.workspace()));
+    }
     if (!containsErrors(syncDiagnostics_)) {
         acceptedManifestDigest_ =
             fileDigest(manifestPath_);
@@ -1387,6 +1458,7 @@ bool ProjectController::persistSynchronizedModel(
         clearExternalComparison();
     }
     if (!containsErrors(syncDiagnostics_)) {
+        const PhaseTimer timer(this, "phaseSyncWriteRtlMs");
         appendDiagnostics(
             syncDiagnostics_,
             regmap::writeManagedRtl(
@@ -1395,6 +1467,7 @@ bool ProjectController::persistSynchronizedModel(
                 *store_.workspace()));
     }
     if (!containsErrors(syncDiagnostics_)) {
+        const PhaseTimer timer(this, "phaseSyncSaveBaselineMs");
         appendDiagnostics(
             syncDiagnostics_, regmap::saveSyncBaseline(baselinePath(), *store_.workspace()));
     }
@@ -1407,6 +1480,8 @@ bool ProjectController::persistSynchronizedModel(
     }
 
     baseline_ = *store_.workspace();
+
+    baselineDiffSnapshot_.reset();
     store_.markSaved();
     rebuildSavedChanges();
     recoveryBaseWorkspace_ =
@@ -1471,6 +1546,7 @@ void ProjectController::generateNow()
 
 void ProjectController::generateImpl(bool automatic)
 {
+    const PhaseTimer phaseTimer(this, "phaseSyncGenerateMs");
     if (!manifest_ || !store_.workspace() || hasProjectErrors()) {
         if (!automatic) {
             emit syncStatusChanged(QStringLiteral("Generation blocked by project or synchronization errors"));
@@ -1584,10 +1660,30 @@ void ProjectController::refreshWatchPaths()
     }
 }
 
+const regmap::WorkspaceDiffSnapshot& ProjectController::currentDiffSnapshot()
+{
+    if (!currentDiffSnapshot_ || currentDiffRevision_ != store_.revision()) {
+        currentDiffSnapshot_.emplace(*store_.workspace());
+        currentDiffRevision_ = store_.revision();
+        setProperty("diffSnapshotBuildCount", qulonglong(++diffSnapshotBuildCount_));
+    }
+    return *currentDiffSnapshot_;
+}
+
+std::vector<regmap::ModelChange> ProjectController::diffFromBaseline()
+{
+    if (!baseline_ || !store_.workspace()) return {};
+    if (!baselineDiffSnapshot_) {
+        baselineDiffSnapshot_.emplace(*baseline_);
+        setProperty("diffSnapshotBuildCount", qulonglong(++diffSnapshotBuildCount_));
+    }
+    return regmap::diffWorkspaces(*baselineDiffSnapshot_, currentDiffSnapshot());
+}
+
 void ProjectController::notifyModelEdited()
 {
     changes_ = baseline_ && store_.workspace()
-        ? regmap::diffWorkspaces(*baseline_, *store_.workspace())
+        ? diffFromBaseline()
         : std::vector<regmap::ModelChange> {};
     rebuildSavedChanges();
     rebuildExternalChanges();
@@ -1641,9 +1737,16 @@ void ProjectController::rebuildSavedChanges()
 {
     const auto* saved = store_.savedWorkspace();
     const auto* current = store_.workspace();
-    savedChanges_ = saved != nullptr && current != nullptr
-        ? regmap::diffWorkspaces(*saved, *current)
-        : std::vector<regmap::ModelChange>{};
+    if (saved == nullptr || current == nullptr) {
+        savedChanges_.clear();
+        return;
+    }
+    if (!savedDiffSnapshot_ || savedDiffRevision_ != store_.savedRevision()) {
+        savedDiffSnapshot_.emplace(*saved);
+        savedDiffRevision_ = store_.savedRevision();
+        setProperty("diffSnapshotBuildCount", qulonglong(++diffSnapshotBuildCount_));
+    }
+    savedChanges_ = regmap::diffWorkspaces(*savedDiffSnapshot_, currentDiffSnapshot());
 }
 
 void ProjectController::rebuildExternalChanges()
@@ -1654,7 +1757,11 @@ void ProjectController::rebuildExternalChanges()
         externalChanges_.clear();
         return;
     }
-    externalChanges_ = regmap::diffWorkspaces(*current, *externalWorkspace_);
+    if (!externalDiffSnapshot_) {
+        externalDiffSnapshot_.emplace(*externalWorkspace_);
+        setProperty("diffSnapshotBuildCount", qulonglong(++diffSnapshotBuildCount_));
+    }
+    externalChanges_ = regmap::diffWorkspaces(currentDiffSnapshot(), *externalDiffSnapshot_);
     std::erase_if(
         externalChanges_,
         [this](const regmap::ModelChange& change) {
@@ -1683,6 +1790,7 @@ void ProjectController::clearExternalComparison()
 {
     externalChanges_.clear();
     externalWorkspace_.reset();
+    externalDiffSnapshot_.reset();
     externalManifestDigest_.clear();
     rejectedExternalChangeIds_.clear();
     externalChangeStatus_.clear();
@@ -1706,9 +1814,11 @@ void ProjectController::refreshExternalChangesFromDisk()
     if (loaded.workspace.has_value() &&
         loaded.workspace->id == current->id) {
         externalWorkspace_ = *loaded.workspace;
+        externalDiffSnapshot_.reset();
         rebuildExternalChanges();
     } else {
         externalWorkspace_.reset();
+        externalDiffSnapshot_.reset();
         externalChanges_.clear();
         externalChangeStatus_ = QStringLiteral(
             "The observed external project revision is invalid; Accept and Reject are unavailable");

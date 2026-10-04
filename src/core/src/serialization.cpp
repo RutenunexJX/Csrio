@@ -2,13 +2,13 @@
 
 #include "regmap/core/model_tokens.hpp"
 #include "project_document.hpp"
+#include "atomic_file_writer.hpp"
 
 #include <QByteArray>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QIODevice>
-#include <QSaveFile>
 #include <QString>
 #include <yaml-cpp/yaml.h>
 
@@ -927,12 +927,13 @@ ProjectTextSerializationResult serializeProjectText(
 
 std::vector<Diagnostic> saveProjectFile(const ProjectManifest& manifest, const Workspace& workspace)
 {
+    const QString filePath = fromPath(manifest.manifestPath);
+    const detail::AtomicFileWriter writer(filePath);
     ProjectTextSerializationResult serialized = serializeProjectText(manifest, workspace);
     if (!serialized.text) {
         return std::move(serialized.diagnostics);
     }
 
-    const QString filePath = fromPath(manifest.manifestPath);
     const QFileInfo fileInfo(filePath);
     if (!QDir().mkpath(fileInfo.absolutePath())) {
         Diagnostic diagnostic;
@@ -943,23 +944,14 @@ std::vector<Diagnostic> saveProjectFile(const ProjectManifest& manifest, const W
         return serialized.diagnostics;
     }
 
-    QSaveFile file(filePath);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        Diagnostic diagnostic;
-        diagnostic.code = writeFailureCode;
-        diagnostic.message =
-            "Cannot open the project file for writing: " + file.errorString().toStdString();
-        diagnostic.source.workbook = manifest.manifestPath;
-        serialized.diagnostics.push_back(std::move(diagnostic));
-        return serialized.diagnostics;
-    }
     const std::string& text = *serialized.text;
     const QByteArray bytes(text.data(), static_cast<qsizetype>(text.size()));
-    if (file.write(bytes) != bytes.size() || !file.commit()) {
+    const auto written = writer.write(bytes, QIODevice::WriteOnly | QIODevice::Text);
+    if (!written.committed) {
         Diagnostic diagnostic;
         diagnostic.code = writeFailureCode;
         diagnostic.message =
-            "Cannot atomically save the project file: " + file.errorString().toStdString();
+            "Cannot atomically save the project file: " + written.errorText.toStdString();
         diagnostic.source.workbook = manifest.manifestPath;
         serialized.diagnostics.push_back(std::move(diagnostic));
     }

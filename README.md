@@ -1,11 +1,13 @@
 # Csrio
 
-Current version: `0.4.2`.
+Current version: `0.4.3`.
 
-Release 0.4.2 reuses project parse results, coalesces derived diagnostic refreshes
-and reduces repeated search-result collection while retaining validation and
-save gates. The previously observed intermittent RM1103 Unicode atomic-save/RTL
-restore failure remains a known limitation; this release does not claim it fixed.
+Release 0.4.3 reduces batch-edit, diff-refresh and RTL-sync overhead while
+retaining validation, atomic paste and lossless undo. Project, RTL, baseline and
+generated-output saves now retry transient Windows replacement failures within
+a bounded interval and reject observed external file changes. Controlled file-lock
+regressions pass; the process behind the previously observed intermittent RM1103
+failure has not been identified.
 
 [Source repository](https://github.com/RutenunexJX/Csrio)
 

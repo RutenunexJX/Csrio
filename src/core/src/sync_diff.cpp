@@ -202,10 +202,25 @@ void insertFieldSnapshots(std::map<ObjectId, Snapshot, std::less<>>& values,
 
 } // namespace
 
+struct WorkspaceDiffSnapshot::Data {
+    std::map<ObjectId, Snapshot, std::less<>> values;
+};
+
+WorkspaceDiffSnapshot::WorkspaceDiffSnapshot(const Workspace& workspace)
+    : data_(std::make_shared<const Data>(Data{snapshots(workspace)}))
+{
+}
+
 std::vector<ModelChange> diffWorkspaces(const Workspace& before, const Workspace& after)
 {
-    const auto oldSnapshots = snapshots(before);
-    const auto newSnapshots = snapshots(after);
+    return diffWorkspaces(WorkspaceDiffSnapshot(before), WorkspaceDiffSnapshot(after));
+}
+
+std::vector<ModelChange> diffWorkspaces(
+    const WorkspaceDiffSnapshot& before, const WorkspaceDiffSnapshot& after)
+{
+    const auto& oldSnapshots = before.data_->values;
+    const auto& newSnapshots = after.data_->values;
     std::vector<ModelChange> result;
 
     auto oldIterator = oldSnapshots.begin();

@@ -104,7 +104,21 @@ public:
 
     bool editWorkspace(
         const QString& description,
+        const regmap::WorkspaceStore::Mutation& mutation,
+        std::uint64_t undoGroup = 0);
+    using PreparedEdit = regmap::WorkspaceStore::PreparedEdit;
+    [[nodiscard]] std::optional<PreparedEdit> prepareEdit(
         const regmap::WorkspaceStore::Mutation& mutation);
+    [[nodiscard]] std::optional<PreparedEdit> prepareReplacement(
+        regmap::Workspace candidate, std::uint64_t sourceRevision);
+    bool commitPreparedEdit(const QString& description, PreparedEdit&& edit);
+    [[nodiscard]] const std::vector<regmap::Diagnostic>& modelDiagnostics() const noexcept;
+    [[nodiscard]] std::uint64_t modelRevision() const noexcept { return store_.revision(); }
+    [[nodiscard]] std::uint64_t modelValidationCount() const noexcept { return store_.validationCount(); }
+    [[nodiscard]] std::uint64_t beginUndoGroup(const QString& description);
+    bool endUndoGroup(std::uint64_t token);
+    [[nodiscard]] std::size_t historyBytes() const noexcept { return store_.historyBytes(); }
+    [[nodiscard]] std::uint64_t historyTrimCount() const noexcept { return store_.historyTrimCount(); }
     bool squashUndoSince(std::size_t startingDepth, const QString& description);
 
 public slots:
@@ -176,6 +190,13 @@ private:
     QString externalChangeStatus_;
     std::vector<regmap::MergeConflict> conflicts_;
     std::optional<regmap::Workspace> baseline_;
+    std::optional<regmap::WorkspaceDiffSnapshot> currentDiffSnapshot_;
+    std::optional<regmap::WorkspaceDiffSnapshot> savedDiffSnapshot_;
+    std::optional<regmap::WorkspaceDiffSnapshot> baselineDiffSnapshot_;
+    std::optional<regmap::WorkspaceDiffSnapshot> externalDiffSnapshot_;
+    std::uint64_t currentDiffRevision_{0};
+    std::uint64_t savedDiffRevision_{0};
+    std::uint64_t diffSnapshotBuildCount_{0};
     std::optional<regmap::Workspace> recoveryBaseWorkspace_;
     bool lastAcceptedModelWasValid_ {false};
     bool initialSyncChoicePending_ {false};
@@ -189,6 +210,8 @@ private:
     void rebuildDiagnostics();
     void refreshWatchPaths();
     void notifyModelEdited();
+    const regmap::WorkspaceDiffSnapshot& currentDiffSnapshot();
+    std::vector<regmap::ModelChange> diffFromBaseline();
     void rebuildSavedChanges();
     void rebuildExternalChanges();
     void clearExternalComparison();

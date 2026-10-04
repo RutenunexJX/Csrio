@@ -4,6 +4,7 @@
 #include "regmap/core/unsigned_value.hpp"
 #include "regmap/core/validation.hpp"
 #include "regmap/core/workspace_store.hpp"
+#include "atomic_file_writer.hpp"
 
 #include <QByteArray>
 #include <QDir>
@@ -15,7 +16,6 @@
 #include <QJsonObject>
 #include <QJsonParseError>
 #include <QRegularExpression>
-#include <QSaveFile>
 #include <QString>
 #include <QStringList>
 
@@ -270,10 +270,10 @@ void applySources(Object& object, const std::filesystem::path& path, const Sourc
     const auto objectLine = lines.objects.find(object.id);
     object.source = rtlLocation(
         path, objectLine == lines.objects.end() ? std::nullopt : std::optional{objectLine->second});
-    for (const auto& [key, line] : lines.properties) {
-        if (key.first != object.id) {
-            continue;
-        }
+    // Properties are ordered by (object ID, property); visit only this object's range.
+    for (auto iterator = lines.properties.lower_bound({object.id, std::string{}});
+         iterator != lines.properties.end() && iterator->first.first == object.id; ++iterator) {
+        const auto& [key, line] = *iterator;
         object.propertySources.insert_or_assign(key.second, rtlLocation(path, line));
         const auto alias = aliases.find(key.second);
         if (alias != aliases.end()) {
@@ -533,6 +533,7 @@ RtlParseResult parseManagedRtl(const std::filesystem::path& path)
 std::vector<Diagnostic> writeManagedRtl(const std::filesystem::path& path,
                                         std::string_view moduleName, const Workspace& workspace)
 {
+    const detail::AtomicFileWriter writer(fromPath(path));
     std::vector<Diagnostic> diagnostics;
     std::string existing;
     QFile input(fromPath(path));
@@ -565,14 +566,11 @@ std::vector<Diagnostic> writeManagedRtl(const std::filesystem::path& path,
         addDiagnostic(diagnostics, writeCode, "Cannot create the managed RTL directory.", path);
         return diagnostics;
     }
-    QSaveFile file(fromPath(path));
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        addDiagnostic(diagnostics, writeCode, "Cannot open managed RTL for writing.", path);
-        return diagnostics;
-    }
     const QByteArray bytes(output.data(), static_cast<qsizetype>(output.size()));
-    if (file.write(bytes) != bytes.size() || !file.commit()) {
-        addDiagnostic(diagnostics, writeCode, "Cannot atomically write managed RTL.", path);
+    const auto written = writer.write(bytes, QIODevice::WriteOnly | QIODevice::Text);
+    if (!written.committed) {
+        addDiagnostic(diagnostics, writeCode,
+                      "Cannot atomically write managed RTL: " + written.errorText.toStdString(), path);
     }
     return diagnostics;
 }

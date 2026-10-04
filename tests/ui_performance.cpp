@@ -4,6 +4,7 @@
 
 #include <QAction>
 #include <QComboBox>
+#include <QClipboard>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
@@ -113,7 +114,7 @@ int main(int argc, char** argv)
     bool countValid = true;
     const int registerCount = app.arguments().size() > 3 ? app.arguments().at(3).toInt(&countValid) : 1000;
     if (!countValid || registerCount < 7 || registerCount > 10000 ||
-        !QStringList{"all", "panel", "search", "search-exact", "edit", "open"}.contains(scenario)) return 2;
+        !QStringList{"all", "panel", "search", "search-exact", "edit", "paste", "open"}.contains(scenario)) return 2;
     QCoreApplication::setOrganizationName("RegMapPerformance");
     QCoreApplication::setApplicationName("RegMapPerformance");
     QTemporaryDir profile, project;
@@ -123,19 +124,22 @@ int main(int argc, char** argv)
     WorkbenchTheme::apply(app, WorkbenchTheme::Mode::light);
     const auto path = project.filePath("performance.regmap.yaml");
     if (!createFixture(path)) return 4;
-    ProjectController creator;
-    if (!creator.openProject(path)) return 5;
-    if (!creator.editWorkspace("Performance workload", [registerCount](regmap::Workspace& workspace) {
-        auto& block = workspace.addressSpaces.front().blocks.front();
-        block.size = 0x10000;
-        for (int i = 6; i < registerCount; ++i) {
-            block.registers.push_back(makeScalarRegister("perf-" + std::to_string(i),
-                "PERF_" + std::to_string(i), std::uint64_t(i) * 4,
-                regmap::AccessMode::readWrite, "Deterministic performance register"));
-        }
-    })) return 6;
-    creator.save();
-    if (creator.isDirty() || creator.hasProjectErrors()) return 7;
+    {
+        // The fixture builder must stop watching before measured windows open it.
+        ProjectController creator;
+        if (!creator.openProject(path)) return 5;
+        if (!creator.editWorkspace("Performance workload", [registerCount](regmap::Workspace& workspace) {
+            auto& block = workspace.addressSpaces.front().blocks.front();
+            block.size = 0x10000;
+            for (int i = 6; i < registerCount; ++i) {
+                block.registers.push_back(makeScalarRegister("perf-" + std::to_string(i),
+                    "PERF_" + std::to_string(i), std::uint64_t(i) * 4,
+                    regmap::AccessMode::readWrite, "Deterministic performance register"));
+            }
+        })) return 6;
+        creator.save();
+        if (creator.isDirty() || creator.hasProjectErrors()) return 7;
+    }
     UiEvents events;
     app.installEventFilter(&events);
     QJsonArray runs;
@@ -165,6 +169,32 @@ int main(int argc, char** argv)
             {"fileReads", observedCounter(controller, "projectFileReadCount")},
             {"yamlParses", observedCounter(controller, "projectYamlParseCount")},
             {"modelValidations", observedCounter(controller, "projectValidationCount")}});
+        QJsonObject phases;
+        for (const char* name : {"phaseLoadSnapshotMs", "phaseAdoptStoreMs", "phaseSynchronizationMs",
+                 "phaseSyncLoadBaselineMs", "phaseSyncParseRtlMs", "phaseSyncMergeMs",
+                 "phaseSyncAdoptMergeMs", "phaseSyncPersistMs", "phaseSyncSaveProjectMs",
+                 "phaseSyncWriteRtlMs", "phaseSyncSaveBaselineMs", "phaseSyncGenerateMs"}) {
+            const auto value = controller->property(name);
+            phases.insert(name, value.isValid() ? QJsonValue(value.toDouble()) : QJsonValue(QJsonValue::Null));
+        }
+        for (const char* name : {"phaserefreshProjectMs", "phasepopulateHierarchyMs",
+                 "phasepopulateRegistersMs", "phasepopulateFieldsMs"}) {
+            const auto value = window.property(name);
+            phases.insert(name, value.isValid() ? QJsonValue(value.toDouble()) : QJsonValue(QJsonValue::Null));
+        }
+        auto openResult = opens.last().toObject();
+        openResult.insert("phases", phases);
+        openResult.insert("hasProjectErrors", controller->hasProjectErrors());
+        openResult.insert("dirty", controller->isDirty());
+        QJsonArray errors;
+        for (const auto& diagnostic : controller->diagnostics()) {
+            if (diagnostic.severity == regmap::DiagnosticSeverity::error) {
+                errors.append(QJsonObject{{"code", QString::fromStdString(diagnostic.code)},
+                    {"message", QString::fromStdString(diagnostic.message)}});
+            }
+        }
+        openResult.insert("errors", errors);
+        opens.replace(opens.size() - 1, openResult);
         events.root = &window;
         if (scenario == "all" || scenario == "panel") {
             auto result = measure(events, [results](int) { results->trigger(); });
@@ -192,6 +222,33 @@ int main(int argc, char** argv)
             runs.append(result);
             search->clear();
         }
+        if (scenario == "paste") {
+            auto* paste = window.findChild<QAction*>("pasteSelectionAction");
+            if (!paste) return 16;
+            const int cells = std::min(registerCount, 100);
+            const auto validationCount = controller->modelValidationCount();
+            const auto depth = controller->undoDepth();
+            auto result = measure(events, [&](int iteration) {
+                table->setCurrentIndex(table->model()->index(0, 11));
+                table->selectionModel()->clearSelection();
+                for (int r = 0; r < cells; ++r)
+                    table->selectionModel()->select(table->model()->index(r, 11), QItemSelectionModel::Select);
+                table->setFocus();
+                QApplication::clipboard()->setText(QStringLiteral("Batch description %1").arg(iteration));
+                paste->trigger();
+            });
+            if (table->model()->index(cells - 1, 11).data().toString() != "Batch description 23") return 17;
+            result.insert("scenario", "paste-100-cells-24-edits");
+            result.insert("registers", registerCount);
+            result.insert("width", size.width()); result.insert("height", size.height());
+            result.insert("cellsPerPaste", cells);
+            result.insert("modelValidations", double(controller->modelValidationCount() - validationCount));
+            result.insert("undoDepthIncrease", double(controller->undoDepth() - depth));
+            result.insert("lastPasteFullStateComparisons", observedCounter(&window, "pasteFullStateComparisons"));
+            result.insert("estimatedHistoryBytes", double(controller->historyBytes()));
+            result.insert("historyTrimCount", double(controller->historyTrimCount()));
+            runs.append(result);
+        }
         if (scenario == "edit") {
             const QString id = QStringLiteral("perf-%1").arg(registerCount - 1);
             int row = -1;
@@ -215,6 +272,8 @@ int main(int argc, char** argv)
                                                    : QJsonValue(QJsonValue::Null));
             }
             result.insert("scenario", "description-24-edits");
+            result.insert("estimatedHistoryBytes", double(controller->historyBytes()));
+            result.insert("historyTrimCount", double(controller->historyTrimCount()));
             result.insert("registers", registerCount);
             result.insert("width", size.width()); result.insert("height", size.height());
             runs.append(result);

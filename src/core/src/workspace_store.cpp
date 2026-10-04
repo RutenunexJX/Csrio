@@ -22,6 +22,76 @@
 namespace regmap {
 namespace {
 
+// Retained allocation estimate, deliberately including string capacity and tree
+// nodes. It is a history budget, not a process working-set measurement.
+std::size_t sourceBytes(const SourceLocation& source)
+{
+    return source.workbook.native().capacity() * sizeof(std::filesystem::path::value_type)
+        + source.sheet.capacity() + source.cell.capacity();
+}
+
+template <typename Object> std::size_t objectBytes(const Object& value)
+{
+    std::size_t bytes = value.id.capacity() + value.name.capacity()
+        + value.description.capacity() + sourceBytes(value.source);
+    for (const auto& [key, source] : value.propertySources) {
+        bytes += sizeof(PropertySources::value_type) + 4U * sizeof(void*)
+            + key.capacity() + sourceBytes(source);
+    }
+    return bytes;
+}
+
+std::size_t valueBytes(const std::optional<UnsignedValue>& value)
+{
+    return value ? 2U * ((value->bitWidth() + 31U) / 32U) * sizeof(std::uint32_t) : 0U;
+}
+
+template <typename Object> std::size_t rangeBytes(const Object& value)
+{
+    return (value.minimumValue ? value.minimumValue->capacity() : 0U)
+        + (value.maximumValue ? value.maximumValue->capacity() : 0U);
+}
+
+std::size_t enumBytes(const std::vector<EnumValue>& values)
+{
+    std::size_t bytes = values.capacity() * sizeof(EnumValue);
+    for (const auto& value : values) {
+        bytes += objectBytes(value) + 2U * ((value.value.bitWidth() + 31U) / 32U)
+            * sizeof(std::uint32_t);
+    }
+    return bytes;
+}
+
+std::size_t fieldBytes(const std::vector<Field>& fields)
+{
+    std::size_t bytes = fields.capacity() * sizeof(Field);
+    for (const auto& field : fields) {
+        bytes += objectBytes(field) + rangeBytes(field) + valueBytes(field.resetValue)
+            + enumBytes(field.enumValues) + fieldBytes(field.members);
+    }
+    return bytes;
+}
+
+std::size_t workspaceBytes(const Workspace& workspace)
+{
+    std::size_t bytes = sizeof(Workspace) + workspace.id.capacity() + workspace.name.capacity()
+        + workspace.manifestPath.native().capacity() * sizeof(std::filesystem::path::value_type)
+        + workspace.addressSpaces.capacity() * sizeof(AddressSpace);
+    for (const auto& page : workspace.addressSpaces) {
+        bytes += objectBytes(page) + page.blocks.capacity() * sizeof(RegisterBlock);
+        for (const auto& block : page.blocks) {
+            bytes += objectBytes(block) + block.registers.capacity() * sizeof(Register);
+            for (const auto& reg : block.registers) {
+                bytes += objectBytes(reg) + rangeBytes(reg) + valueBytes(reg.initialValue)
+                    + valueBytes(reg.resetValue) + enumBytes(reg.enumValues) + fieldBytes(reg.fields)
+                    + reg.tags.capacity() * sizeof(std::string);
+                for (const auto& tag : reg.tags) bytes += tag.capacity();
+            }
+        }
+    }
+    return bytes;
+}
+
 template <typename Value>
 [[nodiscard]] Value* findById(std::vector<Value>& values, std::string_view id) noexcept
 {
@@ -198,6 +268,9 @@ void WorkspaceStore::resetState(Workspace workspace)
     dirty_ = false;
     undo_.clear();
     redo_.clear();
+    undoGroup_.reset();
+    historyTrimCount_ = 0;
+    ++savedRevision_;
     ++revision_;
 }
 
@@ -243,52 +316,146 @@ void WorkspaceStore::appendHistory(
     std::vector<HistoryEntry>& history,
     HistoryEntry entry)
 {
+    entry.retainedBytes = workspaceBytes(entry.workspace) + entry.compressedState.capacity()
+        + entry.description.capacity() + sizeof(HistoryEntry);
     history.push_back(std::move(entry));
     if (history.size() > historyLimit) {
+        historyTrimCount_ += history.size() - historyLimit;
         history.erase(
             history.begin(),
             history.begin() + static_cast<std::ptrdiff_t>(history.size() - historyLimit));
     }
+    trimHistory();
 }
 
-bool WorkspaceStore::transact(std::string description, const Mutation& mutation)
+std::size_t WorkspaceStore::historyBytes() const noexcept
 {
-    if (!workspace_ || !mutation) {
-        return false;
+    std::size_t bytes = 0;
+    for (const auto& entry : undo_) bytes += entry.retainedBytes;
+    for (const auto& entry : redo_) bytes += entry.retainedBytes;
+    return bytes;
+}
+
+void WorkspaceStore::setHistoryByteLimit(std::size_t bytes)
+{
+    historyByteLimit_ = bytes;
+    trimHistory();
+}
+
+void WorkspaceStore::trimHistory()
+{
+    auto bytes = historyBytes();
+    // Retain the nearest undo/redo step even when one snapshot exceeds the budget.
+    while (bytes > historyByteLimit_ && undo_.size() + redo_.size() > 1U) {
+        auto& history = !undo_.empty() && (undo_.size() > 1U || redo_.empty()) ? undo_ : redo_;
+        bytes -= history.front().retainedBytes;
+        history.erase(history.begin());
+        ++historyTrimCount_;
     }
+}
+
+std::optional<WorkspaceStore::PreparedEdit> WorkspaceStore::prepareEdit(const Mutation& mutation)
+{
+    if (!workspace_ || !mutation) return std::nullopt;
+    const auto sourceRevision = revision_;
     Workspace candidate = *workspace_;
     mutation(candidate);
-    std::string candidateState =
-        serializeWorkspaceState(candidate, false);
-    if (workspaceState_ == candidateState) {
-        return false;
+    return prepareReplacement(std::move(candidate), sourceRevision);
+}
+
+std::optional<WorkspaceStore::PreparedEdit> WorkspaceStore::prepareReplacement(
+    Workspace candidate, std::uint64_t sourceRevision)
+{
+    if (!workspace_ || sourceRevision != revision_) return std::nullopt;
+    PreparedEdit edit;
+    edit.owner_ = this;
+    edit.identity_ = identity_;
+    edit.revision_ = revision_;
+    edit.state_ = serializeWorkspaceState(candidate, false);
+    if (edit.state_ == workspaceState_) {
+        edit.diagnostics_ = diagnostics_;
+    } else {
+        ++validationCount_;
+        edit.diagnostics_ = validateWorkspace(candidate);
+    }
+    edit.workspace_ = std::move(candidate);
+    return edit;
+}
+
+bool WorkspaceStore::transact(std::string description, const Mutation& mutation,
+                              std::uint64_t undoGroup)
+{
+    auto edit = prepareEdit(mutation);
+    return edit && commitPreparedEdit(std::move(description), std::move(*edit), undoGroup);
+}
+
+bool WorkspaceStore::commitPreparedEdit(std::string description, PreparedEdit&& edit)
+{
+    return commitPreparedEdit(std::move(description), std::move(edit), 0);
+}
+
+bool WorkspaceStore::commitPreparedEdit(
+    std::string description, PreparedEdit&& edit, std::uint64_t undoGroup)
+{
+    if (edit.owner_ != this || edit.identity_ != identity_ || edit.revision_ != revision_
+        || !edit.workspace_ || !workspace_) return false;
+    edit.identity_.reset(); // Consumed even if this is a no-op.
+    if (workspaceState_ == edit.state_) return false;
+
+    const bool grouped = undoGroup_ && undoGroup != 0 && undoGroup_->token == undoGroup
+        && undoGroup_->lastRevision == revision_;
+    if (!grouped) undoGroup_.reset();
+    redo_.clear();
+    if (!grouped || !undoGroup_->hasEntry || undo_.empty()) {
+        const QByteArray compressed = qCompress(
+            reinterpret_cast<const uchar*>(workspaceState_.data()),
+            static_cast<qsizetype>(workspaceState_.size()), 1);
+        appendHistory(undo_, HistoryEntry{std::move(*workspace_), compressed.toStdString(),
+            grouped ? undoGroup_->description : std::move(description)});
     }
 
-    const QByteArray compressed = qCompress(
-        reinterpret_cast<const uchar*>(workspaceState_.data()),
-        static_cast<qsizetype>(workspaceState_.size()), 1);
-    appendHistory(
-        undo_,
-        HistoryEntry{std::move(*workspace_), compressed.toStdString(), std::move(description)});
-    workspace_ = std::move(candidate);
-    workspaceState_ = std::move(candidateState);
+    workspace_ = std::move(edit.workspace_);
+    edit.workspace_.reset();
+    workspaceState_ = std::move(edit.state_);
+    diagnostics_ = std::move(edit.diagnostics_);
     dirty_ = workspaceState_ != savedState_;
-    redo_.clear();
     ++revision_;
-    revalidate();
+    if (grouped) {
+        undoGroup_->hasEntry = true;
+        undoGroup_->lastRevision = revision_;
+    }
     return true;
+}
+
+std::uint64_t WorkspaceStore::beginUndoGroup(std::string description)
+{
+    const auto token = ++nextUndoGroup_;
+    undoGroup_ = UndoGroup{token, revision_, std::move(description), false};
+    return token;
+}
+
+bool WorkspaceStore::endUndoGroup(std::uint64_t token)
+{
+    if (!undoGroup_ || undoGroup_->token != token) return false;
+    const bool changed = undoGroup_->hasEntry;
+    undoGroup_.reset();
+    return changed;
 }
 
 bool WorkspaceStore::squashUndoSince(
     std::size_t startingDepth,
     std::string description)
 {
-    if (undo_.size() >= historyLimit || startingDepth >= undo_.size()) {
+    if (historyTrimCount_ != 0 || undo_.size() >= historyLimit || startingDepth >= undo_.size()) {
         return false;
     }
 
-    undo_[startingDepth].description = std::move(description);
+    auto& entry = undo_[startingDepth];
+    entry.retainedBytes -= entry.description.capacity();
+    entry.description = std::move(description);
+    entry.retainedBytes += entry.description.capacity();
     undo_.resize(startingDepth + 1U);
+    trimHistory();
     return true;
 }
 
@@ -297,6 +464,7 @@ bool WorkspaceStore::undo()
     if (!workspace_ || undo_.empty()) {
         return false;
     }
+    undoGroup_.reset();
     HistoryEntry entry = std::move(undo_.back());
     undo_.pop_back();
     const QByteArray compressed = qCompress(
@@ -320,6 +488,7 @@ bool WorkspaceStore::redo()
     if (!workspace_ || redo_.empty()) {
         return false;
     }
+    undoGroup_.reset();
     HistoryEntry entry = std::move(redo_.back());
     redo_.pop_back();
     const QByteArray compressed = qCompress(
@@ -340,6 +509,8 @@ bool WorkspaceStore::redo()
 
 void WorkspaceStore::markSaved()
 {
+    undoGroup_.reset();
+    ++savedRevision_;
     savedWorkspace_ = workspace_;
     savedState_ = workspaceState_;
     dirty_ = false;

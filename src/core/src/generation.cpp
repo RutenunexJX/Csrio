@@ -3,17 +3,16 @@
 #include "regmap/core/xlsx_export.hpp"
 
 #include "path_identity.hpp"
+#include "atomic_file_writer.hpp"
 
 #include <QByteArray>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
-#include <QSaveFile>
 #include <QString>
 
 #include <algorithm>
 #include <cctype>
-#include <chrono>
 #include <cstdint>
 #include <limits>
 #include <iterator>
@@ -23,7 +22,6 @@
 #include <sstream>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -34,27 +32,6 @@ namespace {
 constexpr std::string_view writeFailureCode = "RM4000";
 constexpr std::string_view symbolCollisionCode = "RM4001";
 constexpr std::string_view addressOverflowCode = "RM4002";
-constexpr int generatedOutputWriteAttempts = 4;
-
-[[nodiscard]] bool retryableReplacementError(QFileDevice::FileError error) noexcept
-{
-#ifdef Q_OS_WIN
-    return error == QFileDevice::RenameError ||
-           error == QFileDevice::RemoveError ||
-           error == QFileDevice::PermissionsError;
-#else
-    Q_UNUSED(error);
-    return false;
-#endif
-}
-
-void waitBeforeReplacementRetry(int failedAttempt)
-{
-    std::this_thread::sleep_for(
-        std::chrono::milliseconds(
-            25 * (1 << failedAttempt)));
-}
-
 [[nodiscard]] std::string outputWriteFailureMessage(const GeneratedArtifact& artifact,
                                                     std::string_view operation,
                                                     const QString& error)
@@ -838,18 +815,19 @@ std::vector<Diagnostic> writeGeneratedArtifacts(const std::vector<GeneratedArtif
                 continue;
             }
         }
+        const detail::AtomicFileWriter writer(path);
         const QFileDevice::Permissions
             originalPermissions =
                 information.permissions();
         const auto restorePermissions =
             [&]() {
-                if (outputExisted) {
+                if (outputExisted && writer.destinationUnchanged()) {
                     QFile::setPermissions(
                         path,
                         originalPermissions);
                 }
             };
-        if (outputExisted) {
+        if (outputExisted && writer.destinationUnchanged()) {
             QFile::setPermissions(
                 path,
                 originalPermissions |
@@ -865,55 +843,8 @@ std::vector<Diagnostic> writeGeneratedArtifacts(const std::vector<GeneratedArtif
                 : QByteArray(artifact.content.data(),
                              static_cast<qsizetype>(artifact.content.size()));
 
-        bool committed = false;
-        for (int attempt = 0;
-             attempt < generatedOutputWriteAttempts;
-             ++attempt) {
-            QSaveFile file(path);
-            if (!file.open(mode)) {
-                SourceLocation source;
-                source.workbook = artifact.path;
-                addDiagnostic(
-                    diagnostics,
-                    writeFailureCode,
-                    outputWriteFailureMessage(
-                        artifact,
-                        "open",
-                        file.errorString()),
-                    {},
-                    std::move(source));
-                break;
-            }
-            if (file.write(bytes) != bytes.size()) {
-                SourceLocation source;
-                source.workbook = artifact.path;
-                addDiagnostic(
-                    diagnostics,
-                    writeFailureCode,
-                    outputWriteFailureMessage(
-                        artifact,
-                        "write",
-                        file.errorString()),
-                    {},
-                    std::move(source));
-                break;
-            }
-            if (file.commit()) {
-                committed = true;
-                break;
-            }
-
-            const QFileDevice::FileError error =
-                file.error();
-            const QString errorText =
-                file.errorString();
-            if (attempt + 1 <
-                    generatedOutputWriteAttempts &&
-                retryableReplacementError(error)) {
-                waitBeforeReplacementRetry(attempt);
-                continue;
-            }
-
+        const auto written = writer.write(bytes, mode);
+        if (!written.committed) {
             SourceLocation source;
             source.workbook = artifact.path;
             addDiagnostic(
@@ -921,13 +852,12 @@ std::vector<Diagnostic> writeGeneratedArtifacts(const std::vector<GeneratedArtif
                 writeFailureCode,
                 outputWriteFailureMessage(
                     artifact,
-                    "replace",
-                    errorText),
+                    std::string_view(written.operation) == "commit" ||
+                            std::string_view(written.operation) == "changed"
+                        ? "replace" : written.operation,
+                    written.errorText),
                 {},
                 std::move(source));
-            break;
-        }
-        if (!committed) {
             restorePermissions();
             continue;
         }
