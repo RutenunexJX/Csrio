@@ -176,6 +176,8 @@ private slots:
     void copiesHierarchyObjectsAcrossWindows();
     void movesHierarchyObjectsByDrag();
     void switchesProjectsWithoutReusingFieldWorkspaceState();
+    void invalidatesDiffSnapshotsWhenReplacingProject_data();
+    void invalidatesDiffSnapshotsWhenReplacingProject();
     void identifiesCurrentProjectInWindowTitle();
     void retainsCurrentProjectWhenReplacementCannotLoad();
     void retainsCurrentProjectWhenCreationFails();
@@ -5238,6 +5240,72 @@ void GuiSmokeTests::switchesProjectsWithoutReusingFieldWorkspaceState()
     QCOMPARE(fields->model()->rowCount(), 0);
     QCOMPARE(registers->model()->index(0, 0).data(Qt::UserRole + 1).toString(),
              QStringLiteral("reg-status"));
+
+    makeGeneratedFilesWritable(root.filePath(QStringLiteral("first")));
+    makeGeneratedFilesWritable(root.filePath(QStringLiteral("second")));
+}
+
+void GuiSmokeTests::invalidatesDiffSnapshotsWhenReplacingProject_data()
+{
+    QTest::addColumn<bool>("createReplacement");
+    QTest::newRow("open-project") << false;
+    QTest::newRow("create-project") << true;
+}
+
+void GuiSmokeTests::invalidatesDiffSnapshotsWhenReplacingProject()
+{
+    QFETCH(bool, createReplacement);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    QDir root(directory.path());
+    QVERIFY(root.mkpath(QStringLiteral("first")));
+    QVERIFY(root.mkpath(QStringLiteral("second")));
+    const QString firstManifest = root.filePath(QStringLiteral("first/project.regmap.yaml"));
+    const QString secondManifest = root.filePath(QStringLiteral("second/project.regmap.yaml"));
+    createProject(firstManifest, 0);
+    if (!createReplacement) createProject(secondManifest, 4);
+
+    ProjectController controller;
+    QVERIFY(controller.openProject(firstManifest));
+    QVERIFY(!controller.hasProjectErrors());
+    QVERIFY(controller.savedChanges().empty());
+    QVERIFY(controller.changes().empty());
+    const auto firstRevision = controller.modelRevision();
+    const auto snapshotsBeforeReplacement =
+        controller.property("diffSnapshotBuildCount").toULongLong();
+    QVERIFY(snapshotsBeforeReplacement > 0);
+
+    QVERIFY(createReplacement ? controller.createProject(secondManifest)
+                              : controller.openProject(secondManifest));
+    QVERIFY(controller.workspace() != nullptr);
+    QVERIFY(!controller.hasProjectErrors());
+    QVERIFY(!controller.isDirty());
+    // A replacement store starts at the same revision as the previous store.
+    // Revisions alone must never allow that previous project's snapshots back in.
+    QCOMPARE(controller.modelRevision(), firstRevision);
+    QVERIFY(controller.property("diffSnapshotBuildCount").toULongLong() >
+            snapshotsBeforeReplacement);
+    QVERIFY(controller.changes().empty());
+    QVERIFY(controller.savedChanges().empty());
+
+    const std::string workspaceId = controller.workspace()->id;
+    const std::string originalName = controller.workspace()->name;
+    QVERIFY(controller.editWorkspace(
+        QStringLiteral("Rename replacement project"), [](regmap::Workspace& workspace) {
+            workspace.name += " edited";
+        }));
+    for (const auto* changes : {&controller.changes(), &controller.savedChanges()}) {
+        QCOMPARE(changes->size(), std::size_t{1});
+        QCOMPARE(changes->front().id, workspaceId);
+        QVERIFY(changes->front().objectKind == regmap::ObjectKind::workspace);
+        QVERIFY(changes->front().change == regmap::ChangeKind::modified);
+    }
+    QVERIFY(controller.isDirty());
+    controller.undo();
+    QCOMPARE(controller.workspace()->name, originalName);
+    QVERIFY(!controller.isDirty());
+    QVERIFY(controller.changes().empty());
+    QVERIFY(controller.savedChanges().empty());
 
     makeGeneratedFilesWritable(root.filePath(QStringLiteral("first")));
     makeGeneratedFilesWritable(root.filePath(QStringLiteral("second")));

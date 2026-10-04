@@ -913,6 +913,8 @@ bool ProjectController::openProject(const QString& manifestPath)
             .lastModified();
     manifest_.reset();
     store_ = regmap::WorkspaceStore {};
+    currentDiffSnapshot_.reset();
+    savedDiffSnapshot_.reset();
     baseline_.reset();
     baselineDiffSnapshot_.reset();
     recoveryBaseWorkspace_.reset();
@@ -1047,6 +1049,8 @@ void ProjectController::reloadImpl(
     if (!lastAcceptedModelWasValid_) {
         manifest_ = loaded.manifest();
         store_ = regmap::WorkspaceStore {};
+        currentDiffSnapshot_.reset();
+        savedDiffSnapshot_.reset();
         baseline_.reset();
         baselineDiffSnapshot_.reset();
         emit projectChanged();
