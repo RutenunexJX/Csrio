@@ -119,11 +119,18 @@ if(WIN32)
         SCRIPT "${regmap_workbench_deploy_script}"
         COMPONENT Runtime
     )
-    install(FILES "${PROJECT_SOURCE_DIR}/README.md" DESTINATION . COMPONENT Runtime)
+    install(FILES
+        "${PROJECT_SOURCE_DIR}/README.md"
+        "${PROJECT_SOURCE_DIR}/LICENSE"
+        "${PROJECT_SOURCE_DIR}/NOTICE"
+        "${PROJECT_SOURCE_DIR}/THIRD-PARTY-NOTICES.md"
+        DESTINATION . COMPONENT Runtime)
     install(DIRECTORY "${PROJECT_SOURCE_DIR}/thirdparty/runtime-licenses/"
         DESTINATION licenses COMPONENT Runtime)
     install(
         FILES "${PROJECT_SOURCE_DIR}/docs/cli.md"
+            "${PROJECT_SOURCE_DIR}/docs/ASSET-PROVENANCE.md"
+            "${PROJECT_SOURCE_DIR}/docs/PUBLIC-RELEASE-REVIEW.md"
         DESTINATION docs
         COMPONENT Runtime
     )
