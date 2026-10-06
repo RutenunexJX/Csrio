@@ -3,7 +3,9 @@ param(
     [Parameter(Mandatory)][string]$Directory,
     [Parameter(Mandatory)][string]$ExpectedVersion,
     [Parameter(Mandatory)][string]$ExpectedRevision,
-    [ValidateSet('clean','dirty')][string]$ExpectedSourceState = 'clean'
+    [ValidateSet('clean','dirty')][string]$ExpectedSourceState = 'clean',
+    [ValidateSet('ON','OFF')][string]$ExpectedTests = 'OFF',
+    [string]$ExpectedSuiteAppVersion
 )
 $ErrorActionPreference = 'Stop'
 $packageRoot = (Resolve-Path -LiteralPath $Directory).Path
@@ -52,8 +54,16 @@ foreach ($relative in @('Csrio.exe', 'regmapc.exe', 'ElaWidgetTools.dll',
 }
 $info = Get-Content -LiteralPath (Join-Path $packageRoot 'BUILD-INFO.txt') -Raw
 foreach ($line in @('Csrio', "Version: $ExpectedVersion", "Revision: $ExpectedRevision", "Source state: $ExpectedSourceState",
-    'Build type: Release', 'Platform: win64', 'Qt: 6.10.2', 'UI backend: ELA', 'Tests: OFF')) {
+    'Build type: Release', 'Platform: win64', 'Qt: 6.10.2', 'UI backend: ELA', "Tests: $ExpectedTests")) {
     if ($info -notmatch "(?m)^$([regex]::Escape($line))\r?$") { throw "Metadata mismatch: $line" }
+}
+if ($ExpectedSuiteAppVersion) {
+    foreach ($line in @('SuiteApp: ON', "SuiteApp SDK version: $ExpectedSuiteAppVersion")) {
+        if ($info -notmatch "(?m)^$([regex]::Escape($line))\r?$") { throw "SDK metadata mismatch: $line" }
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $packageRoot 'Qt6Network.dll') -PathType Leaf)) {
+        throw 'SDK-enabled runtime is missing Qt6Network.dll'
+    }
 }
 $resource = [Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $packageRoot 'Csrio.exe'))
 if ($resource.ProductName -cne 'Csrio' -or $resource.FileDescription -cne 'Csrio' -or

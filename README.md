@@ -1,6 +1,8 @@
 # Csrio
 
-Current version: `0.4.4`.
+Current version: `0.4.5`.
+
+Release 0.4.5 enables SuiteApp SDK 1.0.1. Suite actions preserve unsaved models and undo history, reject unsafe project switches, and return the model after committing the active editor.
 
 Release 0.4.4 reduces batch-edit, diff-refresh and RTL-sync overhead while
 retaining validation, atomic paste and lossless undo. Diff snapshots reset when

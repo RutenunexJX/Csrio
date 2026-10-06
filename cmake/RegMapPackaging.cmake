@@ -13,6 +13,12 @@ configure_file(
     "${PROJECT_BINARY_DIR}/CPackProjectConfig.cmake"
     @ONLY
 )
+set(REGMAP_SUITEAPP_ENABLED OFF)
+set(REGMAP_SUITEAPP_VERSION "not-enabled")
+if(SuiteApp_FOUND)
+    set(REGMAP_SUITEAPP_ENABLED ON)
+    set(REGMAP_SUITEAPP_VERSION "${SuiteApp_VERSION}")
+endif()
 configure_file(
     "${PROJECT_SOURCE_DIR}/cmake/InstallBuildInfo.cmake.in"
     "${PROJECT_BINARY_DIR}/InstallBuildInfo.cmake"

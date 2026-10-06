@@ -49,6 +49,8 @@ Build type: ${_regmap_build_type}
 Qt: @Qt6_VERSION@
 UI backend: @REGMAP_UI_BACKEND@
 Tests: @REGMAP_BUILD_TESTS@
+SuiteApp: @REGMAP_SUITEAPP_ENABLED@
+SuiteApp SDK version: @REGMAP_SUITEAPP_VERSION@
 Compiler: @CMAKE_CXX_COMPILER_ID@ @CMAKE_CXX_COMPILER_VERSION@
 ")
 file(WRITE "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/BUILD-INFO.txt" "${_regmap_build_info}")

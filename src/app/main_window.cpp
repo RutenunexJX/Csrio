@@ -9316,14 +9316,15 @@ bool MainWindow::confirmProjectReplacement()
     return true;
 }
 
-bool MainWindow::openProjectPath(const QString& path)
+bool MainWindow::openProjectPath(const QString& path, bool offerRecovery)
 {
     updateProjectHeader(
         QStringLiteral("loading"));
     const bool opened = controller_.openProject(path);
     finalizeProjectReplacement(opened);
     if (opened) {
-        promptRecoveryDraft();
+        if (offerRecovery)
+            promptRecoveryDraft();
         updateProjectHeader();
     } else {
         updateProjectHeader(
@@ -9667,6 +9668,39 @@ bool MainWindow::openStartupProjectPath(
     return true;
 }
 
+bool MainWindow::openProjectForSuite(const QString& path,
+                                     const QString& selectedObjectId,
+                                     QString* failureReason)
+{
+    const auto fail = [failureReason](const QString& reason) {
+        if (failureReason)
+            *failureReason = reason;
+        return false;
+    };
+    if (QApplication::activeModalWidget() != nullptr || !commitActiveEditor()) {
+        return fail(QStringLiteral("Finish the current dialog or edit before opening a Suite resource"));
+    }
+    if (!keepCurrentProjectIfSame(path)) {
+        // A synchronous IPC request must not discard edits or wait for a dialog.
+        if (controller_.isDirty()) {
+            return fail(QStringLiteral("Save or discard the current project's edits before opening another project"));
+        }
+        if (!openProjectPath(path, false)) {
+            return fail(QStringLiteral("Csrio could not open the project; the current project was retained"));
+        }
+        rememberRecentProject(fromPath(controller_.manifestPath()));
+        QTimer::singleShot(0, this, [this, path] {
+            if (currentWorkspaceForSuite(path) != nullptr)
+                promptRecoveryDraft();
+        });
+    }
+    if (!selectedObjectId.isEmpty() &&
+        !navigateToObject(selectedObjectId.toUtf8().toStdString(), true)) {
+        return fail(QStringLiteral("The requested object could not be selected in the current project"));
+    }
+    return true;
+}
+
 const regmap::Workspace* MainWindow::currentWorkspaceForSuite(
     const QString& projectPath) const
 {
@@ -9674,11 +9708,9 @@ const regmap::Workspace* MainWindow::currentWorkspaceForSuite(
         controller_.manifestPath().empty()) {
         return nullptr;
     }
-    const QString requested = QDir::cleanPath(
-        QFileInfo(projectPath).absoluteFilePath());
-    const QString current = QDir::cleanPath(
-        QFileInfo(fromPath(controller_.manifestPath())).absoluteFilePath());
-    return requested.compare(current, Qt::CaseInsensitive) == 0
+    const QString requested = normalizedProjectPath(projectPath);
+    const QString current = normalizedProjectPath(fromPath(controller_.manifestPath()));
+    return sameProjectPath(requested, current)
         ? controller_.workspace()
         : nullptr;
 }

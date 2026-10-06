@@ -319,9 +319,14 @@ RegMapSuiteIntegration::~RegMapSuiteIntegration() = default;
 
 bool RegMapSuiteIntegration::start(QString* failureReason)
 {
+    return start(SuiteApp::RuntimeStartOptions{}, failureReason);
+}
+
+bool RegMapSuiteIntegration::start(const SuiteApp::RuntimeStartOptions& options,
+                                  QString* failureReason)
+{
     if (provider_ && provider_->isListening())
         return true;
-    SuiteApp::RuntimeStartOptions options;
     const SuiteApp::RuntimeStatus runtime = SuiteApp::ensureRuntime(options);
     if (!runtime.available) {
         if (failureReason)
@@ -410,15 +415,16 @@ QJsonObject RegMapSuiteIntegration::processRequest(
                 QStringLiteral("Unknown Csrio action"));
         }
         const bool opened = window_
-            && window_->openStartupProjectPath(target.projectPath,
-                                               target.objectId);
+            && window_->openProjectForSuite(target.projectPath,
+                                            target.objectId, &failureReason);
         return opened
             ? SuiteApp::successResponse(
                   request, {{QStringLiteral("opened"), true},
-                            {QStringLiteral("resource"), model}})
+                            {QStringLiteral("resource"), resolvedProject(
+                                 target, window_->currentWorkspaceForSuite(target.projectPath))}})
             : SuiteApp::errorResponse(
                   request, QStringLiteral("project_open_failed"),
-                  QStringLiteral("Csrio could not open the project"));
+                  failureReason.isEmpty() ? QStringLiteral("Csrio could not open the project") : failureReason);
     }
 
     if (params.value(QStringLiteral("surfaceId")).toString()
@@ -438,14 +444,14 @@ QJsonObject RegMapSuiteIntegration::processRequest(
     }
     if (method == QStringLiteral("surface.open")) {
         const bool opened = window_
-            && window_->openStartupProjectPath(target.projectPath,
-                                               target.objectId);
+            && window_->openProjectForSuite(target.projectPath,
+                                            target.objectId, &failureReason);
         return opened
             ? SuiteApp::successResponse(
                   request, {{QStringLiteral("opened"), true}})
             : SuiteApp::errorResponse(
                   request, QStringLiteral("project_open_failed"),
-                  QStringLiteral("Csrio could not open the surface"));
+                  failureReason.isEmpty() ? QStringLiteral("Csrio could not open the surface") : failureReason);
     }
     return SuiteApp::errorResponse(
         request, QStringLiteral("method_not_supported"),

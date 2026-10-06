@@ -204,6 +204,21 @@ if(TARGET RegMap::WorkbenchUi)
             PRIVATE cxx_std_20
         )
         regmap_enable_warnings(regmap_suiteapp_integration_test)
+        qt_add_executable(regmap_suiteapp_runtime_test suiteapp_runtime_test.cpp)
+        set_target_properties(regmap_suiteapp_runtime_test PROPERTIES AUTOMOC ON)
+        target_link_libraries(regmap_suiteapp_runtime_test PRIVATE
+            RegMap::WorkbenchUi SuiteApp::suiteapp Qt6::Test)
+        target_compile_definitions(regmap_suiteapp_runtime_test PRIVATE
+            REGMAP_EXPECTED_VERSION="${PROJECT_VERSION}"
+            REGMAP_SUITE_RUNTIME_EXECUTABLE="$<TARGET_FILE:SuiteApp::suite-runtime>")
+        regmap_enable_warnings(regmap_suiteapp_runtime_test)
+        add_test(NAME regmap_suiteapp_runtime_test COMMAND regmap_suiteapp_runtime_test
+            -o "${CMAKE_CURRENT_BINARY_DIR}/regmap_suiteapp_runtime_test.log,txt")
+        set_tests_properties(regmap_suiteapp_runtime_test PROPERTIES
+            TIMEOUT 90
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+            ENVIRONMENT_MODIFICATION
+                "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
         add_test(
             NAME regmap_suiteapp_integration_test
             COMMAND regmap_suiteapp_integration_test
@@ -274,7 +289,7 @@ if(REGMAP_BUILD_APP AND REGMAP_ENABLE_ELA)
         ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
     if(WIN32)
         foreach(target regmap_ela_native_tests regmap_ui_performance regmap_gui_tests regmap_ui_snapshot regmap_suiteapp_integration_test
-                       regmap_suiteui_control_test regmap_ela_control_tests regmap_ela_remaining_tests)
+                       regmap_suiteui_control_test regmap_ela_control_tests regmap_ela_remaining_tests regmap_suiteapp_runtime_test)
             if(TARGET ${target})
                 add_custom_command(TARGET ${target} POST_BUILD
                     COMMAND ${CMAKE_COMMAND} -E copy_if_different

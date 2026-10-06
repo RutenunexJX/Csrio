@@ -54,7 +54,9 @@ class MainWindow final : public QMainWindow {
 public:
     explicit MainWindow(QWidget* parent = nullptr);
 
-    bool openProjectPath(const QString& path);
+    bool openProjectPath(const QString& path, bool offerRecovery = true);
+    bool openProjectForSuite(const QString& path, const QString& selectedObjectId,
+                             QString* failureReason = nullptr);
     bool openStartupProjectPath(
         const QString& path,
         const QString& selectedObjectId = {});

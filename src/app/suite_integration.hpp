@@ -9,6 +9,7 @@ class MainWindow;
 
 namespace SuiteApp {
 class Provider;
+struct RuntimeStartOptions;
 }
 
 namespace regmap::workbench {
@@ -20,6 +21,8 @@ public:
     ~RegMapSuiteIntegration() override;
 
     bool start(QString* failureReason = nullptr);
+    bool start(const SuiteApp::RuntimeStartOptions& options,
+               QString* failureReason = nullptr);
     [[nodiscard]] bool isRegistered() const;
 
     static QJsonObject appDescriptor(const QString& version,
