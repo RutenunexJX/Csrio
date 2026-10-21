@@ -1,4 +1,5 @@
 #include "suite_integration.hpp"
+#include <suiteapp/transport.h>
 
 #include "main_window.hpp"
 
@@ -317,6 +318,15 @@ RegMapSuiteIntegration::RegMapSuiteIntegration(MainWindow* window,
 
 RegMapSuiteIntegration::~RegMapSuiteIntegration() = default;
 
+bool RegMapSuiteIntegration::startSession(QString* failureReason)
+{
+    if (session_ && session_->isListening()) return true;
+    session_ = std::make_unique<SuiteApp::JsonServer>(
+        QStringLiteral("csrio.session.%1").arg(QCoreApplication::applicationPid()),
+        [this](const QJsonObject& request) { return processRequest(request); }, this);
+    return session_->start(failureReason);
+}
+
 bool RegMapSuiteIntegration::start(QString* failureReason)
 {
     return start(SuiteApp::RuntimeStartOptions{}, failureReason);
@@ -386,6 +396,11 @@ QJsonObject RegMapSuiteIntegration::processRequest(
 {
     const QString method = request.value(QStringLiteral("method")).toString();
     const QJsonObject params = request.value(QStringLiteral("params")).toObject();
+    if (method == QStringLiteral("regmap.gui")) {
+        if (!window_)
+            return SuiteApp::errorResponse(request, QStringLiteral("session_unavailable"), QStringLiteral("No Workbench window."));
+        return SuiteApp::successResponse(request, window_->guiSession(params));
+    }
     const ProjectTarget target = projectTarget(params);
     if (!target.isValid()) {
         return SuiteApp::errorResponse(
@@ -394,13 +409,47 @@ QJsonObject RegMapSuiteIntegration::processRequest(
                 "A regmap://project or regmap://register/<stable-id> URI with a project file is required"));
     }
 
+    const QJsonObject arguments = params.value(QStringLiteral("arguments")).toObject();
+    if (arguments.contains(QStringLiteral("expected_revision")) && window_ &&
+        (method == QStringLiteral("action.invoke") || method == QStringLiteral("surface.open"))) {
+        if ((method == QStringLiteral("action.invoke") && params.value(QStringLiteral("actionId")).toString() != QString::fromLatin1(kOpenAction)) ||
+            (method == QStringLiteral("surface.open") && params.value(QStringLiteral("surfaceId")).toString() != QString::fromLatin1(kWorkbenchSurface)))
+            return SuiteApp::errorResponse(request, QStringLiteral("invalid_request"), QStringLiteral("Unknown Csrio action or surface."));
+        QString targetReason;
+        if (resolvedProject(target, nullptr, &targetReason).isEmpty())
+            return SuiteApp::errorResponse(request, QStringLiteral("resource_open_failed"), targetReason);
+        const QJsonObject session = window_->guiSession({
+            {QStringLiteral("project"), target.projectPath},
+            {QStringLiteral("expect"), arguments.value(QStringLiteral("expected_revision"))},
+            {QStringLiteral("adopt"), arguments.value(QStringLiteral("adopt")).toBool()},
+            {QStringLiteral("select"), target.objectId}});
+        if (!session.value(QStringLiteral("ok")).toBool())
+            return SuiteApp::errorResponse(request, session.value(QStringLiteral("error_code")).toString(),
+                session.value(QStringLiteral("error")).toString(), session);
+        return SuiteApp::successResponse(request, {{QStringLiteral("opened"), true},
+            {QStringLiteral("session"), session}, {QStringLiteral("resource"), resolvedProject(
+                target, window_->currentWorkspaceForSuite(target.projectPath))}});
+    }
     QString failureReason;
     const Workspace* currentWorkspace = window_ == nullptr
         ? nullptr
         : window_->currentWorkspaceForSuite(target.projectPath);
+    if (currentWorkspace && window_ &&
+        (method == QStringLiteral("action.invoke") || method == QStringLiteral("surface.open"))) {
+        const QJsonObject session = window_->guiSession({{QStringLiteral("project"), target.projectPath}});
+        if (session.value(QStringLiteral("pending")).toBool())
+            return SuiteApp::errorResponse(request, QStringLiteral("revision_conflict"),
+                QStringLiteral("The window has pending disk data. Explicitly adopt the expected revision before opening the same project."), session);
+    }
     const QJsonObject model = resolvedProject(
         target, currentWorkspace, &failureReason);
     if (model.isEmpty()) {
+        if (currentWorkspace && window_) {
+            const QJsonObject session = window_->guiSession({{QStringLiteral("project"), target.projectPath}});
+            if (session.value(QStringLiteral("pending")).toBool())
+                return SuiteApp::errorResponse(request, QStringLiteral("revision_conflict"),
+                    QStringLiteral("The window still has an earlier disk revision. Query its session, then explicitly adopt the expected revision before navigation."), session);
+        }
         return SuiteApp::errorResponse(
             request, QStringLiteral("resource_open_failed"), failureReason);
     }

@@ -425,6 +425,7 @@ private slots:
     void reportsAndRepairsOutputStatusWithoutRewritingCurrentFiles();
     void keepsXlsxStatusStableAcrossProcesses();
     void runsCoreCommandsWithoutAPlatformPlugin();
+    void runsArtifactCommandsWithDefaultPlatform();
     void supportsUnicodeProjectPathsAcrossProcesses();
     void returnsStableUsageAndProjectErrors();
     void previewsAtomicPatchWithoutWriting();
@@ -8283,6 +8284,31 @@ void CliTests::keepsXlsxStatusStableAcrossProcesses()
 
     makeGeneratedFilesWritable(
         directory.path());
+}
+
+void CliTests::runsArtifactCommandsWithDefaultPlatform()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString project = createProject(directory.path());
+    QVERIFY(!project.isEmpty());
+    QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
+    environment.remove(QStringLiteral("QT_QPA_PLATFORM"));
+    environment.remove(QStringLiteral("QT_HASH_SEED"));
+    const QString patch = directory.filePath(QStringLiteral("default-platform.json"));
+    QVERIFY(writePatch(patch, QJsonArray{QJsonObject{
+        {"op", "set"}, {"id", "reg-control"}, {"property", "description"},
+        {"value", "Default platform dry run"}}}, currentRevision(project)));
+    const auto before = readFile(project);
+    const auto preview = invokeExecutable({"--json", "apply", project, patch, "--dry-run"}, environment);
+    QCOMPARE(preview.exitCode, 0);
+    QVERIFY(json(preview).value("ok").toBool());
+    QCOMPARE(readFile(project), before);
+    const auto generated = invokeExecutable({"--json", "generate", project}, environment);
+    QCOMPARE(generated.exitCode, 0);
+    const auto checked = invokeExecutable({"--json", "status", project, "--require-current"}, environment);
+    QCOMPARE(checked.exitCode, 0);
+    makeGeneratedFilesWritable(directory.path());
 }
 
 void CliTests::runsCoreCommandsWithoutAPlatformPlugin()

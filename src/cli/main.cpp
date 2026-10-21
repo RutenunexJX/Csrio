@@ -33,7 +33,7 @@ int main(int argc, char** argv)
         regmap::cli::commandRequiresGuiApplication(
             argc,
             argv);
-#if !defined(Q_OS_MACOS)
+#if !defined(Q_OS_MACOS) && !defined(Q_OS_WIN)
     if (requiresGui &&
         qEnvironmentVariableIsEmpty(
             "QT_QPA_PLATFORM") &&

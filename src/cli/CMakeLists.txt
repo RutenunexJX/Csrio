@@ -27,6 +27,10 @@ target_link_libraries(
         Qt6::Core
         Qt6::Gui
 )
+if(SuiteApp_FOUND)
+    target_link_libraries(regmap_cli_support PRIVATE SuiteApp::suiteapp)
+    target_compile_definitions(regmap_cli_support PRIVATE REGMAP_HAS_SUITEAPP=1)
+endif()
 regmap_enable_warnings(regmap_cli_support)
 
 add_executable(regmapc main.cpp)

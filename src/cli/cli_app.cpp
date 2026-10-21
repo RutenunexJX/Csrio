@@ -1,5 +1,9 @@
 #include "cli_app.hpp"
 #include "cli_artifacts.hpp"
+#ifdef REGMAP_HAS_SUITEAPP
+#include <suiteapp/transport.h>
+#endif
+#include <QRegularExpression>
 
 #include "regmap/core/generation.hpp"
 #include "regmap/core/model_tokens.hpp"
@@ -6310,6 +6314,11 @@ descendantCount(
     };
     const QJsonArray commands{
         QJsonObject{
+            {QStringLiteral("name"), QStringLiteral("gui")},
+            {QStringLiteral("project_access"), QStringLiteral("read")},
+            {QStringLiteral("file_write_behavior"), QStringLiteral("never")},
+            {QStringLiteral("usage"), QStringLiteral("regmapc [--json] gui <project> --session <pid> [--expect <sha256:...>] [--adopt] [--select <stable-id>]")}},
+        QJsonObject{
             {QStringLiteral("name"),
              QStringLiteral("help")},
             {QStringLiteral(
@@ -6577,6 +6586,17 @@ descendantCount(
     };
     const QJsonObject
         commandArgumentSchemas{
+            {QStringLiteral("gui"), QJsonObject{
+                {QStringLiteral("positionals"), projectArgument},
+                {QStringLiteral("options"), QJsonArray{
+                    option(QStringLiteral("--session"), QStringLiteral("pid"), QStringLiteral("positive_integer")),
+                    option(QStringLiteral("--expect"), QStringLiteral("revision"), QStringLiteral("revision")),
+                    flag(QStringLiteral("--adopt")),
+                    option(QStringLiteral("--select"), QStringLiteral("stable-id"), QStringLiteral("stable_id"))}},
+                {QStringLiteral("required_options"), QJsonArray{QStringLiteral("--session")}},
+                {QStringLiteral("conditional_requirements"), QJsonObject{
+                    {QStringLiteral("--adopt"), QJsonArray{QStringLiteral("--expect")}},
+                    {QStringLiteral("--select"), QJsonArray{QStringLiteral("--expect")}}}}}},
             {QStringLiteral("help"),
              QJsonObject{
                  {QStringLiteral(
@@ -7453,8 +7473,30 @@ descendantCount(
          true},
         {QStringLiteral("object_kinds"),
          kinds},
-        {QStringLiteral("commands"),
-         commands},
+        {QStringLiteral("commands"), commands},
+        {QStringLiteral("gui_session_contract"), QJsonObject{
+            {QStringLiteral("protocol_version"), 1},
+#ifdef REGMAP_HAS_SUITEAPP
+            {QStringLiteral("available"), true},
+#else
+            {QStringLiteral("available"), false},
+#endif
+            {QStringLiteral("transport"), QStringLiteral("suite-app/v1 local SDK transport")},
+            {QStringLiteral("endpoint"), QStringLiteral("csrio.session.<pid>")},
+            {QStringLiteral("method"), QStringLiteral("regmap.gui")},
+            {QStringLiteral("requires_runtime"), false},
+            {QStringLiteral("writes_project_files"), false},
+            {QStringLiteral("may_update_gui_preferences"), true},
+            {QStringLiteral("target"), QStringLiteral("Explicit process ID and already-open absolute project path; no window discovery or implicit launch.")},
+            {QStringLiteral("adoption"), QStringLiteral("--adopt requires --expect. Dirty, active editor, modal, recovery and synchronization conflicts are retained and rejected. Navigation follows adoption.")},
+            {QStringLiteral("result_members"), QJsonArray{
+                "session", "project", "disk_revision", "adopted_revision", "model_revision", "dirty", "active_editor",
+                "modal", "synchronization_conflict", "recovery_pending", "pending", "status", "adopted", "located", "requested_id", "selected_id", "object", "writes_performed", "write_scope"}},
+            {QStringLiteral("error_codes"), QJsonArray{
+                "session_unavailable", "invalid_request", "project_mismatch", "revision_conflict", "dirty",
+                "active_editor", "pending_conflict", "invalid_project", "object_not_found", "navigation_failed"}},
+            {QStringLiteral("exit_codes"), QJsonObject{{"success",0},{"project_or_object_error",1},
+                {"invalid_arguments",2},{"revision_or_edit_conflict",3},{"unavailable_session_or_transport",7}}}}},
         {QStringLiteral(
              "global_options"),
          globalOptions},
@@ -8630,6 +8672,7 @@ descendantCount(
         "  regmapc [--json] help [command]\n"
         "  regmapc [--json] version\n"
         "  regmapc [--json] schema\n"
+        "  regmapc [--json] gui <project> --session <pid> [--expect <sha256:...>] [--adopt] [--select <stable-id>]\n"
         "  regmapc [--json] init <project.regmap.yaml> [--name <workspace-name>] [--workspace-id <stable-id>] [--output-dir <relative-path>] [--target <target>]... [--xlsx-file <relative-path>] [--c-header-file <relative-path>] [--markdown-file <relative-path>] [--no-generate]\n"
         "  regmapc [--json] summary <project.regmap.yaml>\n"
         "  regmapc [--json] list <project.regmap.yaml> [--kind <kind>] [--parent <stable-id> [--recursive]] [--tag <tag>] [--offset <count>] [--limit <count> | --all] [--expect <sha256:...>]\n"
@@ -8935,6 +8978,12 @@ void writeTextResponse(
     QTextStream& output,
     QTextStream& error)
 {
+    if (response.command == QStringLiteral("gui") && response.result.isObject()) {
+        output << QJsonDocument(response.result.toObject()).toJson(QJsonDocument::Indented);
+        if (!response.error.isEmpty()) error << response.error << '\n';
+        output.flush(); error.flush(); return;
+    }
+
     const bool deferDiagnostics =
         response.command ==
             QStringLiteral("find") &&
@@ -12486,6 +12535,77 @@ void addGenerationRecovery(
     return response;
 }
 
+[[nodiscard]] CommandResponse runGui(const QStringList& arguments, qsizetype terminator)
+{
+    QString project, session, expected, selected;
+    bool adopt = false;
+    const auto invalid = [](const QString& message) {
+        return usageError(QStringLiteral("gui"), message);
+    };
+    for (qsizetype i = 1; i < arguments.size(); ++i) {
+        const QString token = arguments.at(i);
+        if ((terminator < 0 || i < terminator) && token.startsWith(QLatin1Char('-'))) {
+            if (token == QStringLiteral("--adopt")) {
+                if (adopt) return invalid(QStringLiteral("--adopt cannot be repeated."));
+                adopt = true;
+                continue;
+            }
+            QString* value = token == QStringLiteral("--session") ? &session
+                : token == QStringLiteral("--expect") ? &expected
+                : token == QStringLiteral("--select") ? &selected : nullptr;
+            if (!value) return invalid(unknownOptionMessage(QStringLiteral("gui"), token));
+            if (!value->isEmpty() || i + 1 >= arguments.size() ||
+                (terminator >= 0 && i + 1 >= terminator) ||
+                arguments.at(i + 1).startsWith(QLatin1Char('-')) || arguments.at(i + 1).isEmpty())
+                return invalid(QStringLiteral("%1 requires exactly one non-empty value.").arg(token));
+            *value = arguments.at(++i);
+        } else {
+            if (!project.isEmpty() || token.isEmpty()) return invalid(QStringLiteral("gui requires exactly one project path."));
+            project = token;
+        }
+    }
+    bool validPid = false;
+    const auto pid = session.toLongLong(&validPid);
+    if (project.isEmpty() || !validPid || pid <= 0 || session != QString::number(pid))
+        return invalid(QStringLiteral("gui requires a project path and --session with a positive process ID."));
+    if ((!expected.isEmpty() && !QRegularExpression(QStringLiteral("^sha256:[0-9a-f]{64}$")).match(expected).hasMatch()) ||
+        ((adopt || !selected.isEmpty()) && expected.isEmpty()))
+        return invalid(QStringLiteral("--adopt and --select require --expect sha256:<64 lowercase hexadecimal digits>."));
+    if (selected.trimmed() != selected)
+        return invalid(QStringLiteral("--select requires a stable ID without surrounding whitespace."));
+    CommandResponse response;
+    response.command = QStringLiteral("gui");
+    response.project = QFileInfo(project).absoluteFilePath();
+    response.exitCode = ExitCode::inputError;
+#ifdef REGMAP_HAS_SUITEAPP
+    const QJsonObject params{{"project", response.project}, {"expect", expected}, {"adopt", adopt}, {"select", selected}};
+    const auto transport = SuiteApp::sendRequest(QStringLiteral("csrio.session.%1").arg(session),
+        SuiteApp::makeRequest(QStringLiteral("regmap.gui"), params), 10000);
+    if (transport.hasResponse() && transport.response.value(QStringLiteral("ok")).toBool()) {
+        const QJsonObject result = transport.response.value(QStringLiteral("result")).toObject();
+        response.result = result;
+        response.revision = result.value(QStringLiteral("disk_revision")).toString();
+        response.ok = result.value(QStringLiteral("ok")).toBool();
+        response.error = result.value(QStringLiteral("error")).toString();
+        const QString code = result.value(QStringLiteral("error_code")).toString();
+        if (response.ok) response.exitCode = ExitCode::success;
+        else if (code == "revision_conflict" || code == "dirty" || code == "active_editor" || code == "pending_conflict")
+            response.exitCode = ExitCode::revisionConflict;
+        else if (code == "invalid_request") response.exitCode = ExitCode::usageError;
+        else response.exitCode = ExitCode::projectError;
+        return response;
+    }
+    response.error = transport.hasResponse()
+        ? transport.response.value(QStringLiteral("error")).toObject().value(QStringLiteral("message")).toString()
+        : transport.errorMessage;
+#else
+    response.error = QStringLiteral("This build has no SuiteApp SDK session support. Offline commands remain available.");
+#endif
+    response.result = QJsonObject{{"status", "unavailable"}, {"session", session},
+        {"error_code", "session_unavailable"}, {"writes_performed", false}, {"adopted", false}, {"located", false}};
+    return response;
+}
+
 [[nodiscard]] CommandResponse runSummary(
     const QString& projectPath)
 {
@@ -15655,6 +15775,8 @@ int run(
                   command,
                   QStringLiteral(
                       "schema accepts no positional arguments."));
+    } else if (command == QStringLiteral("gui")) {
+        response = runGui(arguments, optionTerminatorIndex);
     } else if (
         command ==
         QStringLiteral("init")) {

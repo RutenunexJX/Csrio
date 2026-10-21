@@ -9,6 +9,7 @@ class MainWindow;
 
 namespace SuiteApp {
 class Provider;
+class JsonServer;
 struct RuntimeStartOptions;
 }
 
@@ -20,6 +21,7 @@ public:
                                     QObject* parent = nullptr);
     ~RegMapSuiteIntegration() override;
 
+    bool startSession(QString* failureReason = nullptr);
     bool start(QString* failureReason = nullptr);
     bool start(const SuiteApp::RuntimeStartOptions& options,
                QString* failureReason = nullptr);
@@ -34,6 +36,7 @@ private:
 
     MainWindow* window_{nullptr};
     std::unique_ptr<SuiteApp::Provider> provider_;
+    std::unique_ptr<SuiteApp::JsonServer> session_;
 };
 
 } // namespace regmap::workbench

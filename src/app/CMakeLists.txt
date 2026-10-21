@@ -127,6 +127,8 @@ if(WIN32)
         DESTINATION . COMPONENT Runtime)
     install(DIRECTORY "${PROJECT_SOURCE_DIR}/thirdparty/runtime-licenses/"
         DESTINATION licenses COMPONENT Runtime)
+    install(FILES "${PROJECT_SOURCE_DIR}/docs/examples/cli-same-session.ps1"
+        DESTINATION docs/examples COMPONENT Runtime)
     install(
         FILES "${PROJECT_SOURCE_DIR}/docs/cli.md"
             "${PROJECT_SOURCE_DIR}/docs/ASSET-PROVENANCE.md"

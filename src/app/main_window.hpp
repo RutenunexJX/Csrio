@@ -55,6 +55,7 @@ public:
     explicit MainWindow(QWidget* parent = nullptr);
 
     bool openProjectPath(const QString& path, bool offerRecovery = true);
+    QJsonObject guiSession(const QJsonObject& parameters);
     bool openProjectForSuite(const QString& path, const QString& selectedObjectId,
                              QString* failureReason = nullptr);
     bool openStartupProjectPath(

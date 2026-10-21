@@ -48,6 +48,10 @@ public:
     explicit ProjectController(QObject* parent = nullptr);
 
     bool createProject(const QString& manifestPath);
+    [[nodiscard]] QString adoptedRevision() const;
+    [[nodiscard]] QString diskRevision() const;
+    QString adoptDiskRevision(const QString& expectedRevision, const QString& selectedId,
+                              QString* failureReason = nullptr);
     [[nodiscard]] const regmap::ProjectManifest* manifest() const noexcept;
     [[nodiscard]] const regmap::Workspace* workspace() const noexcept;
     [[nodiscard]] const std::vector<regmap::Diagnostic>& diagnostics() const noexcept;
@@ -205,8 +209,8 @@ private:
 
     void reloadImpl(
         bool automatic,
-        regmap::ProjectLoadSnapshot* preloaded = nullptr);
-    void generateImpl(bool automatic);
+        regmap::ProjectLoadSnapshot* preloaded = nullptr, bool synchronize = true);
+    void generateImpl(bool automatic, bool writeOutputs = true);
     void rebuildDiagnostics();
     void refreshWatchPaths();
     void notifyModelEdited();

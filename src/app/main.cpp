@@ -9,6 +9,9 @@
 #include <QApplication>
 #include <QCoreApplication>
 #include <QIcon>
+#include <QDir>
+#include <QFileInfo>
+#include <QSettings>
 #include <QStringConverter>
 #include <QTextStream>
 #include <QTimer>
@@ -77,6 +80,13 @@ int main(int argumentCount, char* arguments[])
         return 2;
     }
 
+    if (!startup.profileDirectory.isEmpty()) {
+        const QString profile = QFileInfo(startup.profileDirectory).absoluteFilePath();
+        if (!QDir().mkpath(profile)) return 2;
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, profile);
+        QSettings::setPath(QSettings::IniFormat, QSettings::SystemScope, profile);
+    }
     WorkbenchTheme::apply(application);
     MainWindow window;
     window.show();
@@ -84,9 +94,12 @@ int main(int argumentCount, char* arguments[])
 #ifdef REGMAP_HAS_SUITEAPP
     regmap::workbench::RegMapSuiteIntegration suiteIntegration(
         &window, &application);
-    QTimer::singleShot(0, &application, [&suiteIntegration] {
-        suiteIntegration.start();
-    });
+    suiteIntegration.startSession();
+    if (startup.startSuiteRuntime) {
+        QTimer::singleShot(0, &application, [&suiteIntegration] {
+            suiteIntegration.start();
+        });
+    }
 #endif
 
     if (!startup.projectPath

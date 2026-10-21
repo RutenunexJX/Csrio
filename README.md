@@ -1,6 +1,6 @@
 # Csrio
 
-Current version: `0.4.5`.
+Current version: `0.4.6`.
 
 Release 0.4.5 enables SuiteApp SDK 1.0.1. Suite actions preserve unsaved models and undo history, reject unsafe project switches, and return the model after committing the active editor.
 

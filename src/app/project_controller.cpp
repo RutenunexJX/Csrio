@@ -5,6 +5,7 @@
 #include "regmap/core/project_creation.hpp"
 #include "regmap/core/rtl_sync.hpp"
 #include "regmap/core/serialization.hpp"
+#include "regmap/core/validation.hpp"
 
 #include <QByteArray>
 #include <QCryptographicHash>
@@ -950,6 +951,52 @@ bool ProjectController::openProject(const QString& manifestPath)
         store_.workspace()->id == *requestedWorkspaceId;
 }
 
+QString ProjectController::adoptedRevision() const
+{
+    return acceptedManifestDigestKnown_ && !acceptedManifestDigest_.isEmpty()
+        ? QStringLiteral("sha256:") + QString::fromLatin1(acceptedManifestDigest_.toHex())
+        : QString{};
+}
+
+QString ProjectController::diskRevision() const
+{
+    const QByteArray digest = fileDigest(manifestPath_);
+    return digest.isEmpty() ? QString{}
+        : QStringLiteral("sha256:") + QString::fromLatin1(digest.toHex());
+}
+
+QString ProjectController::adoptDiskRevision(const QString& expectedRevision,
+                                             const QString& selectedId,
+                                             QString* failureReason)
+{
+    const auto fail = [failureReason](const char* code, const QString& message) {
+        if (failureReason) *failureReason = message;
+        return QString::fromLatin1(code);
+    };
+    if (isDirty())
+        return fail("dirty", QStringLiteral("Save or resolve local Workbench edits before adopting disk data."));
+    if (hasConflicts() || requiresInitialSyncChoice() || recoveryDraftAvailable())
+        return fail("pending_conflict", QStringLiteral("Resolve synchronization conflicts or recovery drafts in Workbench first."));
+    if (expectedRevision.isEmpty() || diskRevision() != expectedRevision)
+        return fail("revision_conflict", QStringLiteral("The disk revision does not match the expected revision."));
+    auto loaded = regmap::loadProjectSnapshot(manifestPath_);
+    if (!loaded.manifest() || !loaded.workspace() || containsErrors(loaded.loadDiagnostics()) ||
+        containsErrors(regmap::validateWorkspace(*loaded.workspace())))
+        return fail("invalid_project", QStringLiteral("The saved project cannot be adopted because it is invalid."));
+    if (!selectedId.isEmpty() && !regmap::ui::inspectWorkspace(*loaded.workspace()).contains(selectedId))
+        return fail("object_not_found", QStringLiteral("The stable ID does not exist in the requested disk revision."));
+    if (QStringLiteral("sha256:") + QString::fromStdString(loaded.sourceSha256()) != expectedRevision ||
+        diskRevision() != expectedRevision)
+        return fail("revision_conflict", QStringLiteral("The project changed while its snapshot was loading."));
+    if (adoptedRevision() != expectedRevision) {
+        recoveryBaseModified_ = QFileInfo(fromPath(manifestPath_)).lastModified();
+        // Adoption is read-only. Keep the existing RTL merge base for the next
+        // explicit Save & Sync; ordinary reload also merges and writes RTL.
+        reloadImpl(false, &loaded, false);
+    }
+    return {};
+}
+
 void ProjectController::reload()
 {
     recoveryBaseModified_ =
@@ -960,7 +1007,7 @@ void ProjectController::reload()
 
 void ProjectController::reloadImpl(
     bool automatic,
-    regmap::ProjectLoadSnapshot* preloaded)
+    regmap::ProjectLoadSnapshot* preloaded, bool synchronize)
 {
     if (manifestPath_.empty()) {
         return;
@@ -1018,8 +1065,11 @@ void ProjectController::reloadImpl(
         artifacts_.clear();
         ++artifactsRevision_;
         generationDiagnostics_.clear();
-        initializeSynchronization();
+        if (synchronize)
+            initializeSynchronization();
         rebuildDiagnostics();
+        if (!synchronize)
+            generateImpl(true, false);
         refreshWatchPaths();
         emit projectChanged();
         emit diagnosticsChanged();
@@ -1039,7 +1089,8 @@ void ProjectController::reloadImpl(
             emit syncStatusChanged(
                 automatic
                     ? QStringLiteral("Synchronized: %1 object change(s)").arg(changes_.size())
-                    : QStringLiteral("Project and managed RTL loaded"));
+                    : synchronize ? QStringLiteral("Project and managed RTL loaded")
+                        : QStringLiteral("Project loaded from disk; use Save & Sync to synchronize RTL"));
         }
         return;
     }
@@ -1548,7 +1599,7 @@ void ProjectController::generateNow()
     synchronizeRtl(false, true);
 }
 
-void ProjectController::generateImpl(bool automatic)
+void ProjectController::generateImpl(bool automatic, bool writeOutputs)
 {
     const PhaseTimer phaseTimer(this, "phaseSyncGenerateMs");
     if (!manifest_ || !store_.workspace() || hasProjectErrors()) {
@@ -1565,7 +1616,7 @@ void ProjectController::generateImpl(bool automatic)
     artifacts_ = std::move(generation.artifacts);
     ++artifactsRevision_;
     generationDiagnostics_ = std::move(generation.diagnostics);
-    if (!containsErrors(generationDiagnostics_)) {
+    if (writeOutputs && !containsErrors(generationDiagnostics_)) {
         appendDiagnostics(
             generationDiagnostics_, regmap::writeGeneratedArtifacts(artifacts_));
     }

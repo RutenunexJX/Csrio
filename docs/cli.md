@@ -30,6 +30,7 @@ These commands are copyable without modifying `PATH`:
 | --- | --- | --- |
 | `help [command]` | Read focused usage and typed arguments without opening a project | No |
 | `version` | Read CLI and JSON API versions without opening a project | No |
+| `gui <project> --session PID [--expect REV] [--adopt] [--select ID]` | Query one open window; explicitly adopt its saved revision and select an object | No project/output writes |
 | `schema` | Discover commands, writable properties, patch shape, and exit codes | No |
 | `init <project> [options]` | Create an empty Workbench project and its read-only outputs | Yes |
 | `summary <project>` | Read project identity, counts, register tags, generation targets, and revision | No |
@@ -49,6 +50,99 @@ These commands are copyable without modifying `PATH`:
 for a caller that has already serialized access to the project. It cannot be combined with
 `--expect` or a patch `expected_revision`; `regmapc` still rejects a concurrent disk change that
 occurs during the command.
+
+## Adopt a CLI change in an already-open window
+
+`gui` targets exactly one Csrio process and one project that is already open in that
+process. It never selects an arbitrary window, launches another window, opens a
+different project, commits an active editor, or discards local edits. The command is
+available in builds with SuiteApp SDK support (`schema.result.gui_session_contract.available`).
+Its per-process local transport uses the installed SDK; a running Suite Runtime is
+not required. Offline commands work in builds without the SDK.
+
+From the portable package directory, launch an isolated example window and retain
+its process ID. For an existing window, supply its known process ID instead:
+
+```powershell
+$project = (Resolve-Path .\device.regmap.yaml).Path
+$window = Start-Process .\Csrio.exe -PassThru -ArgumentList @(
+    '--no-suite-runtime', '--profile-dir', '".\example-profile"', '--project', ('"' + $project + '"'))
+$session = [string]$window.Id
+.\regmapc.exe --json gui $project --session $session
+```
+
+`--profile-dir` is an optional GUI startup option for isolated INI preferences and
+recent projects. It resolves relative to the launching process's working directory;
+normal launches keep the existing preference identity. `--no-suite-runtime` skips
+optional shared Runtime registration while keeping the per-process CLI session
+available. This makes an example independent of other running suite sessions. The project and its recovery
+files remain project-local, so use an isolated project as well for experiments.
+
+After `apply` saves a revision, inspect the session, then request adoption and
+navigation with that exact revision:
+
+```powershell
+$saved = .\regmapc.exe --json apply $project .\patch.json --expect $previousRevision | ConvertFrom-Json
+if (!$saved.ok) { throw $saved.error }
+.\regmapc.exe --json gui $project --session $session
+.\regmapc.exe --json gui $project --session $session --expect $saved.revision --adopt --select block-ch1
+.\regmapc.exe --json gui $project --session $session --expect $saved.revision --select block-ch1--reg-control
+```
+
+Use distinct evidence for each step:
+
+- `apply` reports the saved disk revision. It does not claim that a window adopted it.
+- `gui.result.disk_revision` hashes the current manifest, while `adopted_revision`
+  identifies the snapshot accepted by the window's controller. `model_revision` is
+  its in-memory edit counter; `dirty` indicates divergence from the accepted snapshot.
+- `pending` means the manifest differs from the accepted snapshot. `status` is
+  `ready`, `pending`, or `conflict`. Dirty edits, active editors, modal dialogs,
+  `synchronization_conflict`, and `recovery_pending` are queryable without changing them.
+- `adopted: true` means this request replaced the in-memory snapshot. A repeat
+  request for the same revision returns `adopted: false`; equality of
+  `adopted_revision` and the required revision proves the window already has it.
+- `located: true` confirms that the actual view selected `selected_id`. `object`
+  contains properties read from that selected object in the window's model.
+
+`--adopt` and `--select` require `--expect sha256:<64 lowercase hex digits>`.
+Navigation without adoption rejects a different accepted revision. An unknown
+stable ID is rejected before adoption, so it does not replace the model. Adoption
+does not write project files: it preserves the RTL merge base for the next explicit GUI Save & Sync
+and does not run the ordinary reload path's RTL merge/save operation. Generated
+artifact previews and their current-file checks refresh in memory. `writes_performed`
+uses `write_scope: "project_and_outputs"`; normal GUI navigation preferences may be
+updated in the selected profile. A disk change
+during adoption/navigation returns a conflict; inspect `adopted_revision`, `adopted`
+and `located` because an earlier snapshot may already have been accepted.
+
+Exit `3` covers stale revisions, dirty edits, active editors, and pending recovery or
+synchronization conflicts. Their stable reason is `result.error_code`. Exit `1`
+covers a wrong project, invalid saved project, unknown ID, or failed view navigation;
+`2` covers invalid arguments; `7` covers unavailable session/transport/SDK support.
+The existing outer JSON envelope and numeric exit codes remain unchanged. Transport
+requests are bounded to ten seconds. A timed-out request can have reached the GUI;
+query the session before retrying. No request silently forces adoption.
+
+The existing Suite action `regmap.project.open` also accepts `arguments.expected_revision`
+and `arguments.adopt` for the same guarded transition. Callers must target the intended
+provider endpoint when several windows exist. Legacy action/surface opens encountering
+a pending same-project revision return a revision conflict with session details.
+
+A complete executable example is installed at
+[`examples/cli-same-session.ps1`](examples/cli-same-session.ps1). It creates a register
+table, opens it in one isolated window, copies Channel 0 to Channel 1, changes a Field
+position and Enum name, validates, adopts and selects the new Block/Register, and
+generates/checks XLSX, C header and Markdown outputs. It also verifies dry-run and
+predictable stale-revision rejection. It needs only the package and PowerShell;
+no platform/hash environment variables or source checkout are required:
+
+```powershell
+.\docs\examples\cli-same-session.ps1 -OutputDirectory '.\CLI example'
+```
+
+The example leaves its own window open for inspection. `-CloseWindow` requests a
+normal close of that process only. Every CLI response is saved as UTF-8 JSON Lines
+in the example directory. Use a new output directory on each run.
 
 ## Initialize a project
 
@@ -437,7 +531,7 @@ use it when present. `list`, `find`, and `diff` use it for deterministic paginat
 `exit_code` and `exit_status` are present in every JSON response, including help, version,
 unknown-command, project-load, revision-conflict, and write-failure responses. Their stable
 mapping is `0=success`, `1=project_error`, `2=usage_error`, `3=revision_conflict`,
-`4=write_error`, `5=outputs_out_of_date`, `6=differences_found`, `7=input_error`, and
+`4=write_error`, `5=outputs_out_of_date`, `6=differences_found`, `7=input_error` (including unavailable GUI transport), and
 `8=generation_error`. A nonzero response also contains `error_code`. It is
 the first error diagnostic code when one exists; otherwise it is the category code `RMC1000`,
 `RMC2000`, `RMC3000`, `RMC4000`, `RMC5000`, `RMC6000`, `RMC7000`, or `RMC8000`. `error` remains the human-readable explanation,
@@ -467,7 +561,7 @@ Exit codes are stable:
 | 4 | Project or output filesystem write failure |
 | 5 | Outputs are not current under `status --require-current` |
 | 6 | Differences exist under `diff --require-equal` |
-| 7 | Patch input cannot be read or parsed as the required JSON document |
+| 7 | Patch input cannot be read/parsed, or a requested GUI session/transport is unavailable |
 | 8 | A configured artifact cannot be generated in memory |
 
 Pass `-` instead of a patch path to read one JSON document from standard input. This avoids a

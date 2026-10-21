@@ -59,6 +59,17 @@ StartupOptions parseStartupOptions(
             optionsTerminated = true;
             continue;
         }
+        if (!optionsTerminated && token == QStringLiteral("--no-suite-runtime")) {
+            result.startSuiteRuntime = false;
+            continue;
+        }
+        if (!optionsTerminated && token == QStringLiteral("--profile-dir")) {
+            if (++index >= arguments.size() || arguments.at(index).isEmpty() ||
+                arguments.at(index).startsWith(QLatin1Char('-')) || !result.profileDirectory.isEmpty())
+                return startupError(QStringLiteral("--profile-dir requires one non-empty directory."));
+            result.profileDirectory = arguments.at(index);
+            continue;
+        }
         if (!optionsTerminated &&
             (token ==
                  QStringLiteral(
@@ -206,6 +217,8 @@ QString startupUsage()
         "  Csrio --project <project.regmap.yaml> [--select <stable-id>]\n"
         "\n"
         "Options:\n"
+        "      --profile-dir <dir> Use isolated INI preferences in this directory.\n"
+        "      --no-suite-runtime Skip shared Runtime registration; local gui CLI remains available.\n"
         "  -p, --project <path>  Open one register-map project.\n"
         "      --select <id>      Locate one stable object ID after opening.\n"
         "  -h, --help            Show this help without opening a window.\n"

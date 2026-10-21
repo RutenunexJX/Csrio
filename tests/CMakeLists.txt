@@ -183,6 +183,24 @@ if(TARGET RegMap::WorkbenchUi)
     )
     regmap_enable_warnings(regmap_ui_snapshot)
 
+    if(SuiteApp_FOUND AND TARGET regmapc)
+        qt_add_executable(regmap_cli_session_tests cli_session_tests.cpp)
+        set_target_properties(regmap_cli_session_tests PROPERTIES AUTOMOC ON)
+        target_link_libraries(regmap_cli_session_tests PRIVATE RegMap::WorkbenchUi SuiteApp::suiteapp Qt6::Test)
+        target_compile_definitions(regmap_cli_session_tests PRIVATE
+            REGMAP_CLI_EXECUTABLE="$<TARGET_FILE:regmapc>"
+            REGMAP_GUI_EXECUTABLE="$<TARGET_FILE:regmap_workbench>")
+        add_dependencies(regmap_cli_session_tests regmapc regmap_workbench)
+        regmap_enable_warnings(regmap_cli_session_tests)
+        if(REGMAP_ENABLE_ELA)
+            add_custom_command(TARGET regmap_cli_session_tests POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:ElaWidgetTools> $<TARGET_FILE_DIR:regmap_cli_session_tests>)
+        endif()
+        add_test(NAME regmap_cli_session_tests COMMAND regmap_cli_session_tests
+            -o "${CMAKE_CURRENT_BINARY_DIR}/regmap_cli_session_tests.log,txt")
+        set_tests_properties(regmap_cli_session_tests PROPERTIES TIMEOUT 90
+            ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+    endif()
     if(SuiteApp_FOUND)
         qt_add_executable(
             regmap_suiteapp_integration_test

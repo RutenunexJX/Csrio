@@ -15,6 +15,8 @@ enum class StartupAction {
 struct StartupOptions {
     StartupAction action{
         StartupAction::launch};
+    bool startSuiteRuntime{true};
+    QString profileDirectory;
     QString projectPath;
     QString selectedObjectId;
     QString error;

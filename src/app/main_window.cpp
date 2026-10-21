@@ -9701,6 +9701,122 @@ bool MainWindow::openProjectForSuite(const QString& path,
     return true;
 }
 
+QJsonObject MainWindow::guiSession(const QJsonObject& parameters)
+{
+    const QString path = parameters.value(QStringLiteral("project")).toString();
+    const QString expected = parameters.value(QStringLiteral("expect")).toString();
+    const QString requestedId = parameters.value(QStringLiteral("select")).toString();
+    const bool adopt = parameters.value(QStringLiteral("adopt")).toBool();
+    bool adopted = false;
+    bool located = false;
+    const auto activeEditor = [this] {
+        // Check visible delegates as well as focus: an inactive OS window may
+        // still own an uncommitted cell editor.
+        for (const auto* view : {static_cast<QAbstractItemView*>(hierarchyView_),
+                 static_cast<QAbstractItemView*>(registerView_),
+                 static_cast<QAbstractItemView*>(fieldView_),
+                 static_cast<QAbstractItemView*>(enumView_)}) {
+            for (const auto* editor : view->viewport()->findChildren<QWidget*>())
+                if (editor->isVisibleTo(this) &&
+                    (qobject_cast<const QLineEdit*>(editor) || qobject_cast<const QComboBox*>(editor)))
+                    return true;
+        }
+        for (const auto* edit : {pageBaseEdit_, pageWidthEdit_, pageDescriptionEdit_,
+                                blockBaseEdit_, blockSizeEdit_, blockDescriptionEdit_})
+            if (edit && edit->isModified()) return true;
+        return false;
+    };
+    const auto selectedObjectId = [this] {
+        const QAbstractItemView* view = lastCommandView_ == enumView_ ? enumView_
+            : lastCommandView_ == fieldView_ ? fieldView_
+            : lastCommandView_ == registerView_ ? registerView_
+            : static_cast<QAbstractItemView*>(hierarchyView_);
+        return view->currentIndex().data(objectIdRole).toString();
+    };
+    const auto state = [&](const QString& code = {}, const QString& message = {}) {
+        const QString disk = controller_.diskRevision();
+        const QString accepted = controller_.adoptedRevision();
+        const bool pending = disk != accepted;
+        const bool editing = activeEditor();
+        const bool modal = QApplication::activeModalWidget() != nullptr;
+        const bool synchronizationConflict = controller_.hasConflicts() || controller_.requiresInitialSyncChoice();
+        const bool recovery = controller_.recoveryDraftAvailable();
+        const QString selectedId = selectedObjectId();
+        QJsonObject result{
+            {QStringLiteral("ok"), code.isEmpty()},
+            {QStringLiteral("session"), QString::number(QCoreApplication::applicationPid())},
+            {QStringLiteral("project"), fromPath(controller_.manifestPath())},
+            {QStringLiteral("disk_revision"), disk},
+            {QStringLiteral("adopted_revision"), accepted},
+            {QStringLiteral("model_revision"), static_cast<qint64>(controller_.modelRevision())},
+            {QStringLiteral("dirty"), controller_.isDirty()},
+            {QStringLiteral("active_editor"), editing},
+            {QStringLiteral("modal"), modal},
+            {QStringLiteral("synchronization_conflict"), synchronizationConflict},
+            {QStringLiteral("recovery_pending"), recovery},
+            {QStringLiteral("pending"), pending},
+            {QStringLiteral("status"), !code.isEmpty() || controller_.isDirty() || editing || modal || synchronizationConflict || recovery ? QStringLiteral("conflict")
+                : pending ? QStringLiteral("pending") : QStringLiteral("ready")},
+            {QStringLiteral("adopted"), adopted},
+            {QStringLiteral("located"), located},
+            {QStringLiteral("requested_id"), requestedId},
+            {QStringLiteral("selected_id"), selectedId},
+            {QStringLiteral("writes_performed"), false},
+            {QStringLiteral("write_scope"), QStringLiteral("project_and_outputs")}};
+        if (const auto* workspace = controller_.workspace()) {
+            const auto objects = regmap::ui::inspectWorkspace(*workspace);
+            const auto object = objects.constFind(selectedId);
+            if (object != objects.cend())
+                result.insert(QStringLiteral("object"), QJsonObject{
+                    {QStringLiteral("id"), object->id}, {QStringLiteral("kind"), object->kind},
+                    {QStringLiteral("path"), object->path}, {QStringLiteral("properties"), object->properties}});
+        }
+        if (!code.isEmpty()) {
+            result.insert(QStringLiteral("error_code"), code);
+            result.insert(QStringLiteral("error"), message);
+        }
+        return result;
+    };
+    for (auto it = parameters.begin(); it != parameters.end(); ++it) {
+        if ((it.key() == QStringLiteral("adopt") && it.value().isBool()) ||
+            ((it.key() == QStringLiteral("project") || it.key() == QStringLiteral("expect") ||
+              it.key() == QStringLiteral("select")) && it.value().isString())) continue;
+        return state(QStringLiteral("invalid_request"), QStringLiteral("Unknown or incorrectly typed session parameter."));
+    }
+    if (path.isEmpty() || currentWorkspaceForSuite(path) == nullptr)
+        return state(QStringLiteral("project_mismatch"), QStringLiteral("This session does not have the requested project open."));
+    if ((adopt || !requestedId.isEmpty()) && expected.isEmpty())
+        return state(QStringLiteral("invalid_request"), QStringLiteral("Adoption and navigation require an expected revision."));
+    if (!expected.isEmpty() && controller_.diskRevision() != expected)
+        return state(QStringLiteral("revision_conflict"), QStringLiteral("The disk revision does not match the expected revision."));
+    if (adopt || !requestedId.isEmpty()) {
+        if (activeEditor() || QApplication::activeModalWidget())
+            return state(QStringLiteral("active_editor"), QStringLiteral("Finish the active editor or dialog before changing the session."));
+        if (controller_.isDirty())
+            return state(QStringLiteral("dirty"), QStringLiteral("Save or resolve local Workbench edits before changing the session."));
+        if (adopt) {
+            QString reason;
+            const QString before = controller_.adoptedRevision();
+            const QString code = controller_.adoptDiskRevision(expected, requestedId, &reason);
+            if (!code.isEmpty()) return state(code, reason);
+            adopted = before != controller_.adoptedRevision();
+        }
+    }
+    if (!expected.isEmpty() && (controller_.adoptedRevision() != expected || controller_.diskRevision() != expected))
+        return state(QStringLiteral("revision_conflict"), QStringLiteral("The window has not adopted the requested revision. Use --adopt after reviewing pending state."));
+    if (!requestedId.isEmpty()) {
+        if (!navigateToObject(requestedId.toUtf8().toStdString(), true))
+            return state(QStringLiteral("object_not_found"), QStringLiteral("The stable ID could not be selected in the adopted model."));
+        located = selectedObjectId() == requestedId;
+        if (!located)
+            return state(QStringLiteral("navigation_failed"), QStringLiteral("The object exists but the current view did not select it."));
+    }
+    const QJsonObject finalState = state();
+    if (!expected.isEmpty() && finalState.value(QStringLiteral("disk_revision")).toString() != expected)
+        return state(QStringLiteral("revision_conflict"), QStringLiteral("The disk changed during navigation; inspect the adopted revision and retry explicitly."));
+    return finalState;
+}
+
 const regmap::Workspace* MainWindow::currentWorkspaceForSuite(
     const QString& projectPath) const
 {
