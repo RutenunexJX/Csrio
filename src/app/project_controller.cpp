@@ -979,6 +979,21 @@ QString ProjectController::adoptDiskRevision(const QString& expectedRevision,
         return fail("pending_conflict", QStringLiteral("Resolve synchronization conflicts or recovery drafts in Workbench first."));
     if (expectedRevision.isEmpty() || diskRevision() != expectedRevision)
         return fail("revision_conflict", QStringLiteral("The disk revision does not match the expected revision."));
+    // A clean saved model and its diagnostics already describe these exact bytes.
+    // Keep both digest checks: the file may change while the stable ID is located.
+    if (const auto* current = store_.workspace(); current && manifest_ &&
+        adoptedRevision() == expectedRevision && !containsErrors(loadDiagnostics_) &&
+        !containsErrors(store_.diagnostics())) {
+        const std::string id = selectedId.toStdString();
+        if (!id.empty() && current->id != id &&
+            !regmap::findAddressSpace(*current, id) && !regmap::findRegisterBlock(*current, id) &&
+            !regmap::findRegister(*current, id) && !regmap::findField(*current, id) &&
+            !regmap::findEnumValue(*current, id))
+            return fail("object_not_found", QStringLiteral("The stable ID does not exist in the requested disk revision."));
+        if (diskRevision() != expectedRevision)
+            return fail("revision_conflict", QStringLiteral("The project changed while its snapshot was loading."));
+        return {};
+    }
     auto loaded = regmap::loadProjectSnapshot(manifestPath_);
     if (!loaded.manifest() || !loaded.workspace() || containsErrors(loaded.loadDiagnostics()) ||
         containsErrors(regmap::validateWorkspace(*loaded.workspace())))

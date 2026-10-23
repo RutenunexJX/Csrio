@@ -2,6 +2,7 @@
 #include "ui_snapshot.cpp"
 #undef main
 
+#include "workspace_inspection.hpp"
 #include <QAction>
 #include <QComboBox>
 #include <QClipboard>
@@ -114,7 +115,7 @@ int main(int argc, char** argv)
     bool countValid = true;
     const int registerCount = app.arguments().size() > 3 ? app.arguments().at(3).toInt(&countValid) : 1000;
     if (!countValid || registerCount < 7 || registerCount > 10000 ||
-        !QStringList{"all", "panel", "search", "search-exact", "edit", "paste", "open"}.contains(scenario)) return 2;
+        !QStringList{"all", "panel", "search", "search-exact", "edit", "paste", "open", "session"}.contains(scenario)) return 2;
     QCoreApplication::setOrganizationName("RegMapPerformance");
     QCoreApplication::setApplicationName("RegMapPerformance");
     QTemporaryDir profile, project;
@@ -221,6 +222,35 @@ int main(int argc, char** argv)
             result.insert("dpr", window.devicePixelRatioF()); result.insert("registers", registerCount);
             runs.append(result);
             search->clear();
+        }
+        if (scenario == "session") {
+            const QString id = QStringLiteral("perf-%1").arg(registerCount - 1);
+            const QJsonObject query{{"project", path}};
+            const QJsonObject adopt{{"project", path}, {"expect", controller->diskRevision()},
+                                    {"adopt", true}, {"select", id}};
+            const auto selected = window.guiSession(adopt);
+            if (!selected.value("ok").toBool() || selected.value("selected_id").toString() != id) return 18;
+            drainDerivedEvents(&window);
+            const auto record = [&](QJsonObject result, const char* name) {
+                result.insert("scenario", name);
+                result.insert("width", size.width()); result.insert("height", size.height());
+                result.insert("registers", registerCount);
+                runs.append(result);
+            };
+            record(measure(events, [&](int) {
+                const auto objects = regmap::ui::inspectWorkspace(*controller->workspace());
+                if (!objects.contains(id)) qFatal("Inspection lost selected ID");
+            }), "inspect-workspace");
+            record(measure(events, [&](int) {
+                const auto result = window.guiSession(query);
+                if (!result.value("ok").toBool() || result.value("selected_id").toString() != id)
+                    qFatal("Session query lost selected ID");
+            }), "gui-session-query");
+            record(measure(events, [&](int) {
+                const auto result = window.guiSession(adopt);
+                if (!result.value("ok").toBool() || result.value("adopted").toBool() ||
+                    result.value("selected_id").toString() != id) qFatal("Idempotent adoption changed state");
+            }), "gui-session-adopt-unchanged");
         }
         if (scenario == "paste") {
             auto* paste = window.findChild<QAction*>("pasteSelectionAction");

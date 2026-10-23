@@ -2,6 +2,7 @@
 #include "project_controller.hpp"
 #include "suite_integration.hpp"
 #include "workbench_theme.hpp"
+#include "regmap/core/serialization.hpp"
 #include <suiteapp/transport.h>
 #include <QApplication>
 #include <QCryptographicHash>
@@ -192,6 +193,82 @@ private slots:
         QVERIFY(gui(project,session,{"--expect",after,"--adopt","--select","reg-control"}).value("ok").toBool());
         QVERIFY(window.close());
         for (auto it=files.begin();it!=files.end();++it) QFile::setPermissions(it.key(),QFileDevice::ReadOwner|QFileDevice::WriteOwner);
+    }
+    void unchangedAdoptionPreservesHistoryAndValidatesIdentity() {
+        QTemporaryDir directory;
+        const QString project = directory.filePath(QStringLiteral("adoption.regmap.yaml"));
+        QVERIFY(invoke({"init",project,"--no-generate","--workspace-id","workspace-main"}).value("ok").toBool());
+        const QString patch = writePatch(directory.path(),hierarchy());
+        QVERIFY(invoke({"apply",project,patch,"--expect",revision(project)}).value("ok").toBool());
+        ProjectController controller;
+        QVERIFY(controller.openProject(project));
+        QVERIFY(controller.editWorkspace("Nested identity fixture", [](regmap::Workspace& workspace) {
+            auto& blocks = workspace.addressSpaces.front().blocks;
+            auto& field = blocks.front().registers.front().fields.front();
+            auto member = field;
+            regmap::Field container;
+            container.id = "field-container"; container.name = "GROUP";
+            container.type = regmap::FieldType::structure;
+            container.msb = member.msb; container.lsb = member.lsb;
+            container.members.push_back(std::move(member));
+            field = std::move(container);
+            auto& reg = blocks.back().registers.front();
+            reg.type = regmap::FieldType::enumeration; reg.fields.clear();
+            reg.initialValue = regmap::UnsignedValue{1};
+            regmap::EnumValue value;
+            value.id = "enum-register"; value.name = "ON"; value.value = regmap::UnsignedValue{1};
+            reg.enumValues = {value};
+        }));
+        QStringList diagnostics;
+        for (const auto& diagnostic : controller.diagnostics())
+            diagnostics.append(QString::fromStdString(diagnostic.code + ": " + diagnostic.message));
+        QVERIFY2(!controller.hasProjectErrors(), qPrintable(diagnostics.join("\n")));
+        controller.save();
+        QVERIFY(!controller.isDirty());
+        const QString expected = controller.diskRevision();
+        const auto files = diskFiles(directory.path());
+        const auto modelRevision = controller.modelRevision();
+        for (const auto& id : QStringList{"", "workspace-main", "page-main", "block-ch0", "reg-control",
+                 "field-container", "field-mode", "enum-on", "enum-register"}) {
+            QString reason;
+            QCOMPARE(controller.adoptDiskRevision(expected,id,&reason),QString{});
+            QCOMPARE(controller.modelRevision(),modelRevision);
+        }
+        QCOMPARE(controller.adoptDiskRevision(expected,"missing-id"),QStringLiteral("object_not_found"));
+        QCOMPARE(controller.adoptDiskRevision("sha256:wrong","reg-control"),QStringLiteral("revision_conflict"));
+        QCOMPARE(diskFiles(directory.path()),files);
+        QVERIFY(controller.editWorkspace("Temporary edit", [](regmap::Workspace& workspace) {
+            workspace.name = "Temporarily edited";
+        }));
+        QCOMPARE(controller.adoptDiskRevision(expected,{}),QStringLiteral("dirty"));
+        controller.undo();
+        QVERIFY(!controller.isDirty()); QVERIFY(controller.canRedo());
+        const auto restoredRevision = controller.modelRevision();
+        QCOMPARE(controller.adoptDiskRevision(expected,"enum-on"),QString{});
+        QCOMPARE(controller.modelRevision(),restoredRevision);
+        QVERIFY(controller.canRedo());
+        controller.redo();
+        QCOMPARE(controller.workspace()->name,std::string("Temporarily edited"));
+        controller.undo();
+        QCOMPARE(diskFiles(directory.path()),files);
+
+        const auto beforeInvalidRevision = controller.modelRevision();
+        auto invalid = *controller.workspace();
+        invalid.addressSpaces.front().blocks.front().registers.front().width = 0;
+        const auto encoded = regmap::serializeProjectText(*controller.manifest(),invalid);
+        QVERIFY(encoded.text.has_value());
+        { QFile file(project); QVERIFY(file.open(QIODevice::WriteOnly));
+          QCOMPARE(file.write(QByteArray::fromStdString(*encoded.text)),qint64(encoded.text->size())); }
+        const QString invalidRevision = controller.diskRevision();
+        QCOMPARE(controller.adoptDiskRevision(expected,{}),QStringLiteral("revision_conflict"));
+        QCOMPARE(controller.adoptDiskRevision(invalidRevision,{}),QStringLiteral("invalid_project"));
+        QCOMPARE(controller.modelRevision(),beforeInvalidRevision);
+        QVERIFY(controller.openProject(project));
+        QVERIFY(!controller.isDirty()); QVERIFY(controller.hasProjectErrors());
+        QCOMPARE(controller.adoptedRevision(),controller.diskRevision());
+        const auto invalidModelRevision = controller.modelRevision();
+        QCOMPARE(controller.adoptDiskRevision(controller.diskRevision(),{}),QStringLiteral("invalid_project"));
+        QCOMPARE(controller.modelRevision(),invalidModelRevision);
     }
     void actualExecutableTargetsOneSession() {
         QTemporaryDir directory;

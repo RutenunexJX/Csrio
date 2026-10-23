@@ -6937,16 +6937,22 @@ void GuiSmokeTests::decidesExternalChangesAtomicallyAndInvalidatesDigest()
     const QJsonObject missingRegister =
         resolveDeepLink(QStringLiteral("reg-control"));
     QVERIFY(!missingRegister.value(QStringLiteral("ok")).toBool());
-    QVERIFY(QJsonDocument(missingRegister)
-                .toJson(QJsonDocument::Compact)
-                .contains("reg-control"));
+    QCOMPARE(missingRegister.value(QStringLiteral("error")).toObject()
+                 .value(QStringLiteral("code")).toString(),
+             QStringLiteral("revision_conflict"));
+    QVERIFY(missingRegister.value(QStringLiteral("error")).toObject()
+                .value(QStringLiteral("details")).toObject()
+                .value(QStringLiteral("pending")).toBool());
     const QJsonObject missingField =
         resolveDeepLink(QStringLiteral("reg-status"),
                         QStringLiteral("field-ready"));
     QVERIFY(!missingField.value(QStringLiteral("ok")).toBool());
-    QVERIFY(QJsonDocument(missingField)
-                .toJson(QJsonDocument::Compact)
-                .contains("field-ready"));
+    QCOMPARE(missingField.value(QStringLiteral("error")).toObject()
+                 .value(QStringLiteral("code")).toString(),
+             QStringLiteral("revision_conflict"));
+    QVERIFY(missingField.value(QStringLiteral("error")).toObject()
+                .value(QStringLiteral("details")).toObject()
+                .value(QStringLiteral("pending")).toBool());
 #endif
 
     QTRY_VERIFY_WITH_TIMEOUT(

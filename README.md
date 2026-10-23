@@ -1,6 +1,8 @@
 # Csrio
 
-Current version: `0.4.6`.
+Current version: `0.4.7`.
+
+Release 0.4.7 reuses the validated model when adopting the same saved revision, preserving revision checks, stable identities and undo/redo history.
 
 Release 0.4.5 enables SuiteApp SDK 1.0.1. Suite actions preserve unsaved models and undo history, reject unsafe project switches, and return the model after committing the active editor.
 
