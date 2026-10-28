@@ -1,0 +1,16 @@
+diff --git a/QXlsx/source/xlsxworksheet.cpp b/QXlsx/source/xlsxworksheet.cpp
+--- a/QXlsx/source/xlsxworksheet.cpp
++++ b/QXlsx/source/xlsxworksheet.cpp
+@@ -1106,8 +1106,11 @@ bool Worksheet::writeHyperlink(int row,
+     d->cellTable.setValue(row, column, cell);
+ 
+     // Store the hyperlink data in a separate table
++    const auto linkType = urlString.isEmpty() && !locationString.isEmpty()
++        ? XlsxHyperlinkData::Internal
++        : XlsxHyperlinkData::External;
+     d->urlTable[row][column] = std::make_shared<XlsxHyperlinkData>(
+-        XlsxHyperlinkData::External, urlString, locationString, QString{}, tip);
++        linkType, urlString, locationString, QString{}, tip);
+ 
+     return true;
+ }

@@ -358,8 +358,8 @@ void CliEnhancementsTests::referencesOnlyConsecutiveIdenticalEnums()
         QMap<QString,int> rows;for(int row=1;row<=book.dimension().lastRow();++row) { const auto name=book.read(row,3).toString();if(name.startsWith('F')) rows.insert(name,row); }
         if(!rows.contains("F0")) continue;
         QVERIFY(book.read(rows["F0"],10).toString().contains("OFF=0x0"));
-        QVERIFY(book.read(rows["F1"],10).toString().contains(QStringLiteral("See J%1").arg(rows["F0"])));
-        QVERIFY(!book.read(rows["F3"],10).toString().startsWith("See"));QVERIFY(!book.read(rows["F5"],10).toString().startsWith("See"));checked=true;
+        QCOMPARE(book.read(rows["F1"],10).toString(), QStringLiteral("枚举定义同 F0"));
+        QVERIFY(!book.read(rows["F3"],10).toString().startsWith(QStringLiteral("枚举定义同")));QVERIFY(!book.read(rows["F5"],10).toString().startsWith(QStringLiteral("枚举定义同")));checked=true;
     }
     QVERIFY(checked);QCOMPARE(call({"status",f.path,"--require-current"}).code,0);
     QCOMPARE(f.apply({}, {"--enum-tables","full"}).code,0);QCOMPARE(read(f.markdown),full);
@@ -425,7 +425,7 @@ void CliEnhancementsTests::preservesWorkbookOrderAndRejectsInvalidOutputOptions(
     QCOMPARE(f.apply({}, {"--enum-tables","consecutive","--target","xlsx"}).code,0);
     QXlsx::Document compact(f.xlsx);QVERIFY(compact.selectSheet(page));QCOMPARE(compact.read(firstField,3).toString(),"F5");
     QMap<QString,int> rows;for(int row=1;row<=compact.dimension().lastRow();++row) rows.insert(compact.read(row,3).toString(),row);
-    QVERIFY(compact.read(rows["F1"],10).toString().contains(QStringLiteral("See J%1").arg(rows["F2"])));
+    QCOMPARE(compact.read(rows["F1"],10).toString(), QStringLiteral("枚举定义同 F2"));
     project=openProject(std::filesystem::path(f.path.toStdWString()));project.manifest->targets[0].options["enum_tables"]="unknown";
     QVERIFY(saveProjectFile(*project.manifest,*project.workspace).empty());const auto before=read(f.xlsx);
     const auto failed=call({"generate",f.path,"--target","xlsx","--stats"});QCOMPARE(failed.code,1);QCOMPARE(read(f.xlsx),before);

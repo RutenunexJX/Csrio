@@ -57,8 +57,26 @@ FetchContent_Declare(
         "-DSOURCE_DIR=<SOURCE_DIR>"
         "-DPATCH_FILE=${CMAKE_CURRENT_LIST_DIR}/patches/qxlsx-deterministic-properties.patch"
         -P "${CMAKE_CURRENT_LIST_DIR}/ApplyPatch.cmake"
+        COMMAND
+        "${CMAKE_COMMAND}"
+        "-DGIT_EXECUTABLE=${GIT_EXECUTABLE}"
+        "-DSOURCE_DIR=<SOURCE_DIR>"
+        "-DPATCH_FILE=${CMAKE_CURRENT_LIST_DIR}/patches/qxlsx-internal-hyperlinks.patch"
+        -P "${CMAKE_CURRENT_LIST_DIR}/ApplyPatch.cmake"
 )
 FetchContent_MakeAvailable(QXlsx)
+
+# A source override skips FetchContent's patch step.
+if(FETCHCONTENT_SOURCE_DIR_QXLSX)
+    execute_process(
+        COMMAND "${CMAKE_COMMAND}"
+            "-DGIT_EXECUTABLE=${GIT_EXECUTABLE}"
+            "-DSOURCE_DIR=${FETCHCONTENT_SOURCE_DIR_QXLSX}"
+            "-DPATCH_FILE=${CMAKE_CURRENT_LIST_DIR}/patches/qxlsx-internal-hyperlinks.patch"
+            -P "${CMAKE_CURRENT_LIST_DIR}/ApplyPatch.cmake"
+        COMMAND_ERROR_IS_FATAL ANY
+    )
+endif()
 
 if(TARGET QXlsx::QXlsx)
     set(REGMAP_XLSX_TARGET QXlsx::QXlsx)

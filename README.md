@@ -1,6 +1,10 @@
 # Csrio
 
-Current version: `0.4.8`.
+Current version: `0.4.9`.
+
+Release 0.4.9 uses readable field names and internal workbook hyperlinks for consecutive
+enum references in XLSX. Ambiguous field names include the register name. Source enum
+definitions, CLI JSON, and C headers remain complete.
 
 Release 0.4.8 adds CLI property projection, atomic selector batches, scoped consistency rules,
 deferred and selective generation, document ordering, and operation statistics. Consecutive

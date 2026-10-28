@@ -1330,8 +1330,10 @@ names, numeric values and descriptions share a displayed definition. Enum IDs ma
 declaration order does not matter. A gap, another field, a different definition or a parent boundary
 starts a new group. Each field retains its name, bits, access, description and full model enum values.
 Markdown expands the first table and links later fields to its stable anchor. XLSX expands the
-first Range cell and identifies its cell/field ID in later references. C headers and CLI JSON enum
-objects remain complete. Defaults preserve full expansion and existing document ordering.
+first Range cell; later cells display `枚举定义同 <first field name>` and contain an internal
+hyperlink to that cell. If the name is repeated within the same worksheet, the label uses
+`<register name>.<field name>`. Coordinates are only hyperlink targets; stable IDs are not shown.
+CLI and GUI exports share this rule. C headers and CLI JSON enum objects remain complete. Defaults preserve full expansion and existing document ordering.
 
 ## Optional execution statistics
 

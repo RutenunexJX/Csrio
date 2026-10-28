@@ -329,3 +329,22 @@ if(TARGET RegMap::Cli)
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
         ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 endif()
+
+if(TARGET RegMap::WorkbenchUi AND TARGET regmapc)
+    qt_add_executable(regmap_xlsx_enum_links_tests xlsx_enum_links_tests.cpp test_profile.cpp)
+    set_target_properties(regmap_xlsx_enum_links_tests PROPERTIES AUTOMOC ON)
+    target_link_libraries(regmap_xlsx_enum_links_tests PRIVATE RegMap::WorkbenchUi Qt6::Test ${REGMAP_XLSX_TARGET})
+    target_compile_definitions(regmap_xlsx_enum_links_tests PRIVATE REGMAP_CLI_EXECUTABLE="$<TARGET_FILE:regmapc>")
+    add_dependencies(regmap_xlsx_enum_links_tests regmapc)
+    regmap_enable_warnings(regmap_xlsx_enum_links_tests)
+    add_test(NAME regmap_xlsx_enum_links_tests COMMAND regmap_xlsx_enum_links_tests
+        -o "${CMAKE_CURRENT_BINARY_DIR}/xlsx_enum_links.log,txt")
+    set_tests_properties(regmap_xlsx_enum_links_tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+    if(WIN32 AND TARGET ElaWidgetTools)
+        add_custom_command(TARGET regmap_xlsx_enum_links_tests POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:ElaWidgetTools> $<TARGET_FILE_DIR:regmap_xlsx_enum_links_tests>)
+    endif()
+endif()

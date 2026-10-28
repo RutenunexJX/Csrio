@@ -19,11 +19,13 @@
 #include <QString>
 #include <QStringList>
 #include <QVariant>
+#include <QUrl>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -1046,22 +1048,39 @@ void writePageMetadata(QXlsx::Document& document, const AddressSpace& space,
     document.setRowHeight(3, 9.0);
 }
 
-void writeFieldRows(QXlsx::Document& document, int& row, const std::vector<Field>& fields,
+using FieldNameCounts = std::map<std::string, std::size_t, std::less<>>;
+
+void countFieldNames(const std::vector<Field>& fields, FieldNameCounts& counts)
+{
+    for (const auto& field : fields) {
+        ++counts[field.name];
+        countFieldNames(field.members, counts);
+    }
+}
+
+[[nodiscard]] bool writeFieldRows(QXlsx::Document& document, int& row, const std::vector<Field>& fields,
                     std::uint64_t parentLsb,
                     const std::optional<UnsignedValue>& registerReset,
                     std::uint64_t registerWidth,
-                    const WorkbookFormats& style, bool consecutiveEnums)
+                    const WorkbookFormats& style, bool consecutiveEnums,
+                    std::string_view registerName, const FieldNameCounts& fieldNames)
 {
     std::vector<const Field*> orderedFields;
     for (const auto& field : fields) orderedFields.push_back(&field);
     const auto references = consecutiveEnums ? consecutiveEnumReferences(orderedFields) : std::map<ObjectId, ObjectId>{};
-    std::map<ObjectId, int> firstRows;
+    std::map<ObjectId, std::pair<int, const Field*>> firstRows;
     for (const Field* fieldPointer : orderedFields) {
         const auto& field = *fieldPointer;
-        firstRows.emplace(field.id, row);
+        firstRows.emplace(field.id, std::pair{row, &field});
         QString enumText = fieldRangeText(field);
+        int referenceRow = 0;
         if (const auto reference = references.find(field.id); reference != references.end()) {
-            enumText = QStringLiteral("See J%1 (%2)").arg(firstRows.at(reference->second)).arg(text(reference->second));
+            const auto& [firstRow, firstField] = firstRows.at(reference->second);
+            referenceRow = firstRow;
+            const QString name = fieldNames.at(firstField->name) > 1
+                ? text(registerName) + QLatin1Char('.') + text(firstField->name)
+                : text(firstField->name);
+            enumText = QStringLiteral("枚举定义同 %1").arg(name);
         }
         const std::uint64_t absoluteLsb = parentLsb + field.lsb;
         const std::uint64_t absoluteMsb = parentLsb + field.msb;
@@ -1086,17 +1105,30 @@ void writeFieldRows(QXlsx::Document& document, int& row, const std::vector<Field
                       : QVariant{},
                   QVariant{}, enumText, text(field.description)},
                  style, {8}, &style.field, false, &style.fieldAddress);
+        if (referenceRow != 0) {
+            auto* worksheet = document.currentWorksheet();
+            if (worksheet == nullptr) return false;
+            QString sheetName = worksheet->sheetName();
+            sheetName.replace(QLatin1Char('\''), QStringLiteral("''"));
+            QUrl target;
+            target.setFragment(QStringLiteral("'%1'!$J$%2").arg(sheetName).arg(referenceRow));
+            QXlsx::Format linkFormat = style.field;
+            linkFormat.setFontColor(QColor(QStringLiteral("#0563C1")));
+            linkFormat.setFontUnderline(QXlsx::Format::FontUnderlineSingle);
+            if (!worksheet->writeHyperlink(row, 10, target, linkFormat, enumText)) return false;
+        }
         document.setRowHeight(row, 22.0);
         ++row;
-        writeFieldRows(
-            document,
-            row,
-            field.members,
-            absoluteLsb,
-            registerReset,
-            registerWidth,
-            style, consecutiveEnums);
+        if (!writeFieldRows(
+                document,
+                row,
+                field.members,
+                absoluteLsb,
+                registerReset,
+                registerWidth,
+                style, consecutiveEnums, registerName, fieldNames)) return false;
     }
+    return true;
 }
 
 [[nodiscard]] bool writePageSheet(QXlsx::Document& document, const AddressSpace& space,
@@ -1117,6 +1149,13 @@ void writeFieldRows(QXlsx::Document& document, int& row, const std::vector<Field
                   QStringLiteral("Initial Value"), QStringLiteral("Reset Value"),
                   QStringLiteral("Tags"), QStringLiteral("Range"), QStringLiteral("Description")},
                  style);
+    FieldNameCounts fieldNames;
+    if (consecutiveEnums) {
+        for (const auto& block : space.blocks)
+            for (const auto& reg : block.registers)
+                if (!reg.reserved && reg.type == FieldType::structure)
+                    countFieldNames(reg.fields, fieldNames);
+    }
     int row = 5;
     std::size_t registerIndex = 0;
     std::size_t blockIndex = 0;
@@ -1161,14 +1200,14 @@ void writeFieldRows(QXlsx::Document& document, int& row, const std::vector<Field
             if (worksheet->insertImage(row - 1, 2, row, worksheetColumnCount, diagram) == 0)
                 return false;
             ++row;
-            writeFieldRows(
-                document,
-                row,
-                reg.fields,
-                0,
-                reg.resetValue,
-                reg.width,
-                style, consecutiveEnums);
+            if (!writeFieldRows(
+                    document,
+                    row,
+                    reg.fields,
+                    0,
+                    reg.resetValue,
+                    reg.width,
+                    style, consecutiveEnums, reg.name, fieldNames)) return false;
             document.groupRows(firstDetailRow, row - 1, true);
         }
     }
