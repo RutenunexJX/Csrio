@@ -1,6 +1,7 @@
 #include "regmap/core/xlsx_export.hpp"
 
 #include "regmap/core/model_tokens.hpp"
+#include "regmap/core/document_layout.hpp"
 
 #include <xlsxcellrange.h>
 #include <xlsxdocument.h>
@@ -1049,9 +1050,19 @@ void writeFieldRows(QXlsx::Document& document, int& row, const std::vector<Field
                     std::uint64_t parentLsb,
                     const std::optional<UnsignedValue>& registerReset,
                     std::uint64_t registerWidth,
-                    const WorkbookFormats& style)
+                    const WorkbookFormats& style, bool consecutiveEnums)
 {
-    for (const auto& field : fields) {
+    std::vector<const Field*> orderedFields;
+    for (const auto& field : fields) orderedFields.push_back(&field);
+    const auto references = consecutiveEnums ? consecutiveEnumReferences(orderedFields) : std::map<ObjectId, ObjectId>{};
+    std::map<ObjectId, int> firstRows;
+    for (const Field* fieldPointer : orderedFields) {
+        const auto& field = *fieldPointer;
+        firstRows.emplace(field.id, row);
+        QString enumText = fieldRangeText(field);
+        if (const auto reference = references.find(field.id); reference != references.end()) {
+            enumText = QStringLiteral("See J%1 (%2)").arg(firstRows.at(reference->second)).arg(text(reference->second));
+        }
         const std::uint64_t absoluteLsb = parentLsb + field.lsb;
         const std::uint64_t absoluteMsb = parentLsb + field.msb;
         const QString bits = absoluteMsb == absoluteLsb
@@ -1073,7 +1084,7 @@ void writeFieldRows(QXlsx::Document& document, int& row, const std::vector<Field
                                 fieldWidth),
                             static_cast<std::uint32_t>(fieldWidth))}
                       : QVariant{},
-                  QVariant{}, fieldRangeText(field), text(field.description)},
+                  QVariant{}, enumText, text(field.description)},
                  style, {8}, &style.field, false, &style.fieldAddress);
         document.setRowHeight(row, 22.0);
         ++row;
@@ -1084,12 +1095,12 @@ void writeFieldRows(QXlsx::Document& document, int& row, const std::vector<Field
             absoluteLsb,
             registerReset,
             registerWidth,
-            style);
+            style, consecutiveEnums);
     }
 }
 
 [[nodiscard]] bool writePageSheet(QXlsx::Document& document, const AddressSpace& space,
-                                  const WorkbookFormats& style)
+                                  const WorkbookFormats& style, bool consecutiveEnums)
 {
     auto* worksheet = document.currentWorksheet();
     if (worksheet == nullptr) {
@@ -1116,7 +1127,8 @@ void writeFieldRows(QXlsx::Document& document, int& row, const std::vector<Field
         document.write(row, 1, blockBandText(block, space), blockFormat);
         document.setRowHeight(row, 28.0);
         ++row;
-        for (const auto& reg : block.registers) {
+        for (const Register* registerPointer : documentRegisters(block, true)) {
+            const auto& reg = *registerPointer;
             const bool alternateGroup = (registerIndex++ % 2) != 0;
             const QXlsx::Format& sectionFormat =
                 alternateGroup ? style.sectionAlternate : style.section;
@@ -1156,7 +1168,7 @@ void writeFieldRows(QXlsx::Document& document, int& row, const std::vector<Field
                 0,
                 reg.resetValue,
                 reg.width,
-                style);
+                style, consecutiveEnums);
             document.groupRows(firstDetailRow, row - 1, true);
         }
     }
@@ -1186,7 +1198,7 @@ void addDiagnostic(std::vector<Diagnostic>& diagnostics, std::string message)
 
 } // namespace
 
-XlsxExportResult exportReadOnlyWorkbook(const Workspace& workspace)
+XlsxExportResult exportReadOnlyWorkbook(const Workspace& workspace, bool consecutiveEnums)
 {
     XlsxExportResult result;
     QHashSeed::setDeterministicGlobalSeed();
@@ -1240,7 +1252,7 @@ XlsxExportResult exportReadOnlyWorkbook(const Workspace& workspace)
                 return result;
             }
             generatedSheetNames.push_back(sheetName);
-            if (!writePageSheet(document, space, style)) {
+            if (!writePageSheet(document, space, style, consecutiveEnums)) {
                 addDiagnostic(result.diagnostics,
                               "Cannot draw or configure a generated Page worksheet.");
                 return result;

@@ -60,6 +60,6 @@ parseGenerationTarget(const QString& token);
     const GeneratedArtifact& artifact);
 
 [[nodiscard]] ArtifactWriteReport writeArtifactsWithReport(
-    const std::vector<GeneratedArtifact>& artifacts);
+    const std::vector<GeneratedArtifact>& artifacts, const GenerationObserver& observer = {});
 
 } // namespace regmap::cli

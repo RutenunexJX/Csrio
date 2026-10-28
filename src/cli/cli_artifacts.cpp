@@ -416,7 +416,7 @@ QJsonObject artifactStatusJson(
 }
 
 ArtifactWriteReport writeArtifactsWithReport(
-    const std::vector<GeneratedArtifact>& artifacts)
+    const std::vector<GeneratedArtifact>& artifacts, const GenerationObserver& observer)
 {
     std::vector<bool> synchronizedBefore;
     synchronizedBefore.reserve(artifacts.size());
@@ -428,7 +428,7 @@ ArtifactWriteReport writeArtifactsWithReport(
 
     ArtifactWriteReport result;
     result.diagnostics =
-        writeGeneratedArtifacts(artifacts);
+        writeGeneratedArtifacts(artifacts, observer);
     for (std::size_t index = 0;
          index < artifacts.size();
          ++index) {

@@ -1,6 +1,10 @@
 # Csrio
 
-Current version: `0.4.7`.
+Current version: `0.4.8`.
+
+Release 0.4.8 adds CLI property projection, atomic selector batches, scoped consistency rules,
+deferred and selective generation, document ordering, and operation statistics. Consecutive
+equivalent enum tables can be referenced in XLSX and Markdown without changing source definitions.
 
 Release 0.4.7 reuses the validated model when adopting the same saved revision, preserving revision checks, stable identities and undo/redo history.
 

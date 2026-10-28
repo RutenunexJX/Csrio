@@ -1,6 +1,7 @@
 #include "regmap/core/three_way_merge.hpp"
 
 #include "regmap/core/model_tokens.hpp"
+#include "regmap/core/model_inspection.hpp"
 #include "atomic_file_writer.hpp"
 
 #include <QByteArray>
@@ -32,13 +33,7 @@ namespace {
 constexpr std::string_view baselineReadCode = "RM5200";
 constexpr std::string_view baselineWriteCode = "RM5201";
 
-struct FlatObject {
-    ObjectKind kind{ObjectKind::workspace};
-    ObjectId id;
-    std::map<std::string, std::string, std::less<>> properties;
-    SourceLocation source;
-    PropertySources propertySources;
-};
+using FlatObject = InspectedObject;
 
 using FlatWorkspace = std::map<ObjectId, FlatObject, std::less<>>;
 
@@ -233,6 +228,7 @@ void insert(FlatWorkspace& workspace, FlatObject object)
                                              {"name", reg.name},
                                              {"offset", uint64Text(reg.offset)},
                                              {"fixed", reg.addressFixed ? "true" : "false"},
+                                             {"display_order", optionalText(reg.displayOrder)},
                                              {"width", std::to_string(reg.width)},
                                              {"type", std::string(toString(reg.type))},
                                              {"minimum", optionalText(reg.minimumValue)},
@@ -434,6 +430,7 @@ void deriveFieldResets(std::vector<Field>& fields,
         value.name = property(object, "name");
         value.offset = parseUInt64(object, "offset");
         value.addressFixed = parseBoolean(property(object, "fixed"));
+        value.displayOrder = parseOptionalUInt64(object, "display_order");
         value.width = parseUInt32(object, "width");
         value.array.count = 1;
         value.array.stride = 4;
@@ -704,7 +701,8 @@ void appendConflict(std::vector<MergeConflict>& conflicts, const ObjectId& id, O
             }
             break;
         case ObjectKind::reg:
-            if (!uint64Value(property(object, "offset")) ||
+            if (!uint64Value(property(object, "display_order"), true) ||
+                !uint64Value(property(object, "offset")) ||
                 !uint32Value(property(object, "width")) ||
                 (object.properties.contains("array_count") &&
                  !uint32Value(property(object, "array_count"))) ||
@@ -958,6 +956,11 @@ BaselineLoadResult parseWorkspaceState(std::string_view text,
                           "The synchronization baseline has no workspace object.", sourcePath);
     }
     return result;
+}
+
+InspectedModel inspectModel(const Workspace& workspace)
+{
+    return flatten(workspace);
 }
 
 std::string serializeWorkspaceState(const Workspace& workspace, bool indented)

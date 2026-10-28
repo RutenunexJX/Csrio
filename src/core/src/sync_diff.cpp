@@ -79,6 +79,8 @@ template <typename Enum> void appendEnum(std::ostringstream& output, Enum value)
     std::ostringstream output;
     appendString(output, value.name);
     output << value.offset << ';' << value.addressFixed << ';' << value.width << ';';
+    if (value.displayOrder) output << *value.displayOrder;
+    output << ';';
     appendEnum(output, value.type);
     appendString(output, value.minimumValue.value_or(std::string{}));
     appendString(output, value.maximumValue.value_or(std::string{}));

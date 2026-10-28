@@ -13,6 +13,6 @@ struct XlsxExportResult {
     std::vector<Diagnostic> diagnostics;
 };
 
-[[nodiscard]] XlsxExportResult exportReadOnlyWorkbook(const Workspace& workspace);
+[[nodiscard]] XlsxExportResult exportReadOnlyWorkbook(const Workspace& workspace, bool consecutiveEnums = false);
 
 } // namespace regmap

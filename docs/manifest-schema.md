@@ -138,8 +138,22 @@ SystemVerilog identifier and is used when the application creates the file.
 `generation.targets` must contain exactly one target of each kind: `xlsx`, `c-header`, and
 `markdown`. Target paths are relative to `output_directory`, unique, and may not escape that
 directory or overwrite the project or RTL file. The C header supports the scalar `guard` option;
-Markdown supports `title`. XLSX has no options.
+Markdown supports `title`. XLSX and Markdown support `enum_tables` as described below.
 
 The synchronization baseline is stored beside the project as
 `<project-file-name>.sync.json`. It is implementation state and is not part of the editable
 project contract.
+
+
+## Optional document presentation
+
+Registers may persist `display_order`, an unsigned integer independent of `offset` and `fixed`.
+CLI `reorder` assigns sibling ranks for XLSX/Markdown presentation. Unranked registers follow
+ranked registers; ties resolve by address and stable ID. With no ranks, existing target order is
+preserved. C header address order is unchanged. Workspace snapshots, diff and merge retain ranks.
+
+XLSX and Markdown generation target `options.enum_tables` accepts `full` (default) or
+`consecutive`. CLI `apply --enum-tables` updates both document targets together. Consecutive mode
+expands the first of adjacent sibling fields with identical enum definitions and references it
+from later fields. The project stores all enum definitions; this option does not create model
+aliases or change C header generation.

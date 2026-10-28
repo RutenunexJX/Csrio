@@ -1155,3 +1155,200 @@ typing in an active model editor, Workbench defers automatic reload without comm
 discarding that text. Project-local crash drafts also retain their saved-project base: if
 `regmapc` changes the project after a draft is written, the next Workbench open merges independent
 changes and asks which side wins only for properties changed by both.
+
+
+## Bounded automation responses
+
+Query commands `list`, `find`, `get`, and `get-many` accept
+`--properties id,name,address,description`. IDs always remain present. Unknown or repeated
+property names are usage errors; a known property absent on that object is `null`.
+Projection affects the top-level object, not matching, pagination, request order, duplicate
+IDs, missing-item behavior, diagnostics or revision guards. Defaults return complete objects.
+`schema.projection_contract.allowed_properties` and each query's `help` list the accepted
+property names from the same registry used by the parser. Existing public keys include field
+`software_access` / `hardware_access`, block `absolute_base`, and workspace `pages`.
+Projection copies values from that command's unprojected top-level object: `list` and `find`
+retain their descriptor shape, so properties absent from those descriptors are still `null`.
+No property names are treated as aliases.
+
+`apply` and `diff` accept `--changes summary|full` (default `full`). Summary omits before/after
+values, property-change details and navigation duplicates. It retains operation identity,
+selected IDs/paths/counts, revision, save/generation state, artifacts, failure diagnostics and
+recovery. `reported_change_count` and `reported_object_ids` describe the returned changes;
+`diff.change_count` still describes its complete filtered comparison. Operation references are
+resolved from complete internal records. Obtain a full preview before saving if an audit needs
+all values; do not reapply a successful mutation solely to obtain a different response format.
+
+## Selector-based atomic batches
+
+```json
+{
+  "api_version": 1,
+  "expected_revision": "sha256:...",
+  "operations": [
+    {
+      "op": "set-many",
+      "select": {
+        "kind": "register",
+        "names": ["VERSION"],
+        "parents": ["page-ai", "page-ao"],
+        "recursive": true,
+        "tags": ["common"],
+        "exclude_ids": ["block-board-specific"]
+      },
+      "expect_count": 2,
+      "values": {"description": "Common version register"}
+    }
+  ]
+}
+```
+
+Selectors combine `kind`, `ids`, `names`, `parents`, `recursive`, `tags`, and `exclude_ids`.
+Names are exact and case-sensitive; this is narrower than `find --exact`. Names/IDs/parents
+use set membership; every requested tag must match. Fields/enums inherit containing register
+tags. Parent scopes default to direct children; recursive scope requires parents. Exceptions
+exclude an object and its subtree. Referenced IDs must exist, and supplied arrays must be
+nonempty and contain no duplicates. Results use deterministic stable-ID order.
+
+`expect_count` is required. A mismatch fails before any object in that batch is changed;
+zero explicitly permits an empty selection. Selection is evaluated once against the candidate
+at that operation, after previous operations, and then frozen for the batch. Values are applied
+in lexical property order. The final candidate must pass ordinary validation and revision guards.
+Preview returns `targets` with IDs/paths and `matched_count`. The same patch and revision produce
+the same selection. A batch has no single result ID and cannot define a `ref`.
+
+`remove-many` uses the same selector/count, with `cascade: true` explicitly required for
+objects with descendants. Selecting both an ancestor and descendant is rejected. Any operation
+failure discards the whole in-memory candidate. Output failure after a saved model remains a
+partial completion with recovery, as for ordinary apply.
+
+## Project-specific consistency rules
+
+Use `validate <project> --rules rules.json` or `apply <project> <patch> --rules rules.json`.
+Rules are optional, report findings without changing the model, and contain no built-in board names.
+
+```json
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "common-version",
+      "severity": "error",
+      "scope": {"kind": "block", "names": ["Common"]},
+      "select": {"kind": "register", "names": ["VERSION"]},
+      "assert": {
+        "count": 1,
+        "properties": {"access": "ro"},
+        "same": ["layout", "access"]
+      }
+    },
+    {
+      "id": "removed-legacy-registers",
+      "scope": {"kind": "block", "names": ["Common"]},
+      "select": {"kind": "register", "names": ["ID", "TRANSPORT"]},
+      "assert": {"count": 0}
+    },
+    {
+      "id": "required-card-codes",
+      "select": {"kind": "field", "names": ["CARD_TYPE"]},
+      "assert": {"enum_values": ["0x0", "0x1"]}
+    }
+  ]
+}
+```
+
+`scope` selects parent contexts. The rule checks selected descendants separately in each scope;
+without scope it checks the whole workspace. Missing scopes and unintended empty selections
+produce findings; use `count: 0` to forbid objects. Selectors support explicit exceptions.
+`properties` compares scalar model properties. Numeric model properties accept equivalent
+unsigned encodings such as `0` and `0x0`; names and descriptions compare as literal strings. `same` compares each kind/name group across scopes. `layout` compares nested field
+names, bit positions, types and accesses, while allowing enum codes to differ by board.
+`enum_values` requires the listed codes and enum type; it permits additional codes, and ordinary
+core validation checks uniqueness, widths and reset membership. It does not require all possible
+bit combinations. Unknown rule members and malformed values are rejected.
+
+Severity is `error` (default), `warning`, or `information`. Error findings fail validation/apply;
+warnings do not bypass core model errors. Responses include `rule_findings` with rule ID, page,
+object ID, path, property, expected and actual values, plus diagnostics with code `RMC2100`.
+There is no implicit repair. Fixes use explicit, previewable patch operations.
+
+## Deferred and selective generation
+
+`apply --defer-generation` validates and atomically saves the model without constructing or
+writing outputs. `generation_state: deferred`, `pending_outputs`, `saved`, and
+`generation_previewed: false` distinguish this from a generation failure. `outputs_current: null`
+means outputs have not been compared; it does not assert their contents are different.
+
+`apply --target markdown --target c-header` generates selected configured types, preserving
+the complete target configuration in the project. Unselected types appear in `pending_outputs`.
+After generation, the overall state is `partial`; `selected_outputs_current` describes selected
+outputs and the overall `outputs_current` is unknown. Dry-run reports `previewed`; an unchanged
+model with no output writes reports `not_generated`. `--target` and `--defer-generation` are mutually exclusive.
+Dry-run previews the same selection, with no model/output writes. Default apply still generates all.
+
+Finish with `generate <project> --expect <saved-revision>` and inspect `status --require-current`.
+Both use existing revision and per-artifact status contracts. No extra persistent dirty flag is
+introduced: output status remains a comparison against what the saved project would generate.
+
+## Document order without changing addresses
+
+```json
+{"op":"reorder","id":"reg-status","before_id":"reg-version"}
+```
+
+`reorder` currently supports registers within their existing Block; optional `parent_id` must
+identify that same Block. `before_id: null` means end. IDs and anchors support earlier operation
+references. This persists `display_order` for XLSX/Markdown document order and preserves stable
+IDs, parents, offsets, fixed flags and access. C headers and address allocation retain address
+semantics. Snapshots, undo/redo, comparison and merging preserve the new property.
+The Workbench's address-based drag behavior remains represented by `move`, which exchanges
+movable offset slots and rejects fixed-register sources. Help and schema state this distinction.
+
+Optional `apply --preflight` checks operation shapes, reference ordering and statically fixed
+moves before executing operations. A `preflight` failure reports the original operation index,
+zero completed operations and no writes. State-dependent checks still execute in array order;
+for example, an earlier `set fixed=false` can make a later move legal. Without this option,
+existing first-failure/completed-operation reporting is preserved.
+
+## Consecutive field enum references
+
+To persist compact enum presentation on configured XLSX and Markdown targets:
+
+```powershell
+'{"api_version":1,"operations":[]}' | .\regmapc.exe --json apply .\device.regmap.yaml - `
+  --expect sha256:... --enum-tables consecutive
+```
+
+Use `--enum-tables full` to restore complete expansion. An empty operations array is accepted
+only when this formatting option is supplied. It can be combined with a normal patch, dry-run,
+selective generation or deferred generation. The setting is stored as target option `enum_tables`;
+subsequent CLI/GUI generation and `status` use the same saved configuration. Responses include
+`configuration_changes` with target kind, property, and before/after values when the option changes.
+
+Only consecutive sibling fields with adjacent bit ranges, equal type/width and identical enum
+names, numeric values and descriptions share a displayed definition. Enum IDs may differ and
+declaration order does not matter. A gap, another field, a different definition or a parent boundary
+starts a new group. Each field retains its name, bits, access, description and full model enum values.
+Markdown expands the first table and links later fields to its stable anchor. XLSX expands the
+first Range cell and identifies its cell/field ID in later references. C headers and CLI JSON enum
+objects remain complete. Defaults preserve full expansion and existing document ordering.
+
+## Optional execution statistics
+
+Data commands accept `--stats`. JSON adds a top-level `stats` object; text mode writes a separate
+`Stats:` record to stderr. No project or generated bytes are changed by statistics.
+
+`stages` uses a monotonic clock and includes optional `rules_load_parse`, `patch_input`,
+`load_parse_validate` (initial validation/revision hashing included), `baseline_validation`,
+`patch`, optional `preflight` and `consistency_rules`,
+`candidate_validation`, each `generate.<type>` / `write.<type>`, `save_model`, and `response_encoding`
+when reached. Stages are sequential subsets of total; skipped phases are absent. Failed commands
+retain measured stages and normal error/failure data. Per-artifact `ok` indicates that phase's
+diagnostics; generic duration records alone do not indicate command success.
+
+`object_count` counts objects in the last loaded snapshot; `operation_count` counts requested
+patch operations. `generated_bytes` sums generated payload sizes. Per-stage `bytes` is payload
+size, including already-current files inspected by a write stage, not physical disk bytes written.
+`response_bytes` counts the final UTF-8 JSON response plus LF. Total timing ends at response encoding
+and excludes stdout transport; text totals exclude text rendering. Compare equal inputs, build,
+targets, settings, environment and cache conditions. Statistics are measurements, not a speedup claim.

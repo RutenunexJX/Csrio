@@ -474,6 +474,7 @@ void reportOverriddenLegacyFieldResets(const std::vector<Field>& fields,
     result.id = scalar(node, "id", true, filePath, path, diagnostics).value_or("");
     result.name = scalar(node, "name", true, filePath, path, diagnostics).value_or("");
     result.offset = uint64Value(node, "offset", true, filePath, path, diagnostics).value_or(0);
+    result.displayOrder = uint64Value(node, "display_order", false, filePath, path, diagnostics);
     result.addressFixed =
         boolValue(node, "fixed", false, filePath, path, diagnostics).value_or(false);
     result.width = uint32Value(node, "width", true, filePath, path, diagnostics).value_or(32);
@@ -699,6 +700,9 @@ void emitRegister(YAML::Emitter& output, const Register& reg)
     output << YAML::BeginMap << YAML::Key << "id" << YAML::Value << reg.id << YAML::Key << "name"
            << YAML::Value << reg.name << YAML::Key << "offset" << YAML::Value << hex(reg.offset)
            << YAML::Key << "width" << YAML::Value << reg.width;
+    if (reg.displayOrder) {
+        output << YAML::Key << "display_order" << YAML::Value << *reg.displayOrder;
+    }
     if (reg.addressFixed) {
         output << YAML::Key << "fixed" << YAML::Value << true;
     }

@@ -1,5 +1,9 @@
 #include "cli_app.hpp"
 #include "cli_artifacts.hpp"
+#include "cli_automation.hpp"
+#include "cli_presentation.hpp"
+#include "cli_metrics.hpp"
+#include "regmap/core/document_layout.hpp"
 #ifdef REGMAP_HAS_SUITEAPP
 #include <suiteapp/transport.h>
 #endif
@@ -85,6 +89,11 @@ struct CommandResponse {
     QString usage;
     QJsonValue result;
     QJsonObject resultMetadata;
+    QJsonArray ruleFindings;
+    QJsonArray pendingOutputs;
+    QJsonArray configurationChanges;
+    bool generationDeferred{false};
+    bool generationPartial{false};
     std::vector<Diagnostic> diagnostics;
     QString error;
     ExitCode exitCode{ExitCode::success};
@@ -116,6 +125,10 @@ struct ApplyOptions {
     QString expectedRevision;
     bool dryRun{false};
     bool force{false};
+    bool deferGeneration{false};
+    bool preflight{false};
+    GenerationTargetSet targets;
+    QString enumTables;
 };
 
 struct GenerateOptions {
@@ -643,6 +656,7 @@ collectDiffObjectStates(
                             {QStringLiteral(
                                  "fixed"),
                              reg.addressFixed},
+                            {QStringLiteral("display_order"), reg.displayOrder ? QJsonValue(hex(*reg.displayOrder)) : QJsonValue(QJsonValue::Null)},
                             {QStringLiteral(
                                  "width"),
                              static_cast<
@@ -912,6 +926,7 @@ collectDiffObjectStates(
 [[nodiscard]] OpenedProject open(
     const QString& requestedPath)
 {
+    const CliStage stage("load_parse_validate");
     OpenedProject result;
     result.path =
         QFileInfo(requestedPath)
@@ -927,6 +942,8 @@ collectDiffObjectStates(
         result.revision =
             fileRevision(result.path);
     }
+    if (auto* metrics = CliMetrics::current(); metrics && result.open.workspace)
+        metrics->objectCount = inspectModel(*result.open.workspace).size();
     return result;
 }
 
@@ -1633,6 +1650,7 @@ absoluteRegisterAddress(
                    QJsonValue::Null)},
         {QStringLiteral("fixed"),
          reg.addressFixed},
+        {QStringLiteral("display_order"), reg.displayOrder ? QJsonValue(hex(*reg.displayOrder)) : QJsonValue(QJsonValue::Null)},
         {QStringLiteral("width"),
          static_cast<qint64>(
              reg.width)},
@@ -6302,7 +6320,7 @@ descendantCount(
     };
 }
 
-[[nodiscard]] QJsonObject schemaJson()
+[[nodiscard]] QJsonObject baseSchemaJson()
 {
     const QJsonArray kinds{
         QStringLiteral("workspace"),
@@ -7709,7 +7727,7 @@ descendantCount(
              {QStringLiteral(
                   "operation_named_reference"),
               QStringLiteral(
-                  "every operation may define a unique case-sensitive ref; object reference members accept {'ref': <name>} for an earlier operation")},
+                  "single-object operations may define a unique case-sensitive ref; set-many/remove-many cannot define ref; object reference members accept {'ref': <name>} for an earlier operation")},
              {QStringLiteral(
                   "copy_unique_name"),
               QStringLiteral(
@@ -8663,6 +8681,79 @@ descendantCount(
     };
 }
 
+[[nodiscard]] QJsonObject schemaJson()
+{
+    auto schema = baseSchemaJson();
+    auto commands = schema.value("command_argument_schemas").toObject();
+    auto addOption = [&](const QString& command, const QString& name, const QString& type,
+                         const QJsonArray& values = QJsonArray{}, bool repeatable = false) {
+        auto descriptor = commands.value(command).toObject(); auto options = descriptor.value("options").toArray();
+        QJsonObject option{{"name", name}, {"kind", type == "flag" ? "flag" : "value"}, {"repeatable", repeatable}};
+        if (type != "flag") { option.insert("value_type", type); option.insert("value_name", name.mid(2)); }
+        if (!values.isEmpty()) option.insert("allowed_values", values);
+        options.append(option); descriptor.insert("options", options); commands.insert(command, descriptor);
+    };
+    const auto projectionNames = QJsonArray::fromStringList(projectionProperties());
+    for (const auto* command : {"list","find","get","get-many"})
+        addOption(command, "--properties", "comma_separated_properties", projectionNames);
+    for (const auto* command : {"apply","diff"}) addOption(command, "--changes", "enum", {"summary","full"});
+    for (const auto* command : {"apply","validate"}) addOption(command, "--rules", "path");
+    for (const auto* command : {"init","summary","list","find","get","get-many","validate","diff","status","generate","apply"}) addOption(command, "--stats", "flag");
+    addOption("apply", "--defer-generation", "flag");
+    addOption("apply", "--preflight", "flag");
+    addOption("apply", "--target", "enum", {"xlsx","c-header","markdown"}, true);
+    addOption("apply", "--enum-tables", "enum", {"full","consecutive"});
+    auto apply = commands.value("apply").toObject(); auto exclusive = apply.value("mutually_exclusive_options").toArray();
+    exclusive.append(QJsonArray{"--defer-generation","--target"}); apply.insert("mutually_exclusive_options", exclusive); commands.insert("apply", apply);
+    schema.insert("command_argument_schemas", commands);
+    auto descriptors = schema.value("commands").toArray();
+    for (qsizetype i = 0; i < descriptors.size(); ++i) {
+        auto descriptor = descriptors[i].toObject(); const auto command = descriptor.value("name").toString();
+        QString suffix = QStringList{"help","version","schema","gui"}.contains(command) ? QString{} : QStringLiteral(" [--stats]");
+        if (QStringList{"list","find","get","get-many"}.contains(command)) suffix += " [--properties name,address,...]";
+        if (command == "apply" || command == "diff") suffix += " [--changes summary|full]";
+        if (command == "apply" || command == "validate") suffix += " [--rules rules.json]";
+        if (command == "apply") suffix += " [--preflight] [--defer-generation | --target T ...] [--enum-tables full|consecutive]";
+        descriptor.insert("usage", descriptor.value("usage").toString() + suffix); descriptors[i] = descriptor;
+    }
+    schema.insert("commands", descriptors);
+    auto operations = schema.value("operation_schemas").toObject();
+    const QJsonObject selector{{"kind", "workspace|page|block|register|field|enum|all"},
+        {"names", "exact case-sensitive name array"}, {"ids", "stable ID array"}, {"parents", "existing parent ID array"},
+        {"recursive", "boolean; requires parents"}, {"tags", "all tags must match; inherited from containing registers"},
+        {"exclude_ids", "exclude named objects and descendants"}};
+    operations.insert("set-many", QJsonObject{{"required", QJsonArray{"op","select","expect_count","values"}},
+        {"selector", selector}, {"values", "non-empty writable property map, applied in lexical property order"},
+        {"expect_count", "non-negative integer; zero explicitly permits an empty selection"}});
+    operations.insert("remove-many", QJsonObject{{"required", QJsonArray{"op","select","expect_count"}},
+        {"selector", selector}, {"cascade", "explicit true required for descendants; overlapping ancestor/descendant targets rejected"}});
+    operations.insert("reorder", QJsonObject{{"required", QJsonArray{"op","id","before_id"}},
+        {"kinds", QJsonArray{"register"}}, {"optional_members", QJsonArray{"parent_id","ref"}},
+        {"contract", "same-parent document order only; null anchor means end; preserves offsets, fixed flag and stable IDs; accepts earlier references"}});
+    auto move = operations.value("move").toObject();
+    move.insert("register_before_id_restriction", "Only movable registers; exchanges offset slots. Fixed registers are rejected. Use reorder for document-only order.");
+    operations.insert("move", move); schema.insert("operation_schemas", operations);
+    schema.insert("preflight_contract", "Optional --preflight checks operation shape, earlier references, and fixed moves when preceding operations cannot alter fixed state; state-dependent checks still run in array order; failure stage preflight performs zero operations.");
+    schema.insert("document_order_contract", QJsonObject{{"property", "register.display_order"}, {"encoding", "optional unsigned rank; hexadecimal string or null in object JSON"}, {"operation", "reorder"}, {"targets", QJsonArray{"xlsx","markdown"}}});
+    schema.insert("projection_contract", QJsonObject{{"id_always_returned", true}, {"default", "full"},
+        {"allowed_properties", projectionNames}, {"scope", "top-level properties of the unprojected command result; no alias mapping"},
+        {"missing_property", "null"}, {"get_many", "request order, duplicate and missing item semantics preserved"}});
+    schema.insert("consistency_rules_contract", QJsonObject{{"version", 1}, {"commands", QJsonArray{"validate","apply"}},
+        {"rule_members", QJsonArray{"id","severity","scope","select","assert"}},
+        {"assert_members", QJsonArray{"count","properties","same","enum_values"}},
+        {"same", "compare by kind and exact name across scopes; layout compares recursive field bits/types/access without enum codes"},
+        {"severity", QJsonArray{"error","warning","information"}}, {"auto_fix", false}});
+    schema.insert("generation_policy_contract", QJsonObject{{"default", "all configured outputs"},
+        {"deferred", "validates and saves model; no output generation or write; outputs_current is null until inspected"},
+        {"partial", "selected outputs regenerated; pending_outputs describes unselected types; overall outputs_current is null"},
+        {"enum_tables", "apply persists full/consecutive on configured XLSX and Markdown targets; default full; operations may be empty only with this option"}});
+    schema.insert("stats_contract", QJsonObject{{"clock", "monotonic"},
+        {"load_parse_validate", "includes initial model validation and revision hashing"},
+        {"bytes", "per-stage artifact payload bytes; generated_bytes counts generation only; response_bytes is UTF-8 stdout JSON including LF"},
+        {"total", "dispatch through response encoding; excludes stdout write; sequential stage subsets; failed commands retain completed stages"}});
+    return schema;
+}
+
 [[nodiscard]] QString usageText()
 {
     return QStringLiteral(
@@ -8690,7 +8781,7 @@ descendantCount(
         "list and find return at most 100 results unless --limit or --all is explicit.\n"
         "Use --json for a stable API-versioned response envelope.\n"
         "Use -- before a positional value that begins with --.\n"
-        "Patch operations may define a unique ref; object IDs, parent IDs, and move anchors accept an earlier {\"operation\": N} or {\"ref\": \"name\"}; add id may be \"auto\".\n"
+        "Single-object patch operations may define a unique ref; object IDs, parent IDs, and move/reorder anchors accept an earlier {\"operation\": N} or {\"ref\": \"name\"}; add id may be \"auto\".\n"
         "A real apply requires an expected revision unless --force is explicit.\n");
 }
 
@@ -8938,10 +9029,21 @@ void writeJsonResponse(
             QStringLiteral("error"),
             response.error);
     }
-    output
-        << QJsonDocument(root).toJson(
-               QJsonDocument::Compact)
-        << '\n';
+    QByteArray encoded;
+    if (auto* metrics = CliMetrics::current()) {
+        timed("response_encoding", [&] { encoded = QJsonDocument(root).toJson(QJsonDocument::Compact); return 0; });
+        auto statistics = metrics->json();
+        qint64 bytes = 0;
+        for (int attempt = 0; attempt < 8; ++attempt) {
+            statistics.insert("response_bytes", bytes);
+            root.insert("stats", statistics);
+            encoded = QJsonDocument(root).toJson(QJsonDocument::Compact);
+            const qint64 actual = encoded.size() + 1;
+            if (bytes == actual) break;
+            bytes = actual;
+        }
+    } else encoded = QJsonDocument(root).toJson(QJsonDocument::Compact);
+    output << encoded << '\n';
     output.flush();
 }
 
@@ -9150,6 +9252,17 @@ void writeTextResponse(
                                "file_write_behavior"))
                        .toString()
                 << '\n';
+            if (target == "apply") {
+                output << "Register move before_id exchanges movable offset slots and rejects fixed registers.\n"
+                       << "Use reorder for same-Block XLSX/Markdown order without changing addresses.\n";
+            }
+            if (result.contains("projection_contract")) {
+                QStringList properties;
+                for (const auto& property : result.value("projection_contract").toObject().value("allowed_properties").toArray())
+                    properties.append(property.toString());
+                output << "Projection properties (comma-separated): " << properties.join(',') << '\n'
+                       << "ID is always returned; known properties absent from this command's object are null. No alias mapping.\n";
+            }
             const QJsonObject
                 argumentSchema =
                     result.value(
@@ -10561,6 +10674,28 @@ void writeTextResponse(
          ++index) {
         const QString& token =
             arguments.at(index);
+        if (token == "--preflight") {
+            if (options.preflight) { error = "--preflight may be specified only once."; return false; }
+            options.preflight = true; continue;
+        }
+        if (token == "--defer-generation") {
+            if (options.deferGeneration) { error = "--defer-generation may be specified only once."; return false; }
+            options.deferGeneration = true; continue;
+        }
+        if (token == "--target" || token == "--enum-tables") {
+            if (optionValueMissing(arguments, index)) { error = token + " requires a value."; return false; }
+            const auto value = arguments.at(++index);
+            if (token == "--target") {
+                const auto target = parseGenerationTarget(value);
+                if (!target || !options.targets.insert(*target).second) { error = "Invalid or repeated --target."; return false; }
+            } else {
+                if (!options.enumTables.isEmpty() || (value != "full" && value != "consecutive")) {
+                    error = "--enum-tables accepts full or consecutive, once."; return false;
+                }
+                options.enumTables = value;
+            }
+            continue;
+        }
         if (token ==
             QStringLiteral(
                 "--dry-run")) {
@@ -10617,6 +10752,9 @@ void writeTextResponse(
                 token);
         return false;
     }
+    if (options.deferGeneration && !options.targets.empty()) {
+        error = "--defer-generation and --target are mutually exclusive."; return false;
+    }
     if (options.force &&
         options.dryRun) {
         error =
@@ -10648,8 +10786,9 @@ void writeTextResponse(
 readPatch(
     const QString& patchPath,
     QTextStream& standardInput,
-    QString& error)
+    QString& error, bool allowEmpty = false)
 {
+    const CliStage stage("patch_input");
     QByteArray content;
     if (patchPath ==
         QStringLiteral("-")) {
@@ -10741,7 +10880,7 @@ readPatch(
             QStringLiteral(
                 "operations"));
     if (!operations.isArray() ||
-        operations.toArray().isEmpty()) {
+        (!allowEmpty && operations.toArray().isEmpty())) {
         error =
             QStringLiteral(
                 "Patch operations must be a non-empty JSON array.");
@@ -10884,6 +11023,53 @@ resolveOperationObjectReference(
     return referencedId.toString();
 }
 
+[[nodiscard]] bool preflightOperations(const Workspace& workspace, const QJsonArray& operations,
+                                       qsizetype& failedIndex, QString& error)
+{
+    const CliStage stage("preflight");
+    const std::map<QString, QStringList> required{
+        {"set", {"id","property","value"}}, {"add", {"kind","id","parent_id","value"}},
+        {"copy", {"id","parent_id","new_id"}}, {"move", {"id","parent_id"}}, {"remove", {"id"}},
+        {"set-many", {"select","expect_count","values"}}, {"remove-many", {"select","expect_count"}},
+        {"reorder", {"id","before_id"}}};
+    std::set<QString> references;
+    bool fixedStateUnchanged = true;
+    for (qsizetype index = 0; index < operations.size(); ++index) {
+        failedIndex = index;
+        if (!operations[index].isObject()) { error = "Operation must be an object."; return false; }
+        const auto operation = operations[index].toObject(); const auto op = operation.value("op").toString();
+        const auto found = required.find(op);
+        if (found == required.end()) { error = "Unknown operation '" + op + "'."; return false; }
+        for (const auto& member : found->second) if (!operation.contains(member)) { error = "Operation requires '" + member + "'."; return false; }
+        for (const auto* member : {"id","parent_id","before_id"}) {
+            const auto value = operation.value(member);
+            if (!value.isObject()) continue;
+            const auto reference = value.toObject();
+            if (reference.contains("operation")) {
+                const auto target = reference.value("operation");
+                if (reference.size()!=1 || !target.isDouble() || target.toDouble()<0 ||
+                    std::floor(target.toDouble())!=target.toDouble() || target.toDouble()>=static_cast<double>(index)) {
+                    error = "Operation reference must identify an earlier operation."; return false;
+                }
+            } else if (reference.size()!=1 || !reference.value("ref").isString() || !references.contains(reference.value("ref").toString())) {
+                error = "Named reference must identify an earlier operation."; return false;
+            }
+        }
+        if (operation.contains("ref")) {
+            const auto ref = operation.value("ref"); const auto name = ref.toString();
+            if (!ref.isString() || name.isEmpty() || name.trimmed()!=name || !references.insert(name).second) {
+                error = "Operation ref must be a unique non-empty name without outer whitespace."; return false;
+            }
+        }
+        if (op == "move" && operation.contains("before_id") && fixedStateUnchanged && operation.value("id").isString()) {
+            const auto* reg = findRegister(workspace, operation.value("id").toString().toStdString());
+            if (reg && reg->addressFixed) { error = "Fixed-address registers cannot exchange offset slots; use reorder for document order."; return false; }
+        }
+        if (op != "set" || operation.value("property") == "fixed") fixedStateUnchanged = false;
+    }
+    return true;
+}
+
 [[nodiscard]] bool applyOperations(
     Workspace& candidate,
     const QJsonArray& operations,
@@ -10891,6 +11077,8 @@ resolveOperationObjectReference(
     qsizetype& failedIndex,
     QString& error)
 {
+    const CliStage stage("patch");
+    if (auto* metrics = CliMetrics::current()) metrics->operationCount = static_cast<std::uint64_t>(operations.size());
     for (qsizetype index = 0;
          index < operations.size();
          ++index) {
@@ -10972,6 +11160,108 @@ resolveOperationObjectReference(
                 changes.append(
                     std::move(change));
             };
+        if (op == "set-many" || op == "remove-many") {
+            if (!hasOnlyKeys(operation, op == "set-many"
+                    ? std::set<QString>{"op", "select", "expect_count", "values"}
+                    : std::set<QString>{"op", "select", "expect_count", "cascade"}, error)) return false;
+            ObjectSelector selector;
+            if (!parseSelector(operation.value("select"), selector, error)) return false;
+            const auto expected = operation.value("expect_count");
+            if (!expected.isDouble() || expected.toDouble() < 0 || expected.toDouble() > 2147483647 ||
+                std::floor(expected.toDouble()) != expected.toDouble()) {
+                error = "Batch operation requires a non-negative integer expect_count."; return false;
+            }
+            const auto model = inspectModel(candidate);
+            const auto selected = selectObjects(model, selector);
+            if (!selected.error.empty()) { error = fromUtf8(selected.error); return false; }
+            if (selected.ids.size() != static_cast<std::size_t>(expected.toInteger())) {
+                error = QStringLiteral("Selector expected %1 object(s), found %2.").arg(expected.toInteger()).arg(selected.ids.size()); return false;
+            }
+            const auto values = operation.value("values").toObject();
+            if (op == "set-many" && (!operation.value("values").isObject() || values.isEmpty())) {
+                error = "set-many values must be a non-empty object."; return false;
+            }
+            bool cascade = false;
+            if (op == "remove-many" && operation.contains("cascade") &&
+                !requireBool(operation.value("cascade"), cascade, error)) return false;
+            const std::set<std::string> selectedIds(selected.ids.begin(), selected.ids.end());
+            if (op == "remove-many") for (const auto& id : selected.ids) {
+                auto parent = inspectedProperty(model.at(id), "parent");
+                while (model.contains(parent)) {
+                    if (selectedIds.contains(parent)) { error = "remove-many cannot select both an ancestor and its descendant."; return false; }
+                    parent = inspectedProperty(model.at(parent), "parent");
+                }
+            }
+            QJsonArray targets, details;
+            bool anyChanged = false;
+            for (const auto& objectId : selected.ids) {
+                const auto id = fromUtf8(objectId);
+                targets.append(QJsonObject{{"id", id}, {"path", fromUtf8(inspectedPath(model, objectId))}});
+                if (op == "set-many") {
+                    QJsonObject beforeValues, afterValues;
+                    for (auto it = values.begin(); it != values.end(); ++it) {
+                        const auto before = findObjectJson(candidate, objectId).toObject().value(it.key());
+                        QString kind;
+                        if (!setObjectProperty(candidate, id, it.key(), it.value(), kind, error)) return false;
+                        const auto after = findObjectJson(candidate, objectId).toObject().value(it.key());
+                        beforeValues.insert(it.key(), before); afterValues.insert(it.key(), after);
+                        anyChanged = anyChanged || before != after;
+                    }
+                    details.append(QJsonObject{{"id", id}, {"before", beforeValues}, {"after", afterValues}});
+                } else {
+                    QString kind; std::size_t descendants = 0;
+                    if (!removeObjectChecked(candidate, id, cascade, kind, descendants, error)) return false;
+                    anyChanged = true;
+                    details.append(QJsonObject{{"id", id}, {"descendant_count", static_cast<qint64>(descendants)}});
+                }
+            }
+            appendChange(QJsonObject{{"index", static_cast<qint64>(index)}, {"op", op},
+                {"matched_count", static_cast<qint64>(selected.ids.size())}, {"targets", targets},
+                {"details", details}, {"changed", anyChanged}});
+            continue;
+        }
+        if (op == "reorder") {
+            if (!hasOnlyKeys(operation, {"op","ref","id","parent_id","before_id"}, error)) return false;
+            if (!operation.contains("before_id")) { error = "reorder requires before_id (null means end)."; return false; }
+            const auto id = resolveOperationObjectReference(operation.value("id"), changes, index, "id", error);
+            if (!id) return false;
+            RegisterBlock* parent = nullptr;
+            for (auto& page : candidate.addressSpaces) for (auto& block : page.blocks)
+                for (auto& reg : block.registers) if (fromUtf8(reg.id) == *id) parent = &block;
+            if (!parent) { error = "reorder id must identify a register."; return false; }
+            if (operation.contains("parent_id")) {
+                const auto requested = resolveOperationObjectReference(operation.value("parent_id"), changes, index, "parent_id", error);
+                if (!requested || *requested != fromUtf8(parent->id)) { error = "reorder is same-parent only."; return false; }
+            }
+            auto ordered = documentRegisters(*parent);
+            const auto source = std::ranges::find_if(ordered, [&](const Register* reg) { return fromUtf8(reg->id) == *id; });
+            const Register* moved = *source;
+            QString before;
+            if (!operation.value("before_id").isNull()) {
+                const auto resolved = resolveOperationObjectReference(operation.value("before_id"), changes, index, "before_id", error);
+                if (!resolved) return false;
+                before = *resolved;
+            }
+            if (before == *id) { error = "reorder cannot use itself as before_id."; return false; }
+            const auto beforeOrder = ordered;
+            ordered.erase(source);
+            auto destination = ordered.end();
+            if (!before.isEmpty()) {
+                destination = std::ranges::find_if(ordered, [&](const Register* reg) { return fromUtf8(reg->id) == before; });
+                if (destination == ordered.end()) { error = "reorder before_id must identify a sibling register."; return false; }
+            }
+            ordered.insert(destination, moved);
+            QJsonArray affected;
+            if (beforeOrder != ordered) for (std::size_t rank = 0; rank < ordered.size(); ++rank) {
+                auto* reg = findRegister(candidate, ordered[rank]->id);
+                if (reg->displayOrder != rank) affected.append(fromUtf8(reg->id));
+                reg->displayOrder = rank;
+            }
+            appendChange(QJsonObject{{"index", static_cast<qint64>(index)}, {"op", op}, {"id", *id},
+                {"parent_id", fromUtf8(parent->id)}, {"before_id", operation.value("before_id")},
+                {"affected_ids", affected}, {"changed", beforeOrder != ordered}});
+            continue;
+        }
         if (op ==
             QStringLiteral("set")) {
             if (!hasOnlyKeys(
@@ -11762,7 +12052,7 @@ resolveOperationObjectReference(
 
         error =
             QStringLiteral(
-                "Operation 'op' must be one of: set, add, copy, move, remove.");
+                "Operation 'op' must be one of: set, add, copy, move, remove, set-many, remove-many, reorder.");
         return false;
     }
     failedIndex = -1;
@@ -12191,6 +12481,12 @@ void addGenerationRecovery(
                     QStringLiteral(
                         "aliases")));
         }
+        if (QStringList{"list","find","get","get-many"}.contains(canonicalCommand))
+            result.insert("projection_contract", schema.value("projection_contract"));
+        if (canonicalCommand == "apply") {
+            result.insert("operation_schemas", schema.value("operation_schemas"));
+            result.insert("generation_policy_contract", schema.value("generation_policy_contract"));
+        }
         response.ok = true;
         response.result =
             std::move(result);
@@ -12319,7 +12615,7 @@ void addGenerationRecovery(
         generation =
             generateArtifacts(
                 project.workspace,
-                generationManifest);
+                generationManifest, generationObserver());
         appendUniqueDiagnostics(
             response.diagnostics,
             std::move(
@@ -12469,7 +12765,7 @@ void addGenerationRecovery(
     if (options.generate) {
         ArtifactWriteReport report =
             writeArtifactsWithReport(
-                generation.artifacts);
+                generation.artifacts, generationObserver());
         artifactWritesSuccessful =
             report.successful();
         artifacts =
@@ -12642,7 +12938,7 @@ void addGenerationRecovery(
 }
 
 [[nodiscard]] CommandResponse runValidate(
-    const QString& projectPath)
+    const QString& projectPath, const std::vector<ConsistencyRule>& rules)
 {
     OpenedProject opened =
         open(projectPath);
@@ -12657,6 +12953,11 @@ void addGenerationRecovery(
         std::move(
             opened.open
                 .diagnostics);
+    if (opened.open.workspace && !rules.empty()) {
+        const auto findings = timed("consistency_rules", [&] { return validateConsistencyRules(*opened.open.workspace, rules); });
+        response.ruleFindings = consistencyFindingsJson(findings);
+        appendUniqueDiagnostics(response.diagnostics, consistencyDiagnostics(findings));
+    }
     response.ok =
         opened.open.manifest &&
         opened.open.workspace &&
@@ -13216,7 +13517,7 @@ void addGenerationRecovery(
     GenerationResult generation =
         generateArtifacts(
             *opened.open.workspace,
-            generationManifest);
+            generationManifest, generationObserver());
     response.diagnostics.insert(
         response.diagnostics.end(),
         std::make_move_iterator(
@@ -14835,7 +15136,7 @@ void addGenerationRecovery(
     GenerationResult generation =
         generateArtifacts(
             *opened.open.workspace,
-            generationManifest);
+            generationManifest, generationObserver());
     response.diagnostics.insert(
         response.diagnostics.end(),
         std::make_move_iterator(
@@ -14906,7 +15207,7 @@ void addGenerationRecovery(
 
     ArtifactWriteReport writeReport =
         writeArtifactsWithReport(
-            generation.artifacts);
+            generation.artifacts, generationObserver());
     artifacts =
         std::move(
             writeReport.artifacts);
@@ -14985,7 +15286,7 @@ void addGenerationRecovery(
 
 [[nodiscard]] CommandResponse runApply(
     const QStringList& arguments,
-    QTextStream& standardInput)
+    QTextStream& standardInput, const std::vector<ConsistencyRule>& rules)
 {
     ApplyOptions options;
     QString optionErrorText;
@@ -15006,7 +15307,7 @@ void addGenerationRecovery(
         readPatch(
             options.patchPath,
             standardInput,
-            patchErrorText);
+            patchErrorText, !options.enumTables.isEmpty());
     if (!patch) {
         CommandResponse response;
         response.command =
@@ -15087,10 +15388,36 @@ void addGenerationRecovery(
             ExitCode::projectError;
         return response;
     }
+    ProjectManifest candidateManifest = *opened.open.manifest;
+    bool formatChanged = false;
+    if (!options.enumTables.isEmpty()) {
+        bool hasDocumentTarget = false;
+        for (auto& target : candidateManifest.targets) if (target.kind != GenerationTargetKind::cHeader) {
+            hasDocumentTarget = true;
+            const auto found = target.options.find("enum_tables");
+            const auto previous = found == target.options.end() ? "full" : found->second;
+            if (previous != options.enumTables.toStdString()) {
+                response.configurationChanges.append(QJsonObject{{"kind", generationTargetToken(target.kind)},
+                    {"property", "enum_tables"}, {"before", fromUtf8(previous)}, {"after", options.enumTables}});
+                target.options["enum_tables"] = options.enumTables.toStdString(); formatChanged = true;
+            }
+        }
+        if (!hasDocumentTarget) return usageError("apply", "--enum-tables requires a configured XLSX or Markdown target.");
+    }
+    ProjectManifest generationManifest;
+    if (!selectGenerationManifest(candidateManifest, options.targets, opened.path, generationManifest, response.diagnostics)) {
+        response.exitCode = ExitCode::projectError; return response;
+    }
+    response.generationDeferred = options.deferGeneration;
+    response.generationPartial = generationManifest.targets.size() != candidateManifest.targets.size();
+    for (const auto& target : candidateManifest.targets)
+        if (options.deferGeneration || (!options.targets.empty() && !options.targets.contains(target.kind)))
+            response.pendingOutputs.append(QJsonObject{{"kind", generationTargetToken(target.kind)},
+                {"path", fromPath(target.path.resolved)}, {"generation_state", "deferred"},
+                {"outputs_current", QJsonValue(QJsonValue::Null)}});
     const std::vector<Diagnostic>
         baselineValidation =
-            validateWorkspace(
-                *opened.open.workspace);
+            timed("baseline_validation", [&] { return validateWorkspace(*opened.open.workspace); });
     response.diagnostics =
         withoutMatchingDiagnostics(
             std::move(
@@ -15166,12 +15493,14 @@ void addGenerationRecovery(
                   QStringLiteral(
                       "operations"))
             .toArray();
+    if (auto* metrics = CliMetrics::current()) metrics->operationCount = static_cast<std::uint64_t>(operations.size());
     Workspace candidate =
         *opened.open.workspace;
     QJsonArray changes;
     qsizetype failedIndex = -1;
     QString operationError;
-    if (!applyOperations(
+    const bool preflightPassed = !options.preflight || preflightOperations(candidate, operations, failedIndex, operationError);
+    if (!preflightPassed || !applyOperations(
             candidate,
             operations,
             changes,
@@ -15200,6 +15529,9 @@ void addGenerationRecovery(
                 operations,
                 changes,
                 operationError));
+        if (!preflightPassed) {
+            auto failure = result.value("failure").toObject(); failure.insert("stage", "preflight"); result.insert("failure", failure);
+        }
         response.result =
             result;
         response.exitCode =
@@ -15207,14 +15539,18 @@ void addGenerationRecovery(
         return response;
     }
 
-    const bool changed =
+    const bool changed = formatChanged ||
         workspaceJson(candidate) !=
         workspaceJson(
             *opened.open.workspace);
     std::vector<Diagnostic>
         candidateValidation =
-            validateWorkspace(
-                candidate);
+            timed("candidate_validation", [&] { return validateWorkspace(candidate); });
+    if (!rules.empty()) {
+        const auto findings = timed("consistency_rules", [&] { return validateConsistencyRules(candidate, rules); });
+        response.ruleFindings = consistencyFindingsJson(findings);
+        appendUniqueDiagnostics(candidateValidation, consistencyDiagnostics(findings));
+    }
     if (repairMode) {
         repair =
             repairJson(
@@ -15299,10 +15635,8 @@ void addGenerationRecovery(
         return response;
     }
 
-    GenerationResult generation =
-        generateArtifacts(
-            candidate,
-            *opened.open.manifest);
+    GenerationResult generation = options.deferGeneration ? GenerationResult{} :
+        generateArtifacts(candidate, generationManifest, generationObserver());
     appendUniqueDiagnostics(
         response.diagnostics,
         std::move(
@@ -15393,9 +15727,7 @@ void addGenerationRecovery(
 
     appendUniqueDiagnostics(
         response.diagnostics,
-        saveProjectFile(
-            *opened.open.manifest,
-            candidate));
+        timed("save_model", [&] { return saveProjectFile(candidateManifest, candidate); }));
     if (hasErrors(
             response.diagnostics)) {
         response.result =
@@ -15447,6 +15779,11 @@ void addGenerationRecovery(
     }
     response.revision =
         newRevision;
+    if (options.deferGeneration) {
+        response.ok = true;
+        response.result = applyResult(false, true, true, false, false, opened.revision, newRevision, changes, {}, repair);
+        return response;
+    }
 
     const auto pendingResult =
         [&](const QString& reason,
@@ -15540,7 +15877,7 @@ void addGenerationRecovery(
 
     ArtifactWriteReport writeReport =
         writeArtifactsWithReport(
-            generation.artifacts);
+            generation.artifacts, generationObserver());
     artifacts =
         std::move(
             writeReport.artifacts);
@@ -15741,8 +16078,23 @@ int run(
             ExitCode::success);
     }
 
-    const QString command =
-        arguments.front().toLower();
+    const QString command = arguments.front().toLower();
+    PresentationOptions presentation;
+    QString extensionError;
+    std::vector<ConsistencyRule> rules;
+    const bool presentationValid = parsePresentationOptions(arguments, optionTerminatorIndex, presentation, extensionError);
+    CliMetrics metrics(presentation.stats);
+    if (!presentationValid || (!presentation.rulesPath.isEmpty() &&
+        !timed("rules_load_parse", [&] { return loadConsistencyRules(presentation.rulesPath, rules, extensionError); }))) {
+        const auto invalid = usageError(command, extensionError);
+        if (json) writeJsonResponse(invalid, standardOutput);
+        else {
+            if (presentation.stats)
+                standardError << "Stats: " << QJsonDocument(metrics.json()).toJson(QJsonDocument::Compact) << '\n';
+            writeTextResponse(invalid, standardOutput, standardError);
+        }
+        return static_cast<int>(invalid.exitCode);
+    }
     CommandResponse response;
     if (command ==
         QStringLiteral("help")) {
@@ -15802,7 +16154,7 @@ int run(
         } else {
             response =
                 runValidate(
-                    arguments.at(1));
+                    arguments.at(1), rules);
         }
     } else if (
         command ==
@@ -15859,7 +16211,7 @@ int run(
         response =
             runApply(
                 arguments,
-                standardInput);
+                standardInput, rules);
     } else {
         const QString suggestion =
             suggestedCommand(
@@ -15885,6 +16237,32 @@ int run(
         }
     }
 
+    if (!presentation.rulesPath.isEmpty() && response.result.isObject()) {
+        auto result = response.result.toObject(); result.insert("rule_findings", response.ruleFindings); response.result = result;
+    }
+    if (command == "apply" && response.result.isObject() && (response.generationDeferred || response.generationPartial)) {
+        auto result = response.result.toObject();
+        const bool failed = !response.ok;
+        const bool generationFailed = result.value("saved").toBool() || result.value("failure").toObject().value("stage") == "generation";
+        result.insert("generation_state", failed ? (generationFailed ? "failed" : "not_started") : response.generationDeferred ? "deferred" : result.value("dry_run").toBool() ? "previewed" : result.value("generated").toBool() ? "partial" : "not_generated");
+        result.insert("pending_outputs", response.pendingOutputs);
+        result.insert("selected_outputs_current", result.value("outputs_current"));
+        result.insert("outputs_current", QJsonValue(QJsonValue::Null));
+        if (response.generationDeferred) {
+            result.insert("generation_previewed", false);
+            result.insert("selected_outputs_current", QJsonValue(QJsonValue::Null));
+        }
+        response.result = result;
+    }
+    if (!response.configurationChanges.isEmpty() && response.result.isObject()) {
+        auto result = response.result.toObject(); result.insert("configuration_changes", response.configurationChanges); response.result = result;
+    }
+    response.result = presentResult(command, response.result, presentation);
+    if (presentation.stats && !json) {
+        auto metadata = response.resultMetadata;
+        metadata.insert("stats", metrics.json()); response.resultMetadata = metadata;
+        standardError << "Stats: " << QJsonDocument(metrics.json()).toJson(QJsonDocument::Compact) << '\n';
+    }
     if (json) {
         writeJsonResponse(
             response,

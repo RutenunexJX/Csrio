@@ -416,7 +416,9 @@ void parseGeneration(
                 static_cast<void>(value);
                 const bool supported =
                     (*parsedTargetKind == GenerationTargetKind::cHeader && name == "guard")
-                    || (*parsedTargetKind == GenerationTargetKind::markdown && name == "title");
+                    || (*parsedTargetKind == GenerationTargetKind::markdown && name == "title")
+                    || (*parsedTargetKind != GenerationTargetKind::cHeader && name == "enum_tables"
+                        && (value == "full" || value == "consecutive"));
                 if (!supported) {
                     addDiagnostic(
                         diagnostics,

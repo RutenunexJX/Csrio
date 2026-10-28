@@ -5,11 +5,15 @@
 #include "regmap/core/model.hpp"
 
 #include <filesystem>
+#include <functional>
+#include <string_view>
 #include <cstdint>
 #include <string>
 #include <vector>
 
 namespace regmap {
+
+using GenerationObserver = std::function<void(std::string_view stage, double milliseconds, std::uint64_t bytes, bool ok)>;
 
 struct GeneratedArtifact {
     GenerationTargetKind kind {GenerationTargetKind::xlsx};
@@ -51,12 +55,12 @@ struct GeneratedArtifactInspection {
 
 [[nodiscard]] GenerationResult generateArtifacts(
     const Workspace& workspace,
-    const ProjectManifest& manifest);
+    const ProjectManifest& manifest, const GenerationObserver& observer = {});
 
 [[nodiscard]] GeneratedArtifactInspection inspectGeneratedArtifact(
     const GeneratedArtifact& artifact);
 
 [[nodiscard]] std::vector<Diagnostic> writeGeneratedArtifacts(
-    const std::vector<GeneratedArtifact>& artifacts);
+    const std::vector<GeneratedArtifact>& artifacts, const GenerationObserver& observer = {});
 
 } // namespace regmap

@@ -1,6 +1,7 @@
 #include "regmap/core/generation.hpp"
 
 #include "regmap/core/xlsx_export.hpp"
+#include "regmap/core/document_layout.hpp"
 
 #include "path_identity.hpp"
 #include "atomic_file_writer.hpp"
@@ -12,6 +13,7 @@
 #include <QString>
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <cstdint>
 #include <limits>
@@ -32,6 +34,7 @@ namespace {
 constexpr std::string_view writeFailureCode = "RM4000";
 constexpr std::string_view symbolCollisionCode = "RM4001";
 constexpr std::string_view addressOverflowCode = "RM4002";
+constexpr std::string_view invalidOutputOptionCode = "RM4003";
 [[nodiscard]] std::string outputWriteFailureMessage(const GeneratedArtifact& artifact,
                                                     std::string_view operation,
                                                     const QString& error)
@@ -469,12 +472,20 @@ void generateMarkdownFields(std::ostringstream& output, const std::vector<Field>
 }
 
 void generateMarkdownEnums(std::ostringstream& output, const std::vector<Field>& fields,
-                           std::string_view parentPath)
+                           std::string_view parentPath, bool consecutiveEnums)
 {
-    for (const Field* field : orderedFields(fields)) {
+    const auto references = consecutiveEnums ? consecutiveEnumReferences(documentFields(fields)) : std::map<ObjectId, ObjectId>{};
+    std::map<ObjectId, std::string> paths;
+    for (const Field* field : documentFields(fields)) {
         const std::string path =
             parentPath.empty() ? field->name : std::string(parentPath) + '.' + field->name;
-        if (!field->enumValues.empty()) {
+        paths.emplace(field->id, path);
+        if (const auto reference = references.find(field->id); reference != references.end()) {
+            output << "Enum values for **" << escapeMarkdown(path) << "**: see **"
+                   << escapeMarkdown(paths.at(reference->second)) << "** ([enum definition](#enum-"
+                   << QByteArray::fromStdString(reference->second).toHex().toStdString() << ")).\n\n";
+        } else if (!field->enumValues.empty()) {
+            if (consecutiveEnums) output << "<a id=\"enum-" << QByteArray::fromStdString(field->id).toHex().toStdString() << "\"></a>\n\n";
             output << "Enum values for **" << escapeMarkdown(path) << "**:\n\n"
                    << "| Name | Value | Description |\n|---|---:|---|\n";
             for (const EnumValue* enumValue : orderedEnums(*field)) {
@@ -484,7 +495,7 @@ void generateMarkdownEnums(std::ostringstream& output, const std::vector<Field>&
             }
             output << '\n';
         }
-        generateMarkdownEnums(output, field->members, path);
+        generateMarkdownEnums(output, field->members, path, consecutiveEnums);
     }
 }
 
@@ -586,7 +597,7 @@ void generateMarkdownEnums(std::ostringstream& output, const std::vector<Field>&
                    << "| Register | Address | Offset | Width | Type | Access | Range | Initial | "
                       "Reset | Tags | State |\n"
                    << "|---|---:|---:|---:|---|---|---|---:|---:|---|---|\n";
-            for (const Register* reg : orderedRegisters(*block)) {
+            for (const Register* reg : documentRegisters(*block)) {
                 const auto address = absoluteAddress(*addressSpace, *block, *reg);
                 if (!address) {
                     addDiagnostic(diagnostics, addressOverflowCode,
@@ -622,7 +633,7 @@ void generateMarkdownEnums(std::ostringstream& output, const std::vector<Field>&
             }
             output << '\n';
 
-            for (const Register* reg : orderedRegisters(*block)) {
+            for (const Register* reg : documentRegisters(*block)) {
                 output << "#### " << escapeMarkdown(reg->name) << "\n\n";
                 if (!reg->description.empty()) {
                     output << escapeMarkdown(reg->description) << "\n\n";
@@ -652,7 +663,7 @@ void generateMarkdownEnums(std::ostringstream& output, const std::vector<Field>&
                     generateMarkdownFields(output, reg->fields, {}, 0, reg->width,
                                            reg->resetValue);
                     output << '\n';
-                    generateMarkdownEnums(output, reg->fields, {});
+                    generateMarkdownEnums(output, reg->fields, {}, option(target, "enum_tables", "full") == "consecutive");
                 }
             }
         }
@@ -667,6 +678,30 @@ void generateMarkdownEnums(std::ostringstream& output, const std::vector<Field>&
 
 } // namespace
 
+namespace {
+struct ArtifactTiming {
+    const GenerationObserver& observer;
+    const GeneratedArtifact& artifact;
+    const std::vector<Diagnostic>& diagnostics;
+    std::size_t diagnosticStart;
+    std::optional<std::uint64_t> payloadBytes;
+    std::string stage;
+    std::chrono::steady_clock::time_point start;
+    ArtifactTiming(const GenerationObserver& callback, const GeneratedArtifact& value,
+                   const std::vector<Diagnostic>& errors, std::string name)
+        : observer(callback), artifact(value), diagnostics(errors), diagnosticStart(errors.size()),
+          stage(std::move(name)), start(callback ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{}) {}
+    ~ArtifactTiming() {
+        if (!observer) return;
+        bool ok = true;
+        for (std::size_t i = diagnosticStart; i < diagnostics.size(); ++i)
+            if (diagnostics[i].severity == DiagnosticSeverity::error) ok = false;
+        observer(stage, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(),
+                 payloadBytes.value_or(artifact.isBinary() ? artifact.binaryContent.size() : artifact.content.size()), ok);
+    }
+};
+} // namespace
+
 bool GenerationResult::hasErrors() const noexcept
 {
     return std::ranges::any_of(diagnostics, [](const Diagnostic& diagnostic) {
@@ -674,11 +709,22 @@ bool GenerationResult::hasErrors() const noexcept
     });
 }
 
-GenerationResult generateArtifacts(const Workspace& workspace, const ProjectManifest& manifest)
+GenerationResult generateArtifacts(const Workspace& workspace, const ProjectManifest& manifest, const GenerationObserver& observer)
 {
     GenerationResult result;
     std::set<detail::PathIdentity> paths;
     for (const auto& target : manifest.targets) {
+        GeneratedArtifact artifact;
+        artifact.kind = target.kind;
+        artifact.path = target.path.resolved;
+        ArtifactTiming timing(observer, artifact, result.diagnostics, "generate." + std::string(toString(target.kind)));
+        if (const auto mode = target.options.find("enum_tables"); target.kind != GenerationTargetKind::cHeader &&
+            mode != target.options.end() && mode->second != "full" && mode->second != "consecutive") {
+            SourceLocation source; source.workbook = manifest.manifestPath;
+            addDiagnostic(result.diagnostics, invalidOutputOptionCode,
+                "enum_tables must be full or consecutive.", {}, std::move(source));
+            continue;
+        }
         const std::string displayPath = target.path.resolved.generic_string();
         if (!paths.insert(detail::pathIdentity(target.path.resolved)).second) {
             SourceLocation source;
@@ -699,12 +745,9 @@ GenerationResult generateArtifacts(const Workspace& workspace, const ProjectMani
             continue;
         }
 
-        GeneratedArtifact artifact;
-        artifact.kind = target.kind;
-        artifact.path = target.path.resolved;
         switch (target.kind) {
         case GenerationTargetKind::xlsx: {
-            auto workbook = exportReadOnlyWorkbook(workspace);
+            auto workbook = exportReadOnlyWorkbook(workspace, option(target, "enum_tables", "full") == "consecutive");
             artifact.binaryContent = std::move(workbook.bytes);
             std::move(workbook.diagnostics.begin(), workbook.diagnostics.end(),
                       std::back_inserter(result.diagnostics));
@@ -717,6 +760,7 @@ GenerationResult generateArtifacts(const Workspace& workspace, const ProjectMani
             artifact.content = generateMarkdown(workspace, target, result.diagnostics);
             break;
         }
+        timing.payloadBytes = artifact.isBinary() ? artifact.binaryContent.size() : artifact.content.size();
         result.artifacts.push_back(std::move(artifact));
     }
     return result;
@@ -774,10 +818,11 @@ GeneratedArtifactInspection inspectGeneratedArtifact(
     return result;
 }
 
-std::vector<Diagnostic> writeGeneratedArtifacts(const std::vector<GeneratedArtifact>& artifacts)
+std::vector<Diagnostic> writeGeneratedArtifacts(const std::vector<GeneratedArtifact>& artifacts, const GenerationObserver& observer)
 {
     std::vector<Diagnostic> diagnostics;
     for (const auto& artifact : artifacts) {
+        const ArtifactTiming timing(observer, artifact, diagnostics, "write." + std::string(toString(artifact.kind)));
         const QString path = fromPath(artifact.path);
         const QFileInfo information(path);
         QDir directory;

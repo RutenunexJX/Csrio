@@ -1399,7 +1399,7 @@ void CliTests::exposesMachineReadableSchema()
             .value(
                 QStringLiteral("options"))
             .toArray();
-    QCOMPARE(diffOptions.size(), 6);
+    QCOMPARE(diffOptions.size(), 8);
     QCOMPARE(
         optionByName(
             diffOptions,
@@ -2783,7 +2783,7 @@ void CliTests::exposesMachineReadableSchema()
                     "operation_named_reference"))
             .toString(),
         QStringLiteral(
-            "every operation may define a unique case-sensitive ref; object reference members accept {'ref': <name>} for an earlier operation"));
+            "single-object operations may define a unique case-sensitive ref; set-many/remove-many cannot define ref; object reference members accept {'ref': <name>} for an earlier operation"));
     QCOMPARE(
         result.value(
                   QStringLiteral(
@@ -4713,7 +4713,7 @@ void CliTests::diffsProjectsReadOnly()
                                    "usage"))
             .toString(),
         QStringLiteral(
-            "regmapc [--json] diff <before.regmap.yaml> <after.regmap.yaml> [--kind <kind>] [--offset <count>] [--limit <count>] [--expect-before <sha256:...>] [--expect-after <sha256:...>] [--require-equal]"));
+            "regmapc [--json] diff <before.regmap.yaml> <after.regmap.yaml> [--kind <kind>] [--offset <count>] [--limit <count>] [--expect-before <sha256:...>] [--expect-after <sha256:...>] [--require-equal] [--stats] [--changes summary|full]"));
 
     const Invocation invalidKind =
         invoke(
@@ -5039,7 +5039,7 @@ void CliTests::getsManyObjectsInOneSnapshot()
                 QStringLiteral("usage"))
             .toString(),
         QStringLiteral(
-            "regmapc [--json] get-many <project.regmap.yaml> <stable-id>... [--expect <sha256:...>]"));
+            "regmapc [--json] get-many <project.regmap.yaml> <stable-id>... [--expect <sha256:...>] [--stats] [--properties name,address,...]"));
     QVERIFY(
         helpResult
             .value(
@@ -5361,7 +5361,7 @@ void CliTests::getsManyObjectsInOneSnapshot()
                 QStringLiteral("usage"))
             .toString(),
         QStringLiteral(
-            "regmapc [--json] get-many <project.regmap.yaml> <stable-id>... [--expect <sha256:...>]"));
+            "regmapc [--json] get-many <project.regmap.yaml> <stable-id>... [--expect <sha256:...>] [--stats] [--properties name,address,...]"));
 
     const Invocation duplicateExpect =
         invoke(
@@ -8775,7 +8775,7 @@ void CliTests::returnsStableUsageAndProjectErrors()
                                    "usage"))
             .toString(),
         QStringLiteral(
-            "regmapc [--json] summary <project.regmap.yaml>"));
+            "regmapc [--json] summary <project.regmap.yaml> [--stats]"));
     QVERIFY(
         missingArgumentRoot.value(
                                QStringLiteral(
@@ -8800,7 +8800,7 @@ void CliTests::returnsStableUsageAndProjectErrors()
         textMissingArgument.standardError,
         QStringLiteral(
             "summary requires exactly one project path.\n"
-            "Usage: regmapc [--json] summary <project.regmap.yaml>\n"));
+            "Usage: regmapc [--json] summary <project.regmap.yaml> [--stats]\n"));
 
     for (const QString& versionToken :
          {QStringLiteral("version"),

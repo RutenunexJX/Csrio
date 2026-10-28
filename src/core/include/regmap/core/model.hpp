@@ -100,6 +100,7 @@ struct Register {
     std::string name;
     std::uint64_t offset{0};
     bool addressFixed{false};
+    std::optional<std::uint64_t> displayOrder;
     std::uint32_t width{32};
     RegisterArray array;
     FieldType type{FieldType::unsignedInteger};

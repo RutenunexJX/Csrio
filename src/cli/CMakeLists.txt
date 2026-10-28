@@ -4,6 +4,12 @@ add_library(
     cli_artifacts.hpp
     cli_app.cpp
     cli_app.hpp
+    cli_automation.cpp
+    cli_automation.hpp
+    cli_presentation.cpp
+    cli_presentation.hpp
+    cli_metrics.cpp
+    cli_metrics.hpp
     cli_runtime.cpp
     cli_runtime.hpp
 )
