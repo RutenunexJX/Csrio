@@ -2993,7 +2993,7 @@ void CoreTests::generatesReadOnlyArtifacts()
     QCOMPARE(reservedNameCell->format().patternForegroundColor(),
              QColor(QStringLiteral("#E2E3E5")));
     QCOMPARE(reservedNameCell->format().fontColor(), QColor(QStringLiteral("#9C0006")));
-    QVERIFY(reservedNameCell->format().fontBold());
+    QVERIFY(!reservedNameCell->format().fontBold());
 
 #ifdef Q_OS_WIN
     const auto workbookArtifact =

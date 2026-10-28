@@ -1,6 +1,11 @@
 # Csrio
 
-Current version: `0.4.9`.
+Current version: `0.4.10`.
+
+Release 0.4.10 measures XLSX row heights from fonts, column widths and wrapped text.
+Long descriptions and enum content stay complete, with oversized cells spanning rows.
+Short values are centered; descriptions and ranges are top-left aligned. Enum links,
+outline groups and frozen headers follow the resulting layout.
 
 Release 0.4.9 uses readable field names and internal workbook hyperlinks for consecutive
 enum references in XLSX. Ambiguous field names include the register name. Source enum

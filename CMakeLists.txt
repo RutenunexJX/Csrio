@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.24)
 
 project(
     Csrio
-    VERSION 0.4.9
+    VERSION 0.4.10
     DESCRIPTION "Csrio register-map editor for FPGA and SystemVerilog development"
     LANGUAGES CXX
 )

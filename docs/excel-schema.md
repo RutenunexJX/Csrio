@@ -20,7 +20,7 @@ bitfield diagrams, or collapsed Field rows in the filter range.
 
 ## Page worksheet
 
-Each worksheet has the following fixed layout:
+Each worksheet normally has the following layout:
 
 - row 1: `Page - <Page name>`;
 - row 2: Page Base, Address Width, and Page description;
@@ -45,15 +45,36 @@ text and cycle through distinct colors. Register rows below them use these colum
 11. Description
 
 Register groups use alternating background colors. Reserved registers use a gray row with a
-bold red `[RESERVED]` label. Only registers whose type is `field` include detail rows: the first
+red `[RESERVED]` label. Only registers whose type is `field` include detail rows: the first
 detail row is a static proportional bitfield diagram. Each field block has its numeric MSB and LSB
 labels directly above its two ends. Field rows and recursive member rows follow the diagram, use
 one consistent warm-yellow background with dark-brown text, and store the field name without an
 indentation symbol. Their Access column shows software/host access only. These rows are grouped and
-initially collapsed. Scalar registers remain a single row. Description cells are left-aligned; all
-other table cells are centered.
+initially collapsed. Scalar registers normally remain a single row. Description and Range cells,
+including page/block descriptions, are left/top-aligned for long text. Other table cells are
+centered horizontally and vertically, including names, types, bits, access and numeric values.
+Body cells continue to wrap; hexadecimal address/value cells retain their monospaced font.
 
-Rows 1 through 4 are frozen so the row-4 table header remains visible; no columns are frozen.
+Rows through the table header are frozen (normally rows 1 through 4); no columns are frozen.
 Page detail sheets do not use AutoFilter because their Block bands, diagrams, and Field groups are
 not a flat record set. Addresses, offsets, Block bases and sizes, and initial/reset values are
 fixed-width hexadecimal text in a monospaced font, so Excel cannot convert or round them.
+
+
+## Text layout and row heights
+
+CLI and GUI exports use the same core layout. Body text uses regular Microsoft YaHei at 10 pt;
+only titles and header labels use bold. Description and Range columns receive more space, while
+short type, bit-width and access columns remain compact. No text is shortened and no font is
+shrunk to fit a fixed row height.
+
+Row heights are measured from each cell's actual font, column width, mixed Chinese/Latin wrapping,
+unbroken tokens and explicit line breaks, including empty lines. Measurement uses a fixed 96-DPI
+device and retains cell padding and a wrap/line-spacing tolerance. The tallest cell determines
+the logical row's height. Horizontally merged page/block descriptions use their combined width.
+
+When content needs more than Excel's 409.5 pt physical-row limit, the logical row spans vertically
+merged cells over multiple physical rows. Its complete text stays in the top cell. This can move
+subsequent row numbers; frozen headers, field outline groups and enum hyperlinks use the resulting
+positions. The workbook's data model and enum definitions are unchanged. `enum_tables: consecutive`
+continues to link later fields to the first field's Range cell, including when that cell is merged.

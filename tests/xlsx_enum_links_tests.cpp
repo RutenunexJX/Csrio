@@ -56,10 +56,21 @@ QMap<QString, Link> hyperlinks(QXlsx::Worksheet& sheet)
     }
     return result;
 }
+QStringList layoutDescriptions()
+{
+    return {QStringLiteral("短说明。"),
+        QStringLiteral("长中文说明：采样通道在转换完成后更新寄存器，软件读取时应保留状态位，配置变更须等待下一采样周期生效。").repeated(8),
+        QStringLiteral("Mixed 中英文：DMA buffer receives 1024 samples; sample_rate = 48 kHz，设置 ENABLE 后等待 READY。 ").repeated(8),
+        QStringLiteral("第一行：初始化。\n第二行：启动采样。\n\n第四行：读取结果。\n第五行：结束。"),
+        QStringLiteral("CRLF 第一行\r\n第二行\r第三行"),
+        QStringLiteral("UnbrokenToken_") + QString(240, QLatin1Char('W')),
+        QStringLiteral("短说明，同行由长枚举决定高度。"),
+        QStringLiteral("超长说明，保留内容且不超过 Excel 单行高度限制。\n").repeated(50) + QStringLiteral("说明结束")};
+}
 struct Fixture {
     QTemporaryDir directory;
     QString path, xlsx, header;
-    explicit Fixture(bool ambiguous)
+    explicit Fixture(bool ambiguous, bool layout = false)
     {
         path = directory.filePath("project.regmap.yaml");
         xlsx = directory.filePath("out/map.xlsx");
@@ -75,6 +86,10 @@ struct Fixture {
         block.id = "block-a";
         block.name = "AI";
         block.size = 256;
+        if (layout) {
+            page.description = layoutDescriptions().at(1).toStdString();
+            block.description = layoutDescriptions().at(3).toStdString();
+        }
         for (int registerIndex = 0; registerIndex < (ambiguous ? 2 : 1); ++registerIndex) {
             Register reg;
             reg.id = "reg-" + std::to_string(registerIndex);
@@ -83,19 +98,24 @@ struct Fixture {
             reg.offset = static_cast<std::uint64_t>(registerIndex) * 4;
             reg.addressFixed = true;
             reg.resetValue = UnsignedValue(0);
+            if (layout) reg.description = layoutDescriptions().at(2).toStdString();
             for (unsigned i = 0; i < 8; ++i) {
                 Field field;
                 field.id = reg.id + "-internal-stable-field-" + std::to_string(i);
                 field.name = QStringLiteral("CH%1_RANGE").arg(i + 8, 2, 10, QLatin1Char('0')).toStdString();
                 field.type = FieldType::enumeration;
-                field.lsb = i * 2;
-                field.msb = i * 2 + 1;
-                for (unsigned code = 0; code < 2; ++code) {
+                field.lsb = i * (layout ? 4 : 2);
+                field.msb = field.lsb + (layout ? 3 : 1);
+                if (layout) field.description = layoutDescriptions().at(i).toStdString();
+                for (unsigned code = 0; code < (layout ? 16U : 2U); ++code) {
                     EnumValue value;
                     value.id = field.id + "-enum-" + std::to_string(code);
                     value.name = code == 0 ? "OFF" : "ON";
                     value.value = UnsignedValue(code);
-                    value.description = "Shared definition";
+                    value.description = layout
+                        ? QStringLiteral("枚举长说明：设置此档位后硬件执行范围检查，Status register 返回处理状态。保留字节不得修改。枚举条目结束。").toStdString()
+                        : "Shared definition";
+                    if (layout) value.name = "MODE_" + std::to_string(code) + "_WITH_FULL_RANGE_CALIBRATION_AND_STATUS_CHECK";
                     field.enumValues.push_back(value);
                 }
                 reg.fields.push_back(field);
@@ -143,6 +163,8 @@ struct Fixture {
 class XlsxEnumLinksTests : public QObject {
     Q_OBJECT
 private slots:
+    void laysOutLongContentThroughCliAndGui_data();
+    void laysOutLongContentThroughCliAndGui();
     void distinguishesInternalAndExternalLinks();
     void exportsNamedLinksThroughCliAndGui_data();
     void exportsNamedLinksThroughCliAndGui();
@@ -244,6 +266,93 @@ void XlsxEnumLinksTests::exportsNamedLinksThroughCliAndGui()
     QCOMPARE(read(fixture.xlsx), fullWorkbook);
     QCOMPARE(read(fixture.header), header);
     QCOMPARE(cli({"get",fixture.path,"reg-0"}).root.value("result").toObject().value("fields"), originalFields);
+}
+
+void XlsxEnumLinksTests::laysOutLongContentThroughCliAndGui_data()
+{
+    QTest::addColumn<QString>("mode");
+    QTest::newRow("full-enums") << QStringLiteral("full");
+    QTest::newRow("consecutive-enum-links") << QStringLiteral("consecutive");
+}
+
+void XlsxEnumLinksTests::laysOutLongContentThroughCliAndGui()
+{
+    QFETCH(QString, mode);
+    Fixture fixture(false, true);
+    const auto generated = cli({"generate", fixture.path});
+    QVERIFY2(generated.code == 0, generated.bytes.constData());
+    const auto header = read(fixture.header);
+    const auto fields = cli({"get",fixture.path,"reg-0"}).root.value("result").toObject().value("fields");
+    const auto result = fixture.setMode(mode);
+    QVERIFY2(result.code == 0, result.bytes.constData());
+    const auto cliWorkbook = read(fixture.xlsx);
+    QCOMPARE(read(fixture.header), header);
+    QCOMPARE(cli({"get",fixture.path,"reg-0"}).root.value("result").toObject().value("fields"), fields);
+    QXlsx::Document book(fixture.xlsx);
+    QVERIFY(book.selectSheet(book.sheetNames().at(1)));
+    auto* sheet = book.currentWorksheet();
+    QVERIFY(sheet);
+    QMap<QString, int> rows;
+    for (int row = 1; row <= book.dimension().lastRow(); ++row) {
+        const QString name = book.read(row, 3).toString();
+        if (name.startsWith("CH")) rows.insert(name, row);
+        QVERIFY2(book.rowHeight(row) <= 409.5, "Excel physical-row limit exceeded");
+    }
+    QCOMPARE(rows.size(), 8);
+    const auto area = [&](int row, int column) {
+        for (const auto& merged : sheet->mergedCells())
+            if (merged.firstRow() == row && merged.firstColumn() == column) return merged;
+        return QXlsx::CellRange(row, column, row, column);
+    };
+    const auto height = [&](int row, int column) {
+        const auto range = area(row, column);
+        double total = 0;
+        for (int r = range.firstRow(); r <= range.lastRow(); ++r) total += book.rowHeight(r);
+        return total;
+    };
+    for (int i = 0; i < 8; ++i) {
+        const int row = rows.value(QStringLiteral("CH%1_RANGE").arg(i+8,2,10,QLatin1Char('0')));
+        QString expected = layoutDescriptions().at(i);
+        expected.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+        expected.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+        QCOMPARE(book.read(row, 11).toString(), expected);
+        const auto format = book.cellAt(row, 11)->format();
+        QCOMPARE(format.fontName(), QStringLiteral("Microsoft YaHei"));
+        QCOMPARE(format.fontSize(), 10);
+        QVERIFY(!format.fontBold());
+        QVERIFY(format.textWrap());
+        QVERIFY(!format.shrinkToFit());
+        QCOMPARE(format.horizontalAlignment(), QXlsx::Format::AlignLeft);
+        QCOMPARE(format.verticalAlignment(), QXlsx::Format::AlignTop);
+        for (int r = area(row,11).firstRow(); r <= area(row,11).lastRow(); ++r)
+            QVERIFY(sheet->isRowHidden(r));
+    }
+    const int first = rows.value("CH08_RANGE");
+    QVERIFY(book.read(first,10).toString().contains("MODE_15_WITH_FULL_RANGE_CALIBRATION_AND_STATUS_CHECK=0xF"));
+    QVERIFY(height(first,10) > 409.5);
+    QVERIFY(area(first,10).lastRow() > first);
+    const int last = rows.value("CH15_RANGE");
+    QVERIFY(height(last,11) >= 51 * 10);
+    QVERIFY(area(last,11).lastRow() > last);
+    QVERIFY(book.columnWidth(11) > book.columnWidth(10));
+    QVERIFY(book.columnWidth(11) > 2 * book.columnWidth(6));
+    if (mode == "consecutive") {
+        const auto links = hyperlinks(*sheet);
+        QCOMPARE(links.size(), 7);
+        QVERIFY(height(rows.value("CH09_RANGE"),11) > height(rows.value("CH14_RANGE"),11));
+        QVERIFY(height(rows.value("CH11_RANGE"),11) >= 5 * 10);
+        for (int channel = 9; channel <= 15; ++channel) {
+            const int row = rows.value(QStringLiteral("CH%1_RANGE").arg(channel,2,10,QLatin1Char('0')));
+            QCOMPARE(book.read(row,10).toString(), QStringLiteral("枚举定义同 CH08_RANGE"));
+            QVERIFY(links.value(QStringLiteral("J%1").arg(row)).location.endsWith(QStringLiteral("!$J$%1").arg(first)));
+        }
+    }
+    ProjectController controller;
+    QVERIFY(controller.openProject(fixture.path));
+    controller.generateNow();
+    QVERIFY(!controller.hasProjectErrors());
+    QCOMPARE(read(fixture.xlsx), cliWorkbook);
+    QCOMPARE(read(fixture.header), header);
 }
 
 QTEST_MAIN(XlsxEnumLinksTests)

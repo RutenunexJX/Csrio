@@ -12,6 +12,8 @@
 #include <QColor>
 #include <QFont>
 #include <QFontMetrics>
+#include <QTextLayout>
+#include <QTextOption>
 #include <QHashFunctions>
 #include <QImage>
 #include <QPainter>
@@ -300,16 +302,17 @@ void writeLittleEndian16(
 {
     WorkbookFormats result;
 
-    result.title.setFontName(QStringLiteral("Aptos Display"));
+    result.title.setFontName(QStringLiteral("Microsoft YaHei"));
     result.title.setFontSize(16);
     result.title.setFontBold(true);
     result.title.setFontColor(QColor(QStringLiteral("#FFFFFF")));
     result.title.setPatternForegroundColor(QColor(QStringLiteral("#17365D")));
     result.title.setPatternBackgroundColor(QColor(QStringLiteral("#17365D")));
     result.title.setFillPattern(QXlsx::Format::PatternSolid);
-    result.title.setVerticalAlignment(QXlsx::Format::AlignVCenter);
+    result.title.setVerticalAlignment(QXlsx::Format::AlignTop);
+    result.title.setTextWrap(true);
 
-    result.header.setFontName(QStringLiteral("Aptos"));
+    result.header.setFontName(QStringLiteral("Microsoft YaHei"));
     result.header.setFontSize(10);
     result.header.setFontBold(true);
     result.header.setFontColor(QColor(QStringLiteral("#FFFFFF")));
@@ -323,7 +326,7 @@ void writeLittleEndian16(
     result.header.setTextWrap(true);
     result.header.setLocked(true);
 
-    result.body.setFontName(QStringLiteral("Aptos"));
+    result.body.setFontName(QStringLiteral("Microsoft YaHei"));
     result.body.setFontSize(10);
     result.body.setFontColor(QColor(QStringLiteral("#243447")));
     result.body.setPatternForegroundColor(QColor(QStringLiteral("#FFF9E6")));
@@ -332,6 +335,7 @@ void writeLittleEndian16(
     result.body.setBorderStyle(QXlsx::Format::BorderThin);
     result.body.setBorderColor(QColor(QStringLiteral("#DCE3EB")));
     result.body.setVerticalAlignment(QXlsx::Format::AlignVCenter);
+    result.body.setTextWrap(true);
     result.body.setHorizontalAlignment(QXlsx::Format::AlignHCenter);
     result.body.setLocked(true);
 
@@ -367,7 +371,6 @@ void writeLittleEndian16(
     result.addressAlternate.setNumberFormat(QStringLiteral("@"));
 
     result.section = result.body;
-    result.section.setFontBold(true);
     result.section.setFontColor(QColor(QStringLiteral("#17365D")));
     result.section.setPatternForegroundColor(QColor(QStringLiteral("#DCE6F1")));
     result.section.setPatternBackgroundColor(QColor(QStringLiteral("#DCE6F1")));
@@ -400,16 +403,14 @@ void writeLittleEndian16(
     result.pageAddress.setNumberFormat(QStringLiteral("@"));
 
     result.block = result.body;
-    result.block.setFontBold(true);
     result.block.setFontColor(QColor(QStringLiteral("#FFFFFF")));
     result.block.setPatternForegroundColor(QColor(QStringLiteral("#4472C4")));
     result.block.setPatternBackgroundColor(QColor(QStringLiteral("#4472C4")));
     result.block.setBorderColor(QColor(QStringLiteral("#2F5597")));
     result.block.setHorizontalAlignment(QXlsx::Format::AlignLeft);
-    result.block.setTextWrap(false);
+    result.block.setVerticalAlignment(QXlsx::Format::AlignTop);
 
     result.reserved = result.body;
-    result.reserved.setFontBold(true);
     result.reserved.setFontColor(QColor(QStringLiteral("#9C0006")));
     result.reserved.setPatternForegroundColor(QColor(QStringLiteral("#E2E3E5")));
     result.reserved.setPatternBackgroundColor(QColor(QStringLiteral("#E2E3E5")));
@@ -422,28 +423,102 @@ void writeLittleEndian16(
     return result;
 }
 
-void writeTitle(QXlsx::Document& document, const QString& title, int lastColumn,
+struct ExportCell {
+    QVariant value;
+    QXlsx::Format format;
+    int columnSpan = 1;
+};
+
+[[nodiscard]] double textHeight(const QString& value, const QXlsx::Format& format,
+                                double widthPixels)
+{
+    // Measure at Excel's 100% scale, independently of the desktop DPI setting.
+    QImage device(1, 1, QImage::Format_ARGB32_Premultiplied);
+    device.setDotsPerMeterX(3780);
+    device.setDotsPerMeterY(3780);
+    const QFont font = format.font();
+    const QFontMetricsF metrics(font, &device);
+    QTextOption option;
+    option.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+    QString normalized = value;
+    normalized.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+    normalized.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+    double height = 0.0;
+    for (const auto& paragraph : normalized.split(QLatin1Char('\n'), Qt::KeepEmptyParts)) {
+        if (paragraph.isEmpty()) {
+            height += std::ceil(metrics.lineSpacing()) + 2.0;
+            continue;
+        }
+        QTextLayout layout(paragraph, font, &device);
+        layout.setTextOption(option);
+        layout.beginLayout();
+        while (true) {
+            auto line = layout.createLine();
+            if (!line.isValid()) break;
+            // Cell margins and a small wrap tolerance cover Excel/Qt rounding differences.
+            line.setLineWidth(std::max(1.0, widthPixels - 10.0));
+            height += std::ceil(std::max(line.height(), metrics.lineSpacing())) + 2.0;
+        }
+        layout.endLayout();
+    }
+    return std::ceil((height + 8.0) * 72.0 / 96.0);
+}
+
+void writeMeasuredRow(QXlsx::Document& document, int& row,
+                      const std::vector<ExportCell>& cells, double minimumHeight = 24.0)
+{
+    double height = minimumHeight;
+    int column = 1;
+    for (const auto& cell : cells) {
+        double widthPixels = 0.0;
+        for (int offset = 0; offset < cell.columnSpan; ++offset) {
+            // QXlsx uses Calibri 11 for the workbook Normal style (7 px digit width).
+            // Keep the five-pixel column padding as additional wrap tolerance.
+            widthPixels += std::floor(document.columnWidth(column + offset) * 7.0);
+        }
+        if (!cell.value.toString().isEmpty())
+            height = std::max(height, textHeight(cell.value.toString(), cell.format, widthPixels));
+        column += cell.columnSpan;
+    }
+    // Excel limits a physical row to 409.5 pt. Preserve oversized cells as a
+    // vertically merged area instead of clamping the height or splitting text.
+    const int rowSpan = std::max(1, static_cast<int>(std::ceil(height / 400.0)));
+    const int lastRow = row + rowSpan - 1;
+    document.setRowHeight(row, lastRow, std::ceil(height / rowSpan));
+    column = 1;
+    for (const auto& cell : cells) {
+        if (rowSpan > 1 || cell.columnSpan > 1)
+            document.mergeCells(QXlsx::CellRange(row, column, lastRow,
+                                column + cell.columnSpan - 1), cell.format);
+        const bool emptyText = cell.value.metaType() == QMetaType::fromType<QString>() &&
+            cell.value.toString().isEmpty();
+        document.write(row, column, emptyText ? QVariant{} : cell.value, cell.format);
+        column += cell.columnSpan;
+    }
+    row = lastRow;
+}
+
+void writeTitle(QXlsx::Document& document, int& row, const QString& title, int lastColumn,
                 const WorkbookFormats& style)
 {
-    document.mergeCells(QXlsx::CellRange(1, 1, 1, lastColumn), style.title);
-    document.write(1, 1, title, style.title);
-    document.setRowHeight(1, 27.0);
+    writeMeasuredRow(document, row, {{title, style.title, lastColumn}}, 27.0);
 }
 
-void writeHeaders(QXlsx::Document& document, int row, const QStringList& headers,
+void writeHeaders(QXlsx::Document& document, int& row, const QStringList& headers,
                   const WorkbookFormats& style)
 {
-    for (int column = 0; column < headers.size(); ++column) {
-        document.write(row, column + 1, headers[column], style.header);
-    }
-    document.setRowHeight(row, 30.0);
+    std::vector<ExportCell> cells;
+    for (const auto& header : headers) cells.push_back({header, style.header});
+    writeMeasuredRow(document, row, cells, 30.0);
 }
 
-void writeRow(QXlsx::Document& document, int row, const std::vector<QVariant>& values,
+void writeRow(QXlsx::Document& document, int& row, const std::vector<QVariant>& values,
               const WorkbookFormats& style, const std::vector<int>& addressColumns = {},
               const QXlsx::Format* overrideFormat = nullptr, bool alternateRow = false,
-              const QXlsx::Format* overrideAddressFormat = nullptr)
+              const QXlsx::Format* overrideAddressFormat = nullptr,
+              const std::vector<int>& longTextColumns = {})
 {
+    std::vector<ExportCell> cells;
     for (std::size_t index = 0; index < values.size(); ++index) {
         const int column = static_cast<int>(index) + 1;
         const bool address = std::ranges::find(addressColumns, column) != addressColumns.end();
@@ -453,15 +528,13 @@ void writeRow(QXlsx::Document& document, int row, const std::vector<QVariant>& v
                                                               : *overrideFormat)
                 : (address ? (alternateRow ? style.addressAlternate : style.address)
                            : (alternateRow ? style.alternate : style.body));
-        if (values.size() == worksheetColumnCount &&
-            column == worksheetDescriptionColumn) {
+        if (std::ranges::find(longTextColumns, column) != longTextColumns.end()) {
             format.setHorizontalAlignment(QXlsx::Format::AlignLeft);
+            format.setVerticalAlignment(QXlsx::Format::AlignTop);
         }
-        const QVariant& value = values[index];
-        const bool emptyText =
-            value.metaType() == QMetaType::fromType<QString>() && value.toString().isEmpty();
-        document.write(row, column, emptyText ? QVariant{} : value, format);
+        cells.push_back({values[index], format});
     }
+    writeMeasuredRow(document, row, cells);
 }
 
 void configureColumns(QXlsx::Document& document, const std::vector<double>& widths)
@@ -715,9 +788,10 @@ void configureColumns(QXlsx::Document& document, const std::vector<double>& widt
         return false;
     }
     worksheet->setGridLinesVisible(false);
-    worksheet->freezePanes(4, 0);
+    configureColumns(document, {24, 16, 14, 16, 14, 24, 16, 18, 18, 18, 12});
+    int row = 1;
     writeTitle(
-        document,
+        document, row,
         QStringLiteral("Register Map Overview - ") +
             text(workspace.name),
         worksheetColumnCount,
@@ -733,26 +807,16 @@ void configureColumns(QXlsx::Document& document, const std::vector<double>& widt
     }
     QXlsx::Format summary = style.pageValue;
     summary.setHorizontalAlignment(QXlsx::Format::AlignLeft);
-    if (!document.mergeCells(
-            QXlsx::CellRange(
-                2, 1, 2,
-                worksheetColumnCount),
-            summary)) {
-        return false;
-    }
-    document.write(
-        2,
-        1,
-        QStringLiteral("%1 Page(s) · %2 Block(s) · %3 Register(s)")
-            .arg(workspace.addressSpaces.size())
-            .arg(blockCount)
-            .arg(registerCount),
-        summary);
-    document.setRowHeight(2, 24.0);
-    document.setRowHeight(3, 9.0);
+    ++row;
+    writeMeasuredRow(document, row,
+        {{QStringLiteral("%1 Page(s) · %2 Block(s) · %3 Register(s)")
+            .arg(workspace.addressSpaces.size()).arg(blockCount).arg(registerCount),
+          summary, worksheetColumnCount}});
+    document.setRowHeight(++row, 9.0);
+    const int headerRow = ++row;
     writeHeaders(
         document,
-        4,
+        row,
         {QStringLiteral("Page"),
          QStringLiteral("Page Base"),
          QStringLiteral("Address Width"),
@@ -766,7 +830,8 @@ void configureColumns(QXlsx::Document& document, const std::vector<double>& widt
          QStringLiteral("Registers")},
         style);
 
-    int row = 5;
+    worksheet->freezePanes(row, 0);
+    ++row;
     for (std::size_t pageIndex = 0;
          pageIndex < workspace.addressSpaces.size();
          ++pageIndex) {
@@ -856,7 +921,6 @@ void configureColumns(QXlsx::Document& document, const std::vector<double>& widt
                     &rowFormat,
                     alternate,
                     &addressFormat);
-                document.setRowHeight(row, 24.0);
                 ++row;
             };
         if (space.blocks.empty()) {
@@ -868,16 +932,13 @@ void configureColumns(QXlsx::Document& document, const std::vector<double>& widt
         }
     }
 
-    const int lastRow = std::max(4, row - 1);
+    const int lastRow = std::max(headerRow, row - 1);
     if (!worksheet->setAutoFilter(
             QXlsx::CellRange(
-                4, 1, lastRow,
+                headerRow, 1, lastRow,
                 worksheetColumnCount))) {
         return false;
     }
-    configureColumns(
-        document,
-        {24, 16, 14, 16, 14, 24, 16, 18, 18, 18, 12});
     return true;
 }
 
@@ -925,7 +986,7 @@ void configureColumns(QXlsx::Document& document, const std::vector<double>& widt
     painter.setPen(QPen(QColor(QStringLiteral("#D6B656")), 1));
     painter.drawRect(QRect(0, 0, image.width() - 1, image.height() - 1));
 
-    QFont titleFont(QStringLiteral("Aptos"), 10);
+    QFont titleFont(QStringLiteral("Microsoft YaHei"), 10);
     titleFont.setBold(true);
     painter.setFont(titleFont);
     painter.setPen(QColor(QStringLiteral("#7F6000")));
@@ -933,7 +994,7 @@ void configureColumns(QXlsx::Document& document, const std::vector<double>& widt
                      Qt::AlignLeft | Qt::AlignVCenter,
                      QStringLiteral("%1 - %2-bit field layout").arg(text(reg.name)).arg(reg.width));
 
-    QFont markerFont(QStringLiteral("Aptos"), 8);
+    QFont markerFont(QStringLiteral("Microsoft YaHei"), 8);
     const QRect barRect(horizontalMargin, barTop, imageWidth - horizontalMargin * 2, barHeight);
     painter.fillRect(barRect, QColor(QStringLiteral("#FFF9E6")));
     painter.fillRect(barRect, QBrush(QColor(QStringLiteral("#D6B656")), Qt::BDiagPattern));
@@ -941,7 +1002,7 @@ void configureColumns(QXlsx::Document& document, const std::vector<double>& widt
     painter.drawRect(barRect.adjusted(0, 0, -1, -1));
 
     const std::uint64_t registerWidth = std::max<std::uint64_t>(1, reg.width);
-    QFont fieldFont(QStringLiteral("Aptos"), 8);
+    QFont fieldFont(QStringLiteral("Microsoft YaHei"), 8);
     fieldFont.setBold(true);
     painter.setFont(fieldFont);
     const QFontMetrics fieldMetrics(fieldFont);
@@ -992,7 +1053,7 @@ void configureColumns(QXlsx::Document& document, const std::vector<double>& widt
         }
     }
 
-    QFont legendFont(QStringLiteral("Aptos"), 8);
+    QFont legendFont(QStringLiteral("Microsoft YaHei"), 8);
     painter.setFont(legendFont);
     const QFontMetrics legendMetrics(legendFont);
     painter.setPen(QColor(QStringLiteral("#594300")));
@@ -1031,21 +1092,19 @@ void configureColumns(QXlsx::Document& document, const std::vector<double>& widt
     return image;
 }
 
-void writePageMetadata(QXlsx::Document& document, const AddressSpace& space,
+void writePageMetadata(QXlsx::Document& document, int& row, const AddressSpace& space,
                        const WorkbookFormats& style)
 {
-    document.write(2, 1, QStringLiteral("Page Base"), style.pageLabel);
-    document.write(2, 2, fixedHex(space.baseAddress, space.addressWidth), style.pageAddress);
-    document.write(2, 3, QStringLiteral("Address Width"), style.pageLabel);
-    document.write(2, 4, QStringLiteral("%1 bits").arg(space.addressWidth), style.pageValue);
-    document.write(2, 5, QStringLiteral("Description"), style.pageLabel);
-    QXlsx::Format pageDescription = style.pageValue;
-    pageDescription.setHorizontalAlignment(QXlsx::Format::AlignLeft);
-    document.mergeCells(QXlsx::CellRange(2, 6, 2, worksheetColumnCount), pageDescription);
-    if (!space.description.empty())
-        document.write(2, 6, text(space.description), pageDescription);
-    document.setRowHeight(2, 24.0);
-    document.setRowHeight(3, 9.0);
+    QXlsx::Format descriptionFormat = style.pageValue;
+    descriptionFormat.setHorizontalAlignment(QXlsx::Format::AlignLeft);
+    descriptionFormat.setVerticalAlignment(QXlsx::Format::AlignTop);
+    writeMeasuredRow(document, row,
+        {{QStringLiteral("Page Base"), style.pageLabel},
+         {fixedHex(space.baseAddress, space.addressWidth), style.pageAddress},
+         {QStringLiteral("Address Width"), style.pageLabel},
+         {QStringLiteral("%1 bits").arg(space.addressWidth), style.pageValue},
+         {QStringLiteral("Description"), style.pageLabel},
+         {text(space.description), descriptionFormat, 6}});
 }
 
 using FieldNameCounts = std::map<std::string, std::size_t, std::less<>>;
@@ -1071,7 +1130,8 @@ void countFieldNames(const std::vector<Field>& fields, FieldNameCounts& counts)
     std::map<ObjectId, std::pair<int, const Field*>> firstRows;
     for (const Field* fieldPointer : orderedFields) {
         const auto& field = *fieldPointer;
-        firstRows.emplace(field.id, std::pair{row, &field});
+        const int fieldRow = row;
+        firstRows.emplace(field.id, std::pair{fieldRow, &field});
         QString enumText = fieldRangeText(field);
         int referenceRow = 0;
         if (const auto reference = references.find(field.id); reference != references.end()) {
@@ -1104,7 +1164,8 @@ void countFieldNames(const std::vector<Field>& fields, FieldNameCounts& counts)
                             static_cast<std::uint32_t>(fieldWidth))}
                       : QVariant{},
                   QVariant{}, enumText, text(field.description)},
-                 style, {8}, &style.field, false, &style.fieldAddress);
+                 style, {8}, &style.field, false, &style.fieldAddress,
+                 {10, worksheetDescriptionColumn});
         if (referenceRow != 0) {
             auto* worksheet = document.currentWorksheet();
             if (worksheet == nullptr) return false;
@@ -1113,11 +1174,12 @@ void countFieldNames(const std::vector<Field>& fields, FieldNameCounts& counts)
             QUrl target;
             target.setFragment(QStringLiteral("'%1'!$J$%2").arg(sheetName).arg(referenceRow));
             QXlsx::Format linkFormat = style.field;
+            linkFormat.setHorizontalAlignment(QXlsx::Format::AlignLeft);
+            linkFormat.setVerticalAlignment(QXlsx::Format::AlignTop);
             linkFormat.setFontColor(QColor(QStringLiteral("#0563C1")));
             linkFormat.setFontUnderline(QXlsx::Format::FontUnderlineSingle);
-            if (!worksheet->writeHyperlink(row, 10, target, linkFormat, enumText)) return false;
+            if (!worksheet->writeHyperlink(fieldRow, 10, target, linkFormat, enumText)) return false;
         }
-        document.setRowHeight(row, 22.0);
         ++row;
         if (!writeFieldRows(
                 document,
@@ -1140,15 +1202,20 @@ void countFieldNames(const std::vector<Field>& fields, FieldNameCounts& counts)
     }
     worksheet->setSummaryRowsBelow(false);
     worksheet->setGridLinesVisible(false);
-    worksheet->freezePanes(4, 0);
-    writeTitle(document, QStringLiteral("Page - ") + text(space.name), worksheetColumnCount, style);
-    writePageMetadata(document, space, style);
-    writeHeaders(document, 4,
+    configureColumns(document, {14, 14, 24, 11, 10, 10, 14, 14, 18, 38, 70});
+    int row = 1;
+    writeTitle(document, row, QStringLiteral("Page - ") + text(space.name), worksheetColumnCount, style);
+    ++row;
+    writePageMetadata(document, row, space, style);
+    document.setRowHeight(++row, 9.0);
+    ++row;
+    writeHeaders(document, row,
                  {QStringLiteral("Address"), QStringLiteral("Offset"), QStringLiteral("Name"),
                   QStringLiteral("Type"), QStringLiteral("Width / Bits"), QStringLiteral("Access"),
                   QStringLiteral("Initial Value"), QStringLiteral("Reset Value"),
                   QStringLiteral("Tags"), QStringLiteral("Range"), QStringLiteral("Description")},
                  style);
+    worksheet->freezePanes(row, 0);
     FieldNameCounts fieldNames;
     if (consecutiveEnums) {
         for (const auto& block : space.blocks)
@@ -1156,15 +1223,13 @@ void countFieldNames(const std::vector<Field>& fields, FieldNameCounts& counts)
                 if (!reg.reserved && reg.type == FieldType::structure)
                     countFieldNames(reg.fields, fieldNames);
     }
-    int row = 5;
+    ++row;
     std::size_t registerIndex = 0;
     std::size_t blockIndex = 0;
     for (const auto& block : space.blocks) {
         const QXlsx::Format blockFormat = blockBandFormat(style, blockIndex++);
-        if (!document.mergeCells(QXlsx::CellRange(row, 1, row, worksheetColumnCount), blockFormat))
-            return false;
-        document.write(row, 1, blockBandText(block, space), blockFormat);
-        document.setRowHeight(row, 28.0);
+        writeMeasuredRow(document, row,
+            {{blockBandText(block, space), blockFormat, worksheetColumnCount}}, 28.0);
         ++row;
         for (const Register* registerPointer : documentRegisters(block, true)) {
             const auto& reg = *registerPointer;
@@ -1187,8 +1252,8 @@ void countFieldNames(const std::vector<Field>& fields, FieldNameCounts& counts)
                       reg.initialValue ? fixedHex(*reg.initialValue, reg.width) : QVariant{},
                       reg.resetValue ? fixedHex(*reg.resetValue, reg.width) : QVariant{},
                       joinedTags(reg.tags), registerRangeText(reg), text(reg.description)},
-                     style, {1, 2, 7, 8}, rowFormat, alternateGroup, addressFormat);
-            document.setRowHeight(row, 24.0);
+                     style, {1, 2, 7, 8}, rowFormat, alternateGroup, addressFormat,
+                     {10, worksheetDescriptionColumn});
             ++row;
             if (reg.reserved || reg.type != FieldType::structure)
                 continue;
@@ -1212,7 +1277,6 @@ void countFieldNames(const std::vector<Field>& fields, FieldNameCounts& counts)
         }
     }
 
-    configureColumns(document, {16, 14, 28, 14, 14, 20, 16, 16, 24, 30, 44});
     return true;
 }
 
@@ -1221,10 +1285,12 @@ void writeEmptyWorkbook(QXlsx::Document& document, const WorkbookFormats& style)
     auto* worksheet = document.currentWorksheet();
     if (worksheet != nullptr)
         worksheet->setGridLinesVisible(false);
-    writeTitle(document, QStringLiteral("Page - Register Map"), worksheetColumnCount, style);
-    document.mergeCells(QXlsx::CellRange(2, 1, 2, worksheetColumnCount), style.pageValue);
-    document.write(2, 1, QStringLiteral("No pages defined."), style.pageValue);
-    configureColumns(document, {16, 14, 28, 14, 14, 20, 16, 16, 24, 30, 44});
+    configureColumns(document, {14, 14, 24, 11, 10, 10, 14, 14, 18, 38, 70});
+    int row = 1;
+    writeTitle(document, row, QStringLiteral("Page - Register Map"), worksheetColumnCount, style);
+    ++row;
+    writeMeasuredRow(document, row,
+        {{QStringLiteral("No pages defined."), style.pageValue, worksheetColumnCount}});
 }
 
 void addDiagnostic(std::vector<Diagnostic>& diagnostics, std::string message)
