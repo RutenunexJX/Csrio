@@ -35,13 +35,14 @@ foreach ($file in $files) {
     if ($relative -ne 'SHA256SUMS.txt' -and -not $checked.Contains($relative)) {
         throw "Unlisted file: $relative"
     }
-    if ($relative -match '(?i)(^|/)(examples|\.git|tests)/|\.(pdb|obj|a)$') {
+    if ($relative -cne 'docs/examples/cli-same-session.ps1' -and
+        $relative -match '(?i)(^|/)(examples|\.git|tests)/|\.(pdb|obj|a)$') {
         throw "Development content in runtime: $relative"
     }
 }
 foreach ($relative in @('Csrio.exe', 'regmapc.exe', 'ElaWidgetTools.dll',
     'Qt6Core.dll', 'Qt6Gui.dll', 'Qt6Widgets.dll', 'plugins/platforms/qwindows.dll',
-    'README.md', 'docs/cli.md', 'docs/ela-native-capabilities.md', 'BUILD-INFO.txt',
+    'README.md', 'docs/cli.md', 'docs/ela-native-capabilities.md', 'docs/examples/cli-same-session.ps1', 'BUILD-INFO.txt',
     'licenses/ElaWidgetTools/LICENSE', 'licenses/ElaWidgetTools/FontAwesome-LICENSE.txt',
     'licenses/ElaWidgetTools/ZeroSlack-Apache-2.0.txt', 'licenses/ElaWidgetTools/REGMAP-NOTICE.md',
     'licenses/ElaWidgetTools/patches/11-regmap-native-capabilities.patch',
