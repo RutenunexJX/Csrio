@@ -11,10 +11,26 @@
 #ifdef Q_OS_WIN
 #include <fcntl.h>
 #include <io.h>
+#include <windows.h>
+#include <shellapi.h>
 #endif
 
 int main(int argc, char** argv)
 {
+    // QGuiApplication consumes --session as a Qt option. Preserve the CLI's
+    // original arguments, including Unicode Windows paths, before constructing it.
+    QStringList arguments;
+#ifdef Q_OS_WIN
+    int nativeCount = 0;
+    auto** nativeArguments = CommandLineToArgvW(GetCommandLineW(), &nativeCount);
+    if (!nativeArguments) return 7;
+    for (int index = 1; index < nativeCount; ++index)
+        arguments.append(QString::fromWCharArray(nativeArguments[index]));
+    LocalFree(nativeArguments);
+#else
+    for (int index = 1; index < argc; ++index)
+        arguments.append(QString::fromLocal8Bit(argv[index]));
+#endif
 #ifdef Q_OS_WIN
     static_cast<void>(
         _setmode(
@@ -77,7 +93,7 @@ int main(int argc, char** argv)
     standardError.setEncoding(
         QStringConverter::Utf8);
     return regmap::cli::run(
-        application->arguments().mid(1),
+        arguments,
         standardInput,
         standardOutput,
         standardError);

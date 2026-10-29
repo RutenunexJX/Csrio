@@ -6,6 +6,8 @@ add_library(
     cli_app.hpp
     cli_automation.cpp
     cli_automation.hpp
+    cli_gui.cpp
+    cli_gui.hpp
     cli_presentation.cpp
     cli_presentation.hpp
     cli_metrics.cpp
@@ -45,6 +47,7 @@ target_link_libraries(regmapc PRIVATE RegMap::Cli)
 regmap_enable_warnings(regmapc)
 
 if(WIN32)
+    target_link_libraries(regmapc PRIVATE shell32)
     install(
         TARGETS regmapc
         RUNTIME DESTINATION .

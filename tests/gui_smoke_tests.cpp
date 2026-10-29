@@ -6265,42 +6265,19 @@ void GuiSmokeTests::protectsWorkbenchAndCliProjectChanges()
                 : std::string{};
         };
 
-    // A clean Workbench also pauses for per-change decisions; watcher events
-    // never replace the model before an explicit Reload or Accept.
+    // Clean windows adopt without a modal decision or an explicit reload.
     QVERIFY(
         saveExternalPageName(
             "External Clean"));
-    QTRY_VERIFY_WITH_TIMEOUT(
-        controller->hasExternalProjectChange(),
-        6000);
-    QCOMPARE(
-        hierarchyIndexByObjectId(
-            hierarchy->model(),
-            QStringLiteral(
-                "space-main"))
-            .data()
-            .toString(),
-        QStringLiteral(
-            "Main"));
-    QVERIFY(!controller->isDirty());
-    QTRY_VERIFY_WITH_TIMEOUT(
-        [&] {
-            for (int row = 0; row < diff->model()->rowCount(); ++row) {
-                if (diff->model()->index(row, 6).data().toString() ==
-                    QStringLiteral("Disk / CLI apply")) {
-                    return true;
-                }
-            }
-            return false;
-        }(),
-        2000);
-    controller->reload();
-    QTRY_VERIFY_WITH_TIMEOUT(!controller->hasExternalProjectChange(), 4000);
     QTRY_COMPARE_WITH_TIMEOUT(
         hierarchyIndexByObjectId(
             hierarchy->model(), QStringLiteral("space-main"))
             .data().toString(),
-        QStringLiteral("External Clean"), 3000);
+        QStringLiteral("External Clean"), 6000);
+    QVERIFY(!controller->isDirty());
+    QVERIFY(!controller->hasExternalProjectChange());
+    QVERIFY(!QApplication::activeModalWidget());
+    QCOMPARE(controller->adoptedRevision(),controller->diskRevision());
 
     // Text that has not yet left the active cell editor is local work too.
     // Even an invalid value must stay visible until the user commits or
@@ -6559,12 +6536,37 @@ void GuiSmokeTests::protectsWorkbenchAndCliProjectChanges()
                 QStringLiteral(
                     "both retained")));
 
-    const ConflictChoice reloaded =
-        invokeSave(
-            QStringLiteral(
-                "reloadExternalProjectButton"));
-    QVERIFY(reloaded.dialogSeen);
-    QVERIFY(reloaded.impactDescribed);
+    bool repeatedPrompt = false;
+    QTimer::singleShot(0,&window,[&] {
+        if (auto* dialog = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+            repeatedPrompt = true;
+            dialog->reject();
+        }
+    });
+    save->trigger();
+    QCoreApplication::processEvents();
+    QVERIFY(!repeatedPrompt);
+    QVERIFY(controller->isDirty());
+    QVERIFY(controller->hasExternalProjectChange());
+    QVERIFY(window.findChild<QWidget*>("externalDecisionBar")->isVisible());
+    QCOMPARE(pageNameOnDisk(),std::string("External While Dirty"));
+
+    QAction* reloadAction = nullptr;
+    for (auto* action : window.findChildren<QAction*>())
+        if (action->text() == "Reload from Disk") reloadAction = action;
+    QVERIFY(reloadAction);
+    bool reloadConfirmed = false;
+    QTimer::singleShot(0,&window,[&] {
+        if (auto* dialog = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+            if (auto* button = dialog->findChild<QPushButton*>("confirmReloadFromDiskButton")) {
+                reloadConfirmed = true;
+                button->click();
+            } else dialog->reject();
+        }
+    });
+    reloadAction->trigger();
+    QCoreApplication::processEvents();
+    QVERIFY(reloadConfirmed);
     QTRY_VERIFY_WITH_TIMEOUT(
         !controller->isDirty(),
         4000);

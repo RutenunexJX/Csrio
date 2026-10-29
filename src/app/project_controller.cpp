@@ -961,6 +961,13 @@ QString ProjectController::diskRevision() const
         : QStringLiteral("sha256:") + QString::fromLatin1(digest.toHex());
 }
 
+std::vector<regmap::ReferenceFinding> ProjectController::pendingReferenceChanges() const
+{
+    return recoveryBaseWorkspace_ && store_.workspace()
+        ? regmap::checkReferenceChanges(*recoveryBaseWorkspace_,*store_.workspace())
+        : std::vector<regmap::ReferenceFinding>{};
+}
+
 QString ProjectController::adoptDiskRevision(const QString& expectedRevision,
                                              const QString& selectedId,
                                              QString* failureReason)

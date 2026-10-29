@@ -1,4 +1,5 @@
 #pragma once
+#include "regmap/core/references.hpp"
 
 #include "workspace_inspection.hpp"
 
@@ -54,6 +55,7 @@ public:
                               QString* failureReason = nullptr);
     [[nodiscard]] const regmap::ProjectManifest* manifest() const noexcept;
     [[nodiscard]] const regmap::Workspace* workspace() const noexcept;
+    [[nodiscard]] std::vector<regmap::ReferenceFinding> pendingReferenceChanges() const;
     [[nodiscard]] const std::vector<regmap::Diagnostic>& diagnostics() const noexcept;
     [[nodiscard]] const std::vector<regmap::GeneratedArtifact>& artifacts() const noexcept;
     [[nodiscard]] bool generatedArtifactIsCurrent(

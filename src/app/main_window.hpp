@@ -5,6 +5,7 @@
 #include "regmap/core/model.hpp"
 
 #include <QByteArray>
+#include <QJsonObject>
 #include <QMainWindow>
 #include <QPointer>
 #include <QPersistentModelIndex>
@@ -56,6 +57,8 @@ public:
 
     bool openProjectPath(const QString& path, bool offerRecovery = true);
     QJsonObject guiSession(const QJsonObject& parameters);
+    QJsonObject guiCommit(const QJsonObject& parameters);
+    void resetGuiSession();
     bool openProjectForSuite(const QString& path, const QString& selectedObjectId,
                              QString* failureReason = nullptr);
     bool openStartupProjectPath(
@@ -65,6 +68,21 @@ public:
         const QString& projectPath) const;
 
 private:
+    [[nodiscard]] bool hasActiveGuiEditor() const;
+    [[nodiscard]] QString selectedSessionObjectId() const;
+    QString sessionEpoch();
+    QString adoptGuiRevision(const QString& revision, const QString& selectedId, QString* reason);
+    void adoptExternalRevisionIfClean();
+    void showReferenceChecks();
+    struct PendingGuiCommit {
+        QString token, project, revision;
+        std::uint64_t generation{0};
+        qint64 deadline{0};
+    };
+    std::optional<PendingGuiCommit> pendingGuiCommit_;
+    QString guiSessionEpoch_, blockedAutoRevision_, lastGuiCommitToken_, lastSaveConflictRevision_;
+    QJsonObject lastGuiCommitResult_;
+    bool completingGuiCommit_{false};
     qulonglong inlineDiagnosticRowVisitCount() const { return inlineDiagnosticRowVisits_; }
     qulonglong inlineDiagnosticCellUpdateCount() const { return inlineDiagnosticCellUpdates_; }
     qulonglong diagnosticsRefreshCount() const { return diagnosticsRefreshCount_; }

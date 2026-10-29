@@ -2,6 +2,7 @@
 
 #include <QJsonObject>
 #include <QObject>
+#include <QPointer>
 
 #include <memory>
 
@@ -34,9 +35,10 @@ public:
 private:
     QJsonObject processRequest(const QJsonObject& request);
 
-    MainWindow* window_{nullptr};
+    QPointer<MainWindow> window_;
     std::unique_ptr<SuiteApp::Provider> provider_;
     std::unique_ptr<SuiteApp::JsonServer> session_;
+    QString discoveryEpoch_;
 };
 
 } // namespace regmap::workbench

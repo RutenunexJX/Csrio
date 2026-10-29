@@ -79,11 +79,12 @@ $changes = Save-Patch 'copy-and-edit.json' @(
 $hashBefore = (Get-FileHash -LiteralPath $project -Algorithm SHA256).Hash
 $null = Invoke-Cli @('apply',$project,$changes,'--expect',$before,'--dry-run')
 Assert ((Get-FileHash -LiteralPath $project -Algorithm SHA256).Hash -eq $hashBefore) 'Dry run changed the project.'
-$saved = Invoke-Cli @('apply',$project,$changes,'--expect',$before)
+$saved = Invoke-Cli @('apply',$project,$changes,'--expect',$before,'--session',$session)
 Assert ($saved.ok) 'Disk save failed.'
 $after = $saved.revision
 $pending = Invoke-Cli @('gui',$project,'--session',$session)
-Assert ($pending.result.pending -and $pending.result.adopted_revision -eq $before) 'Expected the existing window to retain its previous model.'
+Assert ($saved.result.saved -and $saved.result.gui_adopted) 'The native commit did not complete saving and GUI adoption.'
+Assert (!$pending.result.pending -and $pending.result.adopted_revision -eq $after) 'Expected the existing window to have adopted the saved revision.'
 $null = Invoke-Cli @('apply',$project,$changes,'--expect',$before) 3
 $null = Invoke-Cli @('validate',$project)
 $adopted = Invoke-Cli @('gui',$project,'--session',$session,'--expect',$after,'--adopt','--select','block-ch1')

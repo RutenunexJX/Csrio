@@ -5,6 +5,22 @@
 #include <set>
 
 namespace regmap::cli {
+QJsonArray referenceFindingsJson(const std::vector<ReferenceFinding>& findings)
+{
+    QJsonArray result;
+    for (const auto& item : findings) {
+        QJsonArray candidates;
+        for (const auto& id : item.candidates) candidates.append(QString::fromStdString(id));
+        result.append(QJsonObject{
+            {"target_id",QString::fromStdString(item.targetId)}, {"target_path",QString::fromStdString(item.targetPath)},
+            {"target_name",QString::fromStdString(item.targetName)}, {"change",QString::fromStdString(item.change)},
+            {"object_id",QString::fromStdString(item.objectId)}, {"path",QString::fromStdString(item.path)},
+            {"property",QString::fromStdString(item.property)}, {"kind",QString::fromStdString(item.kind)},
+            {"status",QString::fromStdString(item.status)}, {"excerpt",QString::fromStdString(item.snippet)},
+            {"ambiguous",item.ambiguous}, {"candidate_ids",candidates}});
+    }
+    return result;
+}
 namespace {
 bool keys(const QJsonObject& object, const std::set<QString>& allowed, QString& error)
 {

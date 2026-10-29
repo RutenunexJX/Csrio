@@ -6570,6 +6570,10 @@ void MainWindow::buildActions()
     editMenu->addSeparator();
     editMenu->addAction(addEnumAction);
     editMenu->addAction(deleteAction_);
+    auto* referencesAction = new QAction(QStringLiteral("Check References"),this);
+    referencesAction->setObjectName(QStringLiteral("checkReferencesAction"));
+    connect(referencesAction,&QAction::triggered,this,&MainWindow::showReferenceChecks);
+    editMenu->addAction(referencesAction);
 
     QMenu* viewMenu = WorkbenchControls::addMenu(menuBar(), QStringLiteral("View"));
     viewMenu->addAction(
@@ -7174,6 +7178,9 @@ void MainWindow::connectSignals()
     });
     connect(&controller_, &ProjectController::generationChanged, this,
             &MainWindow::refreshGenerated);
+    connect(qApp, &QApplication::focusChanged, this, [this] {
+        if (controller_.hasExternalProjectChange()) QTimer::singleShot(0,this,&MainWindow::adoptExternalRevisionIfClean);
+    });
     connect(
         &controller_,
         &ProjectController::editStateChanged,
@@ -7181,6 +7188,7 @@ void MainWindow::connectSignals()
         [this] {
             updateEditActions();
             updateRecoveryPresentation();
+            if (controller_.hasExternalProjectChange()) QTimer::singleShot(0,this,&MainWindow::adoptExternalRevisionIfClean);
         });
     const auto requestDiff = [this] { requestDerivedRefresh(false, true); };
     connect(&controller_, &ProjectController::conflictsChanged, this, requestDiff);
@@ -7276,6 +7284,7 @@ void MainWindow::connectSignals()
             updateExternalDecisionBar();
             updateBottomPanelVisibility();
             updateSyncPresentation();
+            QTimer::singleShot(0,this,&MainWindow::adoptExternalRevisionIfClean);
         });
     connect(
         &controller_,
@@ -9395,6 +9404,11 @@ void MainWindow::dropEvent(
 
 void MainWindow::finalizeProjectReplacement(bool succeeded)
 {
+    if (succeeded) {
+        resetGuiSession();
+        blockedAutoRevision_.clear();
+        lastSaveConflictRevision_.clear();
+    }
     if (succeeded && discardRecoveryAfterReplacement_ &&
         !discardedRecoveryProjectPath_.empty()) {
         controller_.discardRecoveryDraft(discardedRecoveryProjectPath_);
@@ -9710,21 +9724,7 @@ QJsonObject MainWindow::guiSession(const QJsonObject& parameters)
     bool adopted = false;
     bool located = false;
     const auto activeEditor = [this] {
-        // Check visible delegates as well as focus: an inactive OS window may
-        // still own an uncommitted cell editor.
-        for (const auto* view : {static_cast<QAbstractItemView*>(hierarchyView_),
-                 static_cast<QAbstractItemView*>(registerView_),
-                 static_cast<QAbstractItemView*>(fieldView_),
-                 static_cast<QAbstractItemView*>(enumView_)}) {
-            for (const auto* editor : view->viewport()->findChildren<QWidget*>())
-                if (editor->isVisibleTo(this) &&
-                    (qobject_cast<const QLineEdit*>(editor) || qobject_cast<const QComboBox*>(editor)))
-                    return true;
-        }
-        for (const auto* edit : {pageBaseEdit_, pageWidthEdit_, pageDescriptionEdit_,
-                                blockBaseEdit_, blockSizeEdit_, blockDescriptionEdit_})
-            if (edit && edit->isModified()) return true;
-        return false;
+        return hasActiveGuiEditor();
     };
     const auto selectedObjectId = [this] {
         const QAbstractItemView* view = lastCommandView_ == enumView_ ? enumView_
@@ -9745,6 +9745,8 @@ QJsonObject MainWindow::guiSession(const QJsonObject& parameters)
         QJsonObject result{
             {QStringLiteral("ok"), code.isEmpty()},
             {QStringLiteral("session"), QString::number(QCoreApplication::applicationPid())},
+            {QStringLiteral("session_epoch"), sessionEpoch()},
+            {QStringLiteral("commit_pending"), pendingGuiCommit_.has_value()},
             {QStringLiteral("project"), fromPath(controller_.manifestPath())},
             {QStringLiteral("disk_revision"), disk},
             {QStringLiteral("adopted_revision"), accepted},
@@ -9785,19 +9787,23 @@ QJsonObject MainWindow::guiSession(const QJsonObject& parameters)
     }
     if (path.isEmpty() || currentWorkspaceForSuite(path) == nullptr)
         return state(QStringLiteral("project_mismatch"), QStringLiteral("This session does not have the requested project open."));
+    if (adopt && pendingGuiCommit_ && !completingGuiCommit_)
+        return state(QStringLiteral("commit_in_progress"), QStringLiteral("A coordinated commit is in progress; wait for its result before adopting."));
     if ((adopt || !requestedId.isEmpty()) && expected.isEmpty())
         return state(QStringLiteral("invalid_request"), QStringLiteral("Adoption and navigation require an expected revision."));
     if (!expected.isEmpty() && controller_.diskRevision() != expected)
         return state(QStringLiteral("revision_conflict"), QStringLiteral("The disk revision does not match the expected revision."));
     if (adopt || !requestedId.isEmpty()) {
-        if (activeEditor() || QApplication::activeModalWidget())
-            return state(QStringLiteral("active_editor"), QStringLiteral("Finish the active editor or dialog before changing the session."));
+        if (QApplication::activeModalWidget())
+            return state(QStringLiteral("modal"), QStringLiteral("Close the modal dialog before changing the session."));
+        if (activeEditor())
+            return state(QStringLiteral("active_editor"), QStringLiteral("Finish the active editor before changing the session."));
         if (controller_.isDirty())
             return state(QStringLiteral("dirty"), QStringLiteral("Save or resolve local Workbench edits before changing the session."));
         if (adopt) {
             QString reason;
             const QString before = controller_.adoptedRevision();
-            const QString code = controller_.adoptDiskRevision(expected, requestedId, &reason);
+            const QString code = adoptGuiRevision(expected, requestedId, &reason);
             if (!code.isEmpty()) return state(code, reason);
             adopted = before != controller_.adoptedRevision();
         }
@@ -14004,6 +14010,14 @@ void MainWindow::resolveExternalProjectSaveConflict()
         controller_.workspace() == nullptr) {
         return;
     }
+
+    const auto revision = controller_.diskRevision();
+    if (!revision.isEmpty() && revision == lastSaveConflictRevision_) {
+        updateExternalDecisionBar();
+        statusBar()->showMessage(QStringLiteral("Workbench edits and disk changes are retained. Review the Disk / CLI changes below."));
+        return;
+    }
+    lastSaveConflictRevision_ = revision;
 
     const QString projectName =
         QFileInfo(

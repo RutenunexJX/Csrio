@@ -1,9 +1,11 @@
 #pragma once
 #include "regmap/core/consistency.hpp"
+#include "regmap/core/references.hpp"
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QString>
 namespace regmap::cli {
+[[nodiscard]] QJsonArray referenceFindingsJson(const std::vector<ReferenceFinding>&);
 [[nodiscard]] bool parseSelector(const QJsonValue&, ObjectSelector&, QString& error);
 [[nodiscard]] bool loadConsistencyRules(const QString&, std::vector<ConsistencyRule>&, QString& error);
 [[nodiscard]] QJsonArray consistencyFindingsJson(const std::vector<ConsistencyFinding>&);

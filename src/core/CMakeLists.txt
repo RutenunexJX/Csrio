@@ -11,6 +11,7 @@ add_library(
     src/model_tokens.cpp
     src/project.cpp
     src/project_creation.cpp
+    src/references.cpp
     src/rtl_sync.cpp
     src/serialization.cpp
     src/sync_diff.cpp

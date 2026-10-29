@@ -31,6 +31,7 @@ These commands are copyable without modifying `PATH`:
 | `help [command]` | Read focused usage and typed arguments without opening a project | No |
 | `version` | Read CLI and JSON API versions without opening a project | No |
 | `gui <project> --session PID [--expect REV] [--adopt] [--select ID]` | Query one open window; explicitly adopt its saved revision and select an object | No project/output writes |
+| `gui <project> --discover` | Find live sessions with this project open | No project/output writes |
 | `schema` | Discover commands, writable properties, patch shape, and exit codes | No |
 | `init <project> [options]` | Create an empty Workbench project and its read-only outputs | Yes |
 | `summary <project>` | Read project identity, counts, register tags, generation targets, and revision | No |
@@ -38,18 +39,87 @@ These commands are copyable without modifying `PATH`:
 | `find <project> <query> [--exact] [--require-one] [--kind K] [--parent ID [--recursive]] [--tag TAG] [--offset N] [--limit N\|--all] [--expect REV]` | Find stable IDs by user-facing clues; defaults to 100 results | No |
 | `get <project> [stable-id] [--expect REV]` | Read the complete Workspace or one object from an optional required revision | No |
 | `get-many <project> <stable-id>... [--expect REV]` | Read multiple objects in request order from one revision | No |
+| `references <project> <stable-id>... [--expect REV]` | Inspect structured relationships and suspected description references | No |
 | `validate <project>` | Validate the complete project | No |
 | `diff <before-project> <after-project> [--kind K] [--offset N] [--limit N] [--expect-before REV] [--expect-after REV] [--require-equal]` | Compare two complete projects by stable ID | No |
 | `status <project> [--target T]... [--require-current]` | Check selected or all configured read-only outputs | No |
 | `generate <project> [--target T]... --dry-run [--expect REV]` | Build selected or all configured artifacts in memory | No |
 | `generate <project> [--target T]... [--expect REV]` | Regenerate selected or all configured outputs | Yes |
 | `apply <project> <patch.json\|-> --dry-run` | Validate a candidate patch and preview outputs | No |
-| `apply <project> <patch.json\|-> [--expect REV]` | Atomically save a guarded patch and regenerate outputs | Yes |
+| `apply <project> <patch.json\|-> [--expect REV] [--session PID]` | Atomically save a guarded patch; optionally coordinate adoption with one GUI session | Yes |
 
 `apply --force` explicitly disables the caller-supplied revision precondition. It is intended only
 for a caller that has already serialized access to the project. It cannot be combined with
 `--expect` or a patch `expected_revision`; `regmapc` still rejects a concurrent disk change that
 occurs during the command.
+
+## Coordinated commit and recovery
+
+Use `apply --session PID` to prepare one open GUI, apply the existing batch patch,
+validate, atomically save, and adopt the saved revision in one CLI invocation:
+
+```powershell
+.\regmapc.exe --json gui $project --discover
+.\regmapc.exe --json apply $project .\patch.json --expect $previousRevision --session $session --preflight --changes summary
+# The same coordination supports model-only commits:
+.\regmapc.exe --json apply $project .\next-patch.json --expect $nextRevision --session $session --defer-generation
+```
+
+Choose the session explicitly when discovery returns several windows. The discovery
+files are only hints: each candidate is queried over its live local endpoint and must
+have the requested project open. A disconnected window returns `session_unavailable`
+and reconnect arguments; a lost reservation or restarted endpoint returns `session_expired`.
+
+Preparation captures the disk revision, session epoch and GUI edit generation. The
+GUI checks that generation again before the CLI saves and before it adopts. Existing
+revision checks and atomic replacement still run during saving. A user edit after
+the last pre-save check can therefore coexist with a successful disk save, but it
+prevents GUI adoption and remains in the GUI. Active editors and modal dialogs also
+block adoption. A reservation expires after 60 seconds if the client disappears.
+
+Read these result members independently, even when outer `ok` is false:
+
+| Member | Meaning |
+| --- | --- |
+| `saved` | The model was saved, independent of generation or GUI synchronization |
+| `saved_revision` | The revision produced by this save, or null if unavailable / not saved |
+| `gui_adopted` | The target GUI adopted that saved revision |
+| `gui.error_code`, `gui.suggestion` | The blocking state and its recovery guidance |
+| `commit_id` | The preparation token correlating the native commit |
+| `gui_recovery` | A synchronization-only command for a saved revision; never reapply the patch |
+
+Blocking reasons distinguish `dirty`, `active_editor`, `modal`, `pending_conflict`,
+`gui_generation_changed`, `revision_conflict`, `commit_in_progress`,
+`session_expired` and `session_unavailable`. Generation failures keep their existing
+diagnostics and exit codes; successful adoption does not make failed generation successful.
+Conversely, failed adoption does not turn a deferred generation policy into a generation error.
+Input or disk-revision failures before GUI preparation return `gui.status: not_started`
+with `saved: false`, `saved_revision: null` and `gui_adopted: false`.
+
+When `saved: true` and `gui_adopted: false`, resolve the reported GUI state, then run
+the returned `gui_recovery.arguments` (prepend `--json` if needed). The command is
+equivalent to the following and does not execute any patch operation:
+
+```powershell
+.\regmapc.exe --json gui $project --session $session --expect $savedRevision --adopt
+```
+
+If the session was lost, rediscover it and substitute the new PID while retaining
+the exact saved revision. If the disk changed again, recovery reports a revision
+conflict; inspect that later change before adopting it. Do not retry `apply` merely
+because generation or GUI synchronization failed after a successful save.
+
+Clean GUIs automatically adopt external saved revisions without confirmation dialogs.
+During a native commit the watcher waits for its reservation to finish, and revision
+equality prevents the same save from being applied twice. With local edits or an active
+editor, the existing nonmodal external-change area retains the conflict and its decision
+actions. Repeated explicit Save attempts for the same conflict do not reopen the same
+confirmation. Adoption retains view selection, expansion and scroll positions where
+possible; deleting the selected object moves selection to a surviving ancestor.
+
+`apply --dry-run --session PID` checks the GUI state and previews the patch without
+saving or adopting a different revision. Existing offline `apply` and explicit
+`gui --adopt` calls remain supported.
 
 ## Adopt a CLI change in an already-open window
 
@@ -91,7 +161,7 @@ if (!$saved.ok) { throw $saved.error }
 
 Use distinct evidence for each step:
 
-- `apply` reports the saved disk revision. It does not claim that a window adopted it.
+- Offline `apply` reports the saved disk revision. Only `apply --session` also reports GUI adoption.
 - `gui.result.disk_revision` hashes the current manifest, while `adopted_revision`
   identifies the snapshot accepted by the window's controller. `model_revision` is
   its in-memory edit counter; `dirty` indicates divergence from the accepted snapshot.
@@ -115,7 +185,7 @@ updated in the selected profile. A disk change
 during adoption/navigation returns a conflict; inspect `adopted_revision`, `adopted`
 and `located` because an earlier snapshot may already have been accepted.
 
-Exit `3` covers stale revisions, dirty edits, active editors, and pending recovery or
+Exit `3` covers stale revisions, dirty edits, active editors, modal dialogs, and pending recovery or
 synchronization conflicts. Their stable reason is `result.error_code`. Exit `1`
 covers a wrong project, invalid saved project, unknown ID, or failed view navigation;
 `2` covers invalid arguments; `7` covers unavailable session/transport/SDK support.
@@ -843,11 +913,39 @@ call, not a later probe or cleanup call. A revision mismatch has no native error
 An exclusive lock that prevents initial loading returns `failure.stage: load_project`,
 `saved: false`, and an `open_read` diagnostic without applying any operations.
 
-A clean GUI can remain open across repeated `apply` / `gui --adopt` calls, including
-`--defer-generation`. Adoption still requires the expected revision and rejects a dirty GUI,
+A clean GUI can remain open across repeated `apply --session` calls or offline
+`apply` / `gui --adopt` calls, including `--defer-generation`. Explicit adoption still requires the expected revision and rejects a dirty GUI,
 an active editor, or an unresolved synchronization conflict. If a lock persists, inspect the
 reported paths and their permissions, release the conflicting access, obtain the current
 revision, and review the patch before retrying. No holder process is inferred from the error.
+
+### References before deletion or renaming
+
+`references <project> <stable-id>... [--expect REV]` lists inbound references without
+writing. `apply` and `apply --dry-run` also return `reference_checks` for objects
+deleted or renamed by the batch, including descendants removed by explicit cascade.
+`remaining_reference_count` counts remaining suspected text references. These members
+remain available with `--changes summary`, `--preflight` and `--defer-generation`.
+
+Each result contains `target_id`, `target_path`, `target_name`, source `object_id`,
+source `path`, `property`, `excerpt`, `kind`, `status`, `change`, `ambiguous` and
+`candidate_ids`. `structured` means an exact stable-ID relationship; the current
+model only has the parent relationship, not independent cross-object links.
+`text` means a case-sensitive name found in a description and is advisory.
+Identifier boundaries exclude substrings such as `VERSION_EXTRA` for `VERSION`;
+adjacent Chinese prose is supported. Qualified ancestor names such as
+`Page_a.Common.VERSION` and `Page_a/Common/VERSION` take precedence. Unqualified
+names resolve in the closest enclosing scope; unresolved same-name candidates are
+marked ambiguous and retain their stable IDs.
+
+Preview results distinguish `remaining`, `resolved`, `source_removed` and preserved
+structured relationships (`preserved`). Text is never rewritten automatically and
+never enlarges the deletion scope. Put explicit description `set` operations in the
+same batch as `remove` or name changes to preview, validate and save them together.
+Stable IDs, addresses, widths and access properties of unrelated objects remain
+governed by the original patch operations. The GUI **Edit > Check References** opens
+a nonmodal list for the selected object and pending local deletions / renames;
+double-click a result to locate its source and edit descriptions explicitly.
 
 ### Repair a project with validation errors
 

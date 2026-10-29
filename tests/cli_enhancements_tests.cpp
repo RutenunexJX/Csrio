@@ -93,7 +93,92 @@ private slots:
     void exposesCapabilitiesInSchemaAndHelp();
     void preflightsWithoutRejectingEarlierStateChanges();
     void preservesWorkbookOrderAndRejectsInvalidOutputOptions();
+    void findsScopedReferencesAndKeepsTextAdvisory();
+    void previewsRenameAndReferenceFixTogether();
+    void deletesWithExplicitReferenceFixWithoutMovingOtherObjects();
 };
+
+void CliEnhancementsTests::findsScopedReferencesAndKeepsTextAdvisory()
+{
+    Fixture f;
+    QCOMPARE(f.apply({set("status-a","description",QStringLiteral("读取VERSION后处理；VERSION_EXTRA不匹配。Page_b.Common.VERSION 是另一作用域。")),
+        set("status-b","description","VERSION"), set("page-a","description","VERSION")}, {"--defer-generation"}).code,0);
+    const auto original = read(f.path);
+    const auto query = call({"references",f.path,"version-a","--expect",revision(f.path)});
+    QCOMPARE(query.code,0);
+    const auto findings = query.result().value("references").toArray();
+    int statusMatches = 0, structured = 0;
+    for (const auto& value : findings) {
+        const auto item = value.toObject();
+        QCOMPARE(item.value("target_id").toString(),QStringLiteral("version-a"));
+        QVERIFY(!item.value("path").toString().isEmpty());
+        QVERIFY(!item.value("property").toString().isEmpty());
+        if (item.value("kind") == "structured") { ++structured; QCOMPARE(item.value("property").toString(),QStringLiteral("parent")); }
+        if (item.value("object_id") == "status-a") { ++statusMatches; QVERIFY(!item.value("ambiguous").toBool()); }
+        QVERIFY(item.value("object_id") != "status-b");
+    }
+    QCOMPARE(statusMatches,1); QCOMPARE(structured,6);
+    QCOMPARE(read(f.path),original);
+    QCOMPARE(call({"references",f.path,"version-a","--expect","sha256:" + QString(64,'0')}).code,3);
+    QCOMPARE(f.apply({QJsonObject{{"op","add"},{"kind","page"},{"id","page-c"},{"parent_id","workspace"},
+        {"value",QJsonObject{{"name","Other"},{"description","VERSION"}}}}},{"--defer-generation"}).code,0);
+    const auto ambiguous = call({"references",f.path,"version-a"}).result().value("references").toArray();
+    QVERIFY(std::ranges::any_of(ambiguous,[](const QJsonValue& value) {
+        const auto item = value.toObject();
+        return item.value("object_id") == "page-c" && item.value("ambiguous").toBool() && item.value("candidate_ids").toArray().size() == 2;
+    }));
+}
+
+void CliEnhancementsTests::previewsRenameAndReferenceFixTogether()
+{
+    Fixture f;
+    QCOMPARE(f.apply({set("status-a","description",QStringLiteral("读取VERSION完成后处理")),
+        set("status-b","description","VERSION")},{"--defer-generation"}).code,0);
+    const auto original = read(f.path);
+    const auto preview = f.apply({set("version-a","name","REVISION")},{"--dry-run","--defer-generation","--changes","summary"});
+    QCOMPARE(preview.code,0); QCOMPARE(read(f.path),original);
+    const auto findings = preview.result().value("reference_checks").toArray();
+    QVERIFY(std::ranges::any_of(findings,[](const QJsonValue& value) {
+        const auto item = value.toObject();
+        return item.value("object_id") == "status-a" && item.value("status") == "remaining" && item.value("kind") == "text";
+    }));
+    QVERIFY(!std::ranges::any_of(findings,[](const QJsonValue& value) { return value.toObject().value("object_id") == "status-b"; }));
+    const auto other = f.get("version-b");
+    const auto applied = f.apply({set("status-a","description",QStringLiteral("读取REVISION完成后处理")),set("version-a","name","REVISION")},{"--defer-generation"});
+    QCOMPARE(applied.code,0); QCOMPARE(applied.result().value("remaining_reference_count").toInt(),0);
+    QVERIFY(std::ranges::any_of(applied.result().value("reference_checks").toArray(),[](const QJsonValue& value) {
+        return value.toObject().value("object_id") == "status-a" && value.toObject().value("status") == "resolved";
+    }));
+    const auto after = f.get("version-b");
+    for (const auto* property : {"address","offset","width","access"}) {
+        QVERIFY(other.contains(property));
+        QCOMPARE(after.value(property),other.value(property));
+    }
+    QCOMPARE(f.get("status-b").value("description").toString(),QStringLiteral("VERSION"));
+}
+
+void CliEnhancementsTests::deletesWithExplicitReferenceFixWithoutMovingOtherObjects()
+{
+    Fixture f;
+    QCOMPARE(f.apply({set("status-a","description","VERSION is the source"),set("status-b","description","VERSION is local")},{"--defer-generation"}).code,0);
+    const auto other = f.get("version-b"), status = f.get("status-a"), field = f.get("field-b-0");
+    const QJsonObject remove{{"op","remove"},{"id","version-a"},{"cascade",true}};
+    const auto preview = f.apply({remove},{"--dry-run","--defer-generation"});
+    QCOMPARE(preview.code,0); QVERIFY(preview.result().value("remaining_reference_count").toInt() > 0);
+    const auto applied = f.apply({set("status-a","description","Source removed by this patch"),remove},{"--defer-generation"});
+    QCOMPARE(applied.code,0); QCOMPARE(applied.result().value("remaining_reference_count").toInt(),0);
+    for (const auto* property : {"address","offset","width","access"}) {
+        QVERIFY(other.contains(property)); QVERIFY(status.contains(property));
+        QCOMPARE(f.get("version-b").value(property),other.value(property));
+        QCOMPARE(f.get("status-a").value(property),status.value(property));
+    }
+    for (const auto* property : {"msb","lsb","width","software_access","hardware_access"}) {
+        QVERIFY(field.contains(property));
+        QCOMPARE(f.get("field-b-0").value(property),field.value(property));
+    }
+    QCOMPARE(f.get("status-b").value("description").toString(),QStringLiteral("VERSION is local"));
+    QCOMPARE(call({"get",f.path,"version-a"}).code,1);
+}
 void CliEnhancementsTests::projectsWithoutChangingQuerySemantics()
 {
     Fixture f;
@@ -389,6 +474,13 @@ void CliEnhancementsTests::exposesCapabilitiesInSchemaAndHelp()
     QVERIFY(schema.contains("stats_contract"));QVERIFY(schema.contains("consistency_rules_contract"));
     const auto help=call({"help","apply"}).result();QVERIFY(help.value("operation_schemas").toObject().value("move").toObject().contains("register_before_id_restriction"));
     QVERIFY(help.value("usage").toString().contains("--enum-tables"));
+    QVERIFY(help.value("usage").toString().contains("--session"));
+    QVERIFY(call({"help","gui"}).result().value("usage").toString().contains("--discover"));
+    const auto references = call({"help","references"});
+    QCOMPARE(references.code,0);
+    QVERIFY(!references.result().value("usage").toString().contains("--stats"));
+    QCOMPARE(schema.value("reference_check_contract").toObject().value("automatic_edits").toBool(),false);
+    QVERIFY(schema.value("collaborative_commit_contract").toObject().value("result_members").toArray().contains("saved_revision"));
 }
 void CliEnhancementsTests::preflightsWithoutRejectingEarlierStateChanges()
 {

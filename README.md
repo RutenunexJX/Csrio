@@ -1,6 +1,11 @@
 # Csrio
 
-Current version: `0.4.11`.
+Current version: `0.4.12`.
+
+Release 0.4.12 adds native CLI/GUI collaborative commits with revision and
+edit-generation protection. GUI synchronization can be retried without
+reapplying mutations. Scoped reference queries and change previews identify
+affected references while leaving fixes explicit.
 
 Release 0.4.11 hardens Windows atomic saves while the GUI remains open.
 Read handles allow delete sharing and close before parsing. Bounded retries

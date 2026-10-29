@@ -1,4 +1,6 @@
 #include "suite_integration.hpp"
+#include "../common/gui_session_registry.hpp"
+#include <QUuid>
 #include <suiteapp/transport.h>
 
 #include "main_window.hpp"
@@ -316,15 +318,24 @@ RegMapSuiteIntegration::RegMapSuiteIntegration(MainWindow* window,
 {
 }
 
-RegMapSuiteIntegration::~RegMapSuiteIntegration() = default;
+RegMapSuiteIntegration::~RegMapSuiteIntegration()
+{
+    if (window_ && session_) window_->resetGuiSession();
+    if (!discoveryEpoch_.isEmpty()) regmap::session::remove(discoveryEpoch_);
+}
 
 bool RegMapSuiteIntegration::startSession(QString* failureReason)
 {
     if (session_ && session_->isListening()) return true;
+    if (window_) window_->resetGuiSession();
     session_ = std::make_unique<SuiteApp::JsonServer>(
         QStringLiteral("csrio.session.%1").arg(QCoreApplication::applicationPid()),
         [this](const QJsonObject& request) { return processRequest(request); }, this);
-    return session_->start(failureReason);
+    if (!session_->start(failureReason)) return false;
+    discoveryEpoch_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    if (!regmap::session::publish(discoveryEpoch_) && failureReason)
+        *failureReason = QStringLiteral("Session is listening but its discovery record could not be published.");
+    return true;
 }
 
 bool RegMapSuiteIntegration::start(QString* failureReason)
@@ -400,6 +411,11 @@ QJsonObject RegMapSuiteIntegration::processRequest(
         if (!window_)
             return SuiteApp::errorResponse(request, QStringLiteral("session_unavailable"), QStringLiteral("No Workbench window."));
         return SuiteApp::successResponse(request, window_->guiSession(params));
+    }
+    if (method == QStringLiteral("regmap.commit")) {
+        if (!window_)
+            return SuiteApp::errorResponse(request, QStringLiteral("session_unavailable"), QStringLiteral("No Workbench window."));
+        return SuiteApp::successResponse(request, window_->guiCommit(params));
     }
     const ProjectTarget target = projectTarget(params);
     if (!target.isValid()) {

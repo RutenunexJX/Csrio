@@ -147,8 +147,14 @@ private slots:
             regmap::findRegister(model, "reg-1")->description = "Updated description";
         }));
         auto* results = window.findChild<QToolButton*>("resultsToggleButton");
+        auto* tabs = window.findChild<QTabWidget*>("resultTabs");
+        auto* changes = window.findChild<QTableView*>("diffView");
+        // The derived Diff model and its tab are populated on the event queue.
+        QTRY_COMPARE(changes->model()->rowCount(), 1);
+        QTRY_VERIFY(tabs->isTabVisible(2));
         if (!results->isChecked()) results->click();
-        window.findChild<QTabWidget*>("resultTabs")->setCurrentIndex(2);
+        QTRY_VERIFY(tabs->isVisible());
+        tabs->setCurrentIndex(2);
         auto* details = window.findChild<QTableView*>("diffDetailsView");
         QTRY_COMPARE(details->model()->rowCount(), 1);
         QCOMPARE(details->model()->index(0, 1).data().toString(), QString("description"));
@@ -162,14 +168,18 @@ private slots:
         QVERIFY(controller->editWorkspace("Hardware access", [](regmap::Workspace& model) {
             regmap::findField(model, "field-0")->hardwareAccess = regmap::AccessMode::readOnly;
         }));
-        auto* changes = window.findChild<QTableView*>("diffView");
-        int changedField = -1;
-        for (int row = 0; row < changes->model()->rowCount(); ++row)
-            if (changes->model()->index(row, 0).data(Qt::UserRole + 1).toString() == "field-0")
-                changedField = row;
-        QVERIFY(changedField >= 0);
-        changes->setCurrentIndex(changes->model()->index(changedField, 0));
+        const auto changedFieldRow = [changes] {
+            for (int row = 0; row < changes->model()->rowCount(); ++row)
+                if (changes->model()->index(row, 0).data(Qt::UserRole + 1).toString() == "field-0")
+                    return row;
+            return -1;
+        };
+        QTRY_VERIFY(changedFieldRow() >= 0);
+        changes->setCurrentIndex(changes->model()->index(changedFieldRow(), 0));
         QTRY_COMPARE(details->model()->index(0, 1).data().toString(), QString("hw_access"));
+        QCOMPARE(details->model()->rowCount(), 1);
+        QCOMPARE(details->model()->index(0, 2).data().toString(), QString("none"));
+        QCOMPARE(details->model()->index(0, 3).data().toString(), QString("ro"));
         Q_EMIT details->doubleClicked(details->model()->index(0, 1));
         auto* fields = window.findChild<QTableView*>("fieldView");
         const int hardwareAccess = column(fields, "HW Access");

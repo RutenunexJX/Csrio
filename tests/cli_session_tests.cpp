@@ -6,6 +6,7 @@
 #include "regmap/core/project.hpp"
 #include <suiteapp/transport.h>
 #include <QApplication>
+#include <QAction>
 #include <QCryptographicHash>
 #include <QDirIterator>
 #include <QDialog>
@@ -15,6 +16,9 @@
 #include <QLineEdit>
 #include <QProcess>
 #include <QSettings>
+#include <QScrollBar>
+#include <QTableView>
+#include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTreeView>
 #include <QtTest>
@@ -129,20 +133,24 @@ private slots:
             operations.append(QJsonObject{{"op","set"},{"id","workspace-main"},
                 {"property","name"},{"value",name}});
             const QString patch = writePatch(directory.path(),operations);
-            QStringList arguments{"apply",project,patch,"--expect",before};
+            QStringList arguments{"apply",project,patch,"--expect",before,"--session",QString::number(session)};
             const bool deferred = round % 2 != 0;
             if (deferred) arguments.append("--defer-generation");
             const auto applied = invoke(arguments);
             QVERIFY2(applied.value("ok").toBool(),QJsonDocument(applied).toJson().constData());
             QVERIFY(state(applied).value("saved").toBool());
+            QVERIFY(state(applied).value("gui_adopted").toBool());
+            QVERIFY(!state(applied).value("commit_id").toString().isEmpty());
             QCOMPARE(state(applied).value("generated").toBool(),!deferred);
             const QString after = applied.value("revision").toString();
+            QCOMPARE(state(applied).value("saved_revision").toString(),after);
             QVERIFY(after != before);
-            const auto adopted = gui(project,session,{"--expect",after,"--adopt"});
-            QVERIFY2(adopted.value("ok").toBool(),QJsonDocument(adopted).toJson().constData());
             QCOMPARE(controller->adoptedRevision(),after);
             QCOMPARE(QString::fromStdString(controller->workspace()->name),name);
             QVERIFY(!controller->isDirty());
+            const auto adoptedGeneration = controller->modelRevision();
+            QTest::qWait(650);
+            QCOMPARE(controller->modelRevision(),adoptedGeneration);
             if (deferred) {
                 const auto generated = invoke({"generate",project,"--expect",after});
                 QVERIFY2(generated.value("ok").toBool(),QJsonDocument(generated).toJson().constData());
@@ -158,6 +166,231 @@ private slots:
         QTest::addColumn<bool>("deferred");
         QTest::newRow("default-generation") << false;
         QTest::newRow("deferred-generation") << true;
+    }
+    void coordinatedCommitBlocksLocalState_data() {
+        QTest::addColumn<QString>("blocked");
+        for (const auto* code : {"dirty","active_editor","modal","session_unavailable"}) QTest::newRow(code) << QString::fromLatin1(code);
+    }
+    void coordinatedCommitBlocksLocalState() {
+        QFETCH(QString,blocked);
+        QTemporaryDir directory;
+        const auto project = directory.filePath("guard.regmap.yaml");
+        QVERIFY(invoke({"init",project,"--no-generate","--workspace-id","workspace-main"}).value("ok").toBool());
+        MainWindow window; window.show(); QVERIFY(window.openProjectPath(project,false));
+        regmap::workbench::RegMapSuiteIntegration integration(&window); QVERIFY(integration.startSession());
+        auto* controller = window.findChild<ProjectController*>(); QVERIFY(controller);
+        const auto before = revision(project); const auto bytes = readFile(project);
+        QDialog dialog(&window);
+        QLineEdit* editor = nullptr;
+        if (blocked == "dirty") QVERIFY(controller->editWorkspace("Local edit",[](regmap::Workspace& model) { model.name = "Retain my edit"; }));
+        if (blocked == "modal") { dialog.setModal(true); dialog.show(); QTRY_VERIFY(QApplication::activeModalWidget() == &dialog); }
+        if (blocked == "active_editor") {
+            auto* tree = window.findChild<QTreeView*>("hierarchyView"); QVERIFY(tree);
+            tree->setFocus(); tree->edit(tree->model()->index(0,0));
+            QTRY_VERIFY(qobject_cast<QLineEdit*>(QApplication::focusWidget()));
+            editor = qobject_cast<QLineEdit*>(QApplication::focusWidget());
+            editor->selectAll(); QTest::keyClicks(editor,"Retain draft editor");
+        }
+        const auto patch = writePatch(directory.path(),hierarchy());
+        const auto session = blocked == "session_unavailable" ? QString("999999999") : QString::number(QCoreApplication::applicationPid());
+        const auto response = invoke({"apply",project,patch,"--expect",before,"--session",session,"--defer-generation"});
+        QVERIFY(!response.value("ok").toBool());
+        QVERIFY(!state(response).value("saved").toBool());
+        QCOMPARE(state(response).value("gui").toObject().value("error_code").toString(),blocked);
+        QVERIFY(!state(response).value("gui").toObject().value("suggestion").toString().isEmpty());
+        QCOMPARE(readFile(project),bytes);
+        if (blocked == "dirty") { QCOMPARE(controller->workspace()->name,std::string("Retain my edit")); controller->undo(); }
+        if (editor) { QCOMPARE(editor->text(),QStringLiteral("Retain draft editor")); QTest::keyClick(editor,Qt::Key_Escape); }
+        dialog.close(); QVERIFY(window.close());
+    }
+    void generationGuardPreservesEditsAndRecoveryDoesNotReapply() {
+        QTemporaryDir directory;
+        const auto project = directory.filePath("race.regmap.yaml");
+        QVERIFY(invoke({"init",project,"--no-generate","--workspace-id","workspace-main"}).value("ok").toBool());
+        MainWindow window; window.show(); QVERIFY(window.openProjectPath(project,false));
+        regmap::workbench::RegMapSuiteIntegration integration(&window); QVERIFY(integration.startSession());
+        auto* controller = window.findChild<ProjectController*>(); QVERIFY(controller);
+        const auto before = revision(project);
+        const auto prepared = window.guiCommit({{"phase","begin"},{"project",project},{"expect",before}});
+        QVERIFY(prepared.value("ok").toBool());
+        QJsonObject request{{"project",project},{"token",prepared.value("token")},{"session_epoch",prepared.value("session_epoch")},{"phase","confirm"}};
+        QVERIFY(window.guiCommit(request).value("ok").toBool());
+        // Edit after confirmation but before disk commit. A watcher must not
+        // adopt over the newly edited model, even if the CLI save succeeds.
+        QVERIFY(controller->editWorkspace("Concurrent GUI edit",[](regmap::Workspace& model) { model.name = "New GUI edit"; }));
+        QCOMPARE(window.guiCommit(request).value("error_code").toString(),QStringLiteral("gui_generation_changed"));
+        const auto patch = writePatch(directory.path(),hierarchy());
+        const auto saved = invoke({"apply",project,patch,"--expect",before,"--defer-generation"});
+        QVERIFY(saved.value("ok").toBool());
+        const auto after = saved.value("revision").toString(); const auto savedBytes = readFile(project);
+        request.insert("phase","finish"); request.insert("expect",after);
+        const auto blocked = window.guiCommit(request);
+        QCOMPARE(blocked.value("error_code").toString(),QStringLiteral("gui_generation_changed"));
+        QVERIFY(!blocked.value("gui_adopted").toBool());
+        QCOMPARE(window.guiCommit(request),blocked);
+        auto wrongRevision = request; wrongRevision.insert("expect",before);
+        QCOMPARE(window.guiCommit(wrongRevision).value("error_code").toString(),QStringLiteral("revision_conflict"));
+        QCOMPARE(controller->workspace()->name,std::string("New GUI edit"));
+        QVERIFY(controller->isDirty());
+        QTest::qWait(650); QCOMPARE(controller->workspace()->name,std::string("New GUI edit"));
+        controller->undo();
+        const auto recovered = gui(project,QCoreApplication::applicationPid(),{"--expect",after,"--adopt"});
+        QVERIFY2(recovered.value("ok").toBool(),QJsonDocument(recovered).toJson().constData());
+        QCOMPARE(controller->workspace()->addressSpaces.front().blocks.size(),std::size_t(2));
+        QCOMPARE(readFile(project),savedBytes);
+        QCOMPARE(invoke({"apply",project,patch,"--expect",before,"--defer-generation"}).value("actual_exit").toInt(),3);
+        QVERIFY(window.close());
+    }
+    void reconnectsAndRecoversSavedRevision() {
+        QTemporaryDir directory;
+        const auto project = directory.filePath("reconnect.regmap.yaml");
+        QVERIFY(invoke({"init",project,"--no-generate","--workspace-id","workspace-main"}).value("ok").toBool());
+        MainWindow window; window.show(); QVERIFY(window.openProjectPath(project,false));
+        auto integration = std::make_unique<regmap::workbench::RegMapSuiteIntegration>(&window);
+        QVERIFY(integration->startSession());
+        const auto before = revision(project);
+        const auto prepared = window.guiCommit({{"phase","begin"},{"project",project},{"expect",before}});
+        QVERIFY(prepared.value("ok").toBool());
+        const auto patch = writePatch(directory.path(),hierarchy());
+        const auto saved = invoke({"apply",project,patch,"--expect",before,"--defer-generation"});
+        QVERIFY(saved.value("ok").toBool());
+        const auto after = saved.value("revision").toString(); const auto bytes = readFile(project);
+        integration.reset();
+        const auto unavailable = gui(project,QCoreApplication::applicationPid(),{"--expect",after,"--adopt"});
+        QCOMPARE(state(unavailable).value("error_code").toString(),QStringLiteral("session_unavailable"));
+        QVERIFY(state(unavailable).contains("reconnect"));
+        integration = std::make_unique<regmap::workbench::RegMapSuiteIntegration>(&window); QVERIFY(integration->startSession());
+        const auto discovery = invoke({"gui",project,"--discover"});
+        QVERIFY(discovery.value("ok").toBool());
+        QCOMPARE(state(discovery).value("sessions").toArray().size(),1);
+        const auto stale = window.guiCommit({{"phase","finish"},{"project",project},{"expect",after},
+            {"token",prepared.value("token")},{"session_epoch",prepared.value("session_epoch")}});
+        QCOMPARE(stale.value("error_code").toString(),QStringLiteral("session_expired"));
+        QVERIFY(gui(project,QCoreApplication::applicationPid(),{"--expect",after,"--adopt"}).value("ok").toBool());
+        QCOMPARE(readFile(project),bytes);
+        auto* controller = window.findChild<ProjectController*>(); QVERIFY(controller);
+        QCOMPARE(controller->workspace()->addressSpaces.front().blocks.size(),std::size_t(2));
+        QVERIFY(window.close());
+    }
+    void automaticallyAdoptsOfflineChangesOnce() {
+        QTemporaryDir directory;
+        const auto project = directory.filePath("automatic.regmap.yaml");
+        QVERIFY(invoke({"init",project,"--no-generate","--workspace-id","workspace-main"}).value("ok").toBool());
+        MainWindow window; window.show(); QVERIFY(window.openProjectPath(project,false));
+        auto* controller = window.findChild<ProjectController*>(); QVERIFY(controller);
+        const auto patch = writePatch(directory.path(),hierarchy());
+        const auto saved = invoke({"apply",project,patch,"--expect",revision(project),"--defer-generation"});
+        QVERIFY(saved.value("ok").toBool());
+        const auto after = saved.value("revision").toString();
+        QTRY_COMPARE_WITH_TIMEOUT(controller->adoptedRevision(),after,5000);
+        const auto generation = controller->modelRevision();
+        QTest::qWait(650); QCOMPARE(controller->modelRevision(),generation);
+        QVERIFY(!QApplication::activeModalWidget());
+        QVERIFY(window.close());
+    }
+    void oneCallPreservesConcurrentEdits_data() {
+        QTest::addColumn<QString>("phase");
+        QTest::newRow("before-save") << QStringLiteral("confirm");
+        QTest::newRow("after-save") << QStringLiteral("finish");
+    }
+    void oneCallPreservesConcurrentEdits() {
+        QFETCH(QString,phase);
+        QTemporaryDir directory;
+        const auto project = directory.filePath("native-race.regmap.yaml");
+        QVERIFY(invoke({"init",project,"--no-generate","--workspace-id","workspace-main"}).value("ok").toBool());
+        MainWindow window; window.show(); QVERIFY(window.openProjectPath(project,false));
+        auto* controller = window.findChild<ProjectController*>(); QVERIFY(controller);
+        bool injected = false, editSucceeded = false;
+        // Inject a real GUI transaction at a deterministic protocol boundary.
+        SuiteApp::JsonServer endpoint(QStringLiteral("csrio.session.%1").arg(QCoreApplication::applicationPid()),
+            [&](const QJsonObject& request) {
+                const auto params = request.value("params").toObject();
+                if (request.value("method") == "regmap.commit") {
+                    if (params.value("phase") == phase && !injected) {
+                        injected = true;
+                        editSucceeded = controller->editWorkspace("New user edit",[](regmap::Workspace& model) { model.name = "Preserve this new edit"; });
+                    }
+                    return SuiteApp::successResponse(request,window.guiCommit(params));
+                }
+                return SuiteApp::successResponse(request,window.guiSession(params));
+            });
+        QVERIFY(endpoint.start());
+        const auto before = revision(project);
+        const auto beforeBytes = readFile(project);
+        const auto patch = writePatch(directory.path(),hierarchy());
+        const auto response = invoke({"apply",project,patch,"--expect",before,"--session",QString::number(QCoreApplication::applicationPid()),"--defer-generation","--changes","summary"});
+        QVERIFY(injected && editSucceeded);
+        QCOMPARE(response.value("actual_exit").toInt(),3);
+        QVERIFY(!state(response).value("gui_adopted").toBool());
+        QCOMPARE(state(response).value("gui").toObject().value("error_code").toString(),QStringLiteral("gui_generation_changed"));
+        QCOMPARE(controller->workspace()->name,std::string("Preserve this new edit"));
+        if (phase == "confirm") {
+            QVERIFY(!state(response).value("saved").toBool());
+            QVERIFY(state(response).value("saved_revision").isNull());
+            QCOMPARE(state(response).value("failure").toObject().value("stage").toString(),QStringLiteral("gui_confirm"));
+            QVERIFY(!state(response).value("changes").toArray().isEmpty());
+            QVERIFY(!state(response).contains("gui_recovery"));
+            QCOMPARE(readFile(project),beforeBytes);
+            controller->undo();
+            const auto retry = invoke({"apply",project,patch,"--expect",before,"--session",QString::number(QCoreApplication::applicationPid()),"--defer-generation"});
+            QVERIFY2(retry.value("ok").toBool(),QJsonDocument(retry).toJson().constData());
+            QVERIFY(state(retry).value("saved").toBool() && state(retry).value("gui_adopted").toBool());
+            QCOMPARE(controller->workspace()->addressSpaces.front().blocks.size(),std::size_t(2));
+            QVERIFY(window.close());
+            return;
+        }
+        QVERIFY(state(response).value("saved").toBool());
+        QCOMPARE(state(response).value("generation_state").toString(),QStringLiteral("deferred"));
+        const auto after = state(response).value("saved_revision").toString();
+        QCOMPARE(revision(project),after);
+        QCOMPARE(controller->workspace()->name,std::string("Preserve this new edit"));
+        const auto bytes = readFile(project);
+        controller->undo();
+        QStringList recovery;
+        for (const auto& argument : state(response).value("gui_recovery").toObject().value("arguments").toArray()) recovery.append(argument.toString());
+        QCOMPARE(recovery.front(),QStringLiteral("gui"));
+        const auto recovered = invoke(recovery);
+        QVERIFY2(recovered.value("ok").toBool(),QJsonDocument(recovered).toJson().constData());
+        QCOMPARE(readFile(project),bytes);
+        QCOMPARE(controller->workspace()->addressSpaces.front().blocks.size(),std::size_t(2));
+        QVERIFY(window.close());
+    }
+    void preservesViewAndLocatesSurvivingParent() {
+        QTemporaryDir directory;
+        const auto project = directory.filePath("navigation.regmap.yaml");
+        QVERIFY(invoke({"init",project,"--no-generate","--workspace-id","workspace-main"}).value("ok").toBool());
+        auto operations = hierarchy();
+        for (int index = 0; index < 40; ++index) operations.append(QJsonObject{{"op","add"},{"kind","register"},
+            {"id",QStringLiteral("reg-scroll-%1").arg(index)},{"parent_id","block-ch0"},
+            {"value",QJsonObject{{"name",QStringLiteral("SCROLL_%1").arg(index)},{"offset","auto"}}}});
+        auto patch = writePatch(directory.path(),operations);
+        QVERIFY(invoke({"apply",project,patch,"--expect",revision(project),"--defer-generation"}).value("ok").toBool());
+        MainWindow window; window.show(); QVERIFY(window.openProjectPath(project,false));
+        regmap::workbench::RegMapSuiteIntegration integration(&window); QVERIFY(integration.startSession());
+        const auto session = QCoreApplication::applicationPid();
+        QVERIFY(gui(project,session,{"--expect",revision(project),"--select","reg-scroll-30"}).value("ok").toBool());
+        auto* table = window.findChild<QTableView*>("registerView"); QVERIFY(table);
+        auto* tree = window.findChild<QTreeView*>("hierarchyView"); QVERIFY(tree);
+        tree->expandAll();
+        QTest::qWait(100);
+        table->verticalScrollBar()->setValue(table->verticalScrollBar()->maximum()/2);
+        const int scroll = table->verticalScrollBar()->value();
+        const auto selected = state(gui(project,session)).value("selected_id");
+        patch = writePatch(directory.path(),QJsonArray{QJsonObject{{"op","set"},{"id","workspace-main"},{"property","name"},{"value","Renamed workspace"}}});
+        const auto renamed = invoke({"apply",project,patch,"--expect",revision(project),"--session",QString::number(session),"--defer-generation"});
+        QVERIFY2(renamed.value("ok").toBool(),QJsonDocument(renamed).toJson().constData());
+        QCOMPARE(state(gui(project,session)).value("selected_id"),selected);
+        QCOMPARE(table->verticalScrollBar()->value(),scroll);
+        QVERIFY(tree->isExpanded(tree->model()->index(0,0)));
+        patch = writePatch(directory.path(),QJsonArray{QJsonObject{{"op","remove"},{"id","reg-scroll-30"}}});
+        const auto removed = invoke({"apply",project,patch,"--expect",revision(project),"--session",QString::number(session),"--defer-generation"});
+        QVERIFY2(removed.value("ok").toBool(),QJsonDocument(removed).toJson().constData());
+        QCOMPARE(state(gui(project,session)).value("selected_id").toString(),QStringLiteral("block-ch0"));
+        auto* action = window.findChild<QAction*>("checkReferencesAction"); QVERIFY(action); QVERIFY(action->shortcut().isEmpty());
+        action->trigger();
+        auto* dialog = window.findChild<QDialog*>("referenceChecksDialog"); QVERIFY(dialog); QVERIFY(!dialog->isModal());
+        auto* references = dialog->findChild<QTableWidget*>("referenceChecksTable"); QVERIFY(references); QVERIFY(references->rowCount() > 0);
+        dialog->close(); QVERIFY(window.close());
     }
     void reportsLockedModelAndRecoversOnce() {
 #ifndef Q_OS_WIN
@@ -175,7 +408,7 @@ private slots:
         const QString before = revision(project);
         const auto original = readFile(project);
         const QString patch = writePatch(directory.path(),hierarchy());
-        QStringList arguments{"apply",project,patch,"--expect",before};
+        QStringList arguments{"apply",project,patch,"--expect",before,"--session",QString::number(QCoreApplication::applicationPid())};
         if (deferred) arguments.append("--defer-generation");
         ReadLock lock(project);
         QVERIFY(lock.handle != INVALID_HANDLE_VALUE);
@@ -209,7 +442,12 @@ private slots:
         QVERIFY(controller);
         QCOMPARE(controller->workspace()->addressSpaces.front().blocks.size(),std::size_t(2));
         // A stale retry cannot apply the already successful patch twice.
-        QCOMPARE(invoke(arguments).value("actual_exit").toInt(),3);
+        const auto stale = invoke(arguments);
+        QCOMPARE(stale.value("actual_exit").toInt(),3);
+        QVERIFY(!state(stale).value("saved").toBool());
+        QVERIFY(!state(stale).value("gui_adopted").toBool());
+        QVERIFY(state(stale).value("saved_revision").isNull());
+        QCOMPARE(state(stale).value("gui").toObject().value("status").toString(),QStringLiteral("not_started"));
         QCOMPARE(revision(project),after);
         QVERIFY(window.close());
         const auto files = diskFiles(directory.path());
@@ -249,6 +487,8 @@ private slots:
         QVERIFY(invoke({"init",project,"--no-generate","--workspace-id","workspace-main"}).value("ok").toBool());
         QString patch = writePatch(directory.path(),hierarchy());
         QVERIFY(invoke({"apply",project,patch,"--expect",revision(project)}).value("ok").toBool());
+        MainWindow window; window.show(); QVERIFY(window.openProjectPath(project,false));
+        regmap::workbench::RegMapSuiteIntegration integration(&window); QVERIFY(integration.startSession());
         const auto opened = regmap::openProject(project.toStdWString());
         QVERIFY(opened.manifest);
         const QString output = QString::fromStdWString(opened.manifest->targets.front().path.resolved.wstring());
@@ -258,9 +498,10 @@ private slots:
         const QString before = revision(project);
         ReadLock lock(output);
         QVERIFY(lock.handle != INVALID_HANDLE_VALUE);
-        const auto failed = invoke({"apply",project,patch,"--expect",before});
+        const auto failed = invoke({"apply",project,patch,"--expect",before,"--session",QString::number(QCoreApplication::applicationPid())});
         QCOMPARE(failed.value("actual_exit").toInt(),4);
         QVERIFY(state(failed).value("saved").toBool());
+        QVERIFY(state(failed).value("gui_adopted").toBool());
         QVERIFY(!state(failed).value("generated").toBool());
         QCOMPARE(state(failed).value("failure").toObject().value("stage").toString(),QStringLiteral("write_outputs"));
         QCOMPARE(readFile(output),originalOutput);
@@ -278,6 +519,7 @@ private slots:
         QCOMPARE(revision(project),after);
         QCOMPARE(regmap::openProject(project.toStdWString()).workspace->addressSpaces.front().blocks.size(),std::size_t(3));
         QVERIFY(invoke({"status",project,"--require-current"}).value("ok").toBool());
+        QVERIFY(window.close());
         const auto files = diskFiles(directory.path());
         for (auto it=files.begin();it!=files.end();++it) QFile::setPermissions(it.key(),QFileDevice::ReadOwner|QFileDevice::WriteOwner);
 #endif
@@ -300,12 +542,12 @@ private slots:
         QVERIFY(invoke({"apply",project,patch,"--expect",before}).value("ok").toBool());
         const QString after = revision(project);
         QVERIFY(after != before);
-        auto response = gui(project,session);
-        QVERIFY(state(response).value("pending").toBool());
-        QCOMPARE(state(response).value("adopted_revision").toString(),before);
-        const auto files = diskFiles(directory.path());
         auto* controller = window.findChild<ProjectController*>();
         QVERIFY(controller);
+        QTRY_COMPARE_WITH_TIMEOUT(controller->adoptedRevision(),after,5000);
+        auto response = gui(project,session);
+        QVERIFY(!state(response).value("pending").toBool());
+        const auto files = diskFiles(directory.path());
         const auto modelRevision = controller->modelRevision();
         response = gui(project,session,{"--expect",before,"--adopt","--select","block-ch1"});
         QCOMPARE(response.value("actual_exit").toInt(),3);
@@ -313,7 +555,7 @@ private slots:
         QCOMPARE(response.value("actual_exit").toInt(),1);
         QCOMPARE(controller->modelRevision(),modelRevision);
         QCOMPARE(diskFiles(directory.path()),files);
-        // Exercise the existing public SDK route over real IPC before adoption.
+        // The legacy public SDK route observes the automatically adopted snapshot.
         auto pending = std::async(std::launch::async,[&] {
             return SuiteApp::sendRequest(QStringLiteral("csrio.session.%1").arg(session),
                 SuiteApp::makeRequest("action.invoke",{{"actionId","regmap.project.open"},
@@ -321,12 +563,10 @@ private slots:
         });
         while (pending.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) QTest::qWait(5);
         const auto legacy = pending.get().response;
-        QVERIFY(!legacy.value("ok").toBool());
-        QCOMPARE(legacy.value("error").toObject().value("code").toString(),QStringLiteral("revision_conflict"));
-        qInfo().noquote() << "Pending legacy route:" << QJsonDocument(legacy).toJson(QJsonDocument::Compact);
+        QVERIFY2(legacy.value("ok").toBool(),QJsonDocument(legacy).toJson().constData());
         response = gui(project,session,{"--expect",after,"--adopt","--select","block-ch1"});
         QVERIFY2(response.value("ok").toBool(), QJsonDocument(response).toJson().constData());
-        QVERIFY(state(response).value("adopted").toBool());
+        QVERIFY(!state(response).value("adopted").toBool());
         QVERIFY(state(response).value("located").toBool());
         QCOMPARE(state(response).value("selected_id").toString(),QStringLiteral("block-ch1"));
         QCOMPARE(state(response).value("adopted_revision").toString(),after);
@@ -483,14 +723,15 @@ private slots:
         QCOMPARE(state(response).value("adopted_revision").toString(),after);
         QCOMPARE(state(response).value("selected_id").toString(),QStringLiteral("block-ch1--reg-control"));
         qInfo().noquote()<<"Real Csrio.exe:"<<QJsonDocument(response).toJson(QJsonDocument::Compact);
+        QTRY_COMPARE_WITH_TIMEOUT(state(gui(project,second.processId())).value("adopted_revision").toString(),after,5000);
         const auto other=gui(project,second.processId());
-        QVERIFY(state(other).value("pending").toBool());
-        QCOMPARE(state(other).value("adopted_revision").toString(),before);
+        QVERIFY(!state(other).value("pending").toBool());
+        QVERIFY(state(other).value("selected_id").toString() != "block-ch1--reg-control");
         QCOMPARE(gui(directory.filePath("wrong.regmap.yaml"),first.processId()).value("actual_exit").toInt(),1);
         QCOMPARE(gui(project,999999999).value("actual_exit").toInt(),7);
         QVERIFY(invoke({"validate",project}).value("ok").toBool());
         QVERIFY(invoke({"status",project,"--require-current"}).value("ok").toBool());
-        // Reopen the same persisted project in the second real window through adoption.
+        // Explicit navigation still targets only the named window.
         QVERIFY(gui(project,second.processId(),{"--expect",after,"--adopt","--select","block-ch1"}).value("ok").toBool());
         const auto files=diskFiles(directory.path());
         for (auto it=files.begin();it!=files.end();++it) QFile::setPermissions(it.key(),QFileDevice::ReadOwner|QFileDevice::WriteOwner);
@@ -503,7 +744,9 @@ private slots:
         for(const auto& args:QList<QStringList>{{"gui"},{"gui","file","--session","0"},
             {"gui","file","--session","1","--adopt"},{"gui","file","--session","1","--select","id"},
             {"gui","file","--session","1","--expect","wrong"},{"gui","file","--session","1","--session","2"},
-            {"gui","file","--session","1","--unknown"}})
+            {"gui","file","--session","1","--unknown"},
+            {"gui","file","--discover","--session","1"},{"gui","file","--discover","--adopt"},
+            {"apply","file","patch","--session","0"},{"apply","file","patch","--session","1","--session","2"}})
             QCOMPARE(invoke(args).value("actual_exit").toInt(),2);
     }
 };

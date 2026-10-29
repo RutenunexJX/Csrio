@@ -1,6 +1,7 @@
 #include "cli_app.hpp"
 #include "cli_artifacts.hpp"
 #include "cli_automation.hpp"
+#include "cli_gui.hpp"
 #include "cli_presentation.hpp"
 #include "cli_metrics.hpp"
 #include "regmap/core/document_layout.hpp"
@@ -129,6 +130,7 @@ struct ApplyOptions {
     bool preflight{false};
     GenerationTargetSet targets;
     QString enumTables;
+    QString session;
 };
 
 struct GenerateOptions {
@@ -6335,6 +6337,8 @@ descendantCount(
         QStringLiteral("enum"),
     };
     const QJsonArray commands{
+        QJsonObject{{"name","references"},{"project_access","read"},{"file_write_behavior","never"},
+            {"usage","regmapc [--json] references <project> <stable-id>... [--expect <sha256:...>]"}},
         QJsonObject{
             {QStringLiteral("name"), QStringLiteral("gui")},
             {QStringLiteral("project_access"), QStringLiteral("read")},
@@ -7509,14 +7513,14 @@ descendantCount(
             {QStringLiteral("requires_runtime"), false},
             {QStringLiteral("writes_project_files"), false},
             {QStringLiteral("may_update_gui_preferences"), true},
-            {QStringLiteral("target"), QStringLiteral("Explicit process ID and already-open absolute project path; no window discovery or implicit launch.")},
+            {QStringLiteral("target"), QStringLiteral("Explicit process ID and already-open absolute project path. --discover lists matching live sessions without selecting or launching one.")},
             {QStringLiteral("adoption"), QStringLiteral("--adopt requires --expect. Dirty, active editor, modal, recovery and synchronization conflicts are retained and rejected. Navigation follows adoption.")},
             {QStringLiteral("result_members"), QJsonArray{
-                "session", "project", "disk_revision", "adopted_revision", "model_revision", "dirty", "active_editor",
+                "session", "session_epoch", "commit_pending", "project", "disk_revision", "adopted_revision", "model_revision", "dirty", "active_editor",
                 "modal", "synchronization_conflict", "recovery_pending", "pending", "status", "adopted", "located", "requested_id", "selected_id", "object", "writes_performed", "write_scope"}},
             {QStringLiteral("error_codes"), QJsonArray{
                 "session_unavailable", "invalid_request", "project_mismatch", "revision_conflict", "dirty",
-                "active_editor", "pending_conflict", "invalid_project", "object_not_found", "navigation_failed"}},
+                "active_editor", "modal", "commit_in_progress", "pending_conflict", "invalid_project", "object_not_found", "navigation_failed"}},
             {QStringLiteral("exit_codes"), QJsonObject{{"success",0},{"project_or_object_error",1},
                 {"invalid_arguments",2},{"revision_or_edit_conflict",3},{"unavailable_session_or_transport",7}}}}},
         {QStringLiteral(
@@ -8691,6 +8695,9 @@ descendantCount(
 {
     auto schema = baseSchemaJson();
     auto commands = schema.value("command_argument_schemas").toObject();
+    commands.insert("references",QJsonObject{
+        {"positionals",QJsonArray{QJsonObject{{"name","project"},{"value_type","path"},{"required",true}},QJsonObject{{"name","stable-id"},{"value_type","stable_id"},{"required",true},{"repeatable",true}}}},
+        {"options",QJsonArray{QJsonObject{{"name","--expect"},{"kind","value"},{"value_name","revision"},{"value_type","revision"},{"repeatable",false}}}}});
     auto addOption = [&](const QString& command, const QString& name, const QString& type,
                          const QJsonArray& values = QJsonArray{}, bool repeatable = false) {
         auto descriptor = commands.value(command).toObject(); auto options = descriptor.value("options").toArray();
@@ -8707,6 +8714,13 @@ descendantCount(
     for (const auto* command : {"init","summary","list","find","get","get-many","validate","diff","status","generate","apply"}) addOption(command, "--stats", "flag");
     addOption("apply", "--defer-generation", "flag");
     addOption("apply", "--preflight", "flag");
+    addOption("apply", "--session", "positive_integer");
+    addOption("gui", "--discover", "flag");
+    auto gui = commands.value("gui").toObject();
+    gui.remove("required_options");
+    gui.insert("one_of_required",QJsonArray{"--session","--discover"});
+    gui.insert("mutually_exclusive_options",QJsonArray{QJsonArray{"--session","--discover"},QJsonArray{"--adopt","--discover"},QJsonArray{"--select","--discover"},QJsonArray{"--expect","--discover"}});
+    commands.insert("gui",gui);
     addOption("apply", "--target", "enum", {"xlsx","c-header","markdown"}, true);
     addOption("apply", "--enum-tables", "enum", {"full","consecutive"});
     auto apply = commands.value("apply").toObject(); auto exclusive = apply.value("mutually_exclusive_options").toArray();
@@ -8715,14 +8729,25 @@ descendantCount(
     auto descriptors = schema.value("commands").toArray();
     for (qsizetype i = 0; i < descriptors.size(); ++i) {
         auto descriptor = descriptors[i].toObject(); const auto command = descriptor.value("name").toString();
-        QString suffix = QStringList{"help","version","schema","gui"}.contains(command) ? QString{} : QStringLiteral(" [--stats]");
+        QString suffix = QStringList{"help","version","schema","gui","references"}.contains(command) ? QString{} : QStringLiteral(" [--stats]");
         if (QStringList{"list","find","get","get-many"}.contains(command)) suffix += " [--properties name,address,...]";
         if (command == "apply" || command == "diff") suffix += " [--changes summary|full]";
         if (command == "apply" || command == "validate") suffix += " [--rules rules.json]";
-        if (command == "apply") suffix += " [--preflight] [--defer-generation | --target T ...] [--enum-tables full|consecutive]";
+        if (command == "apply") suffix += " [--preflight] [--defer-generation | --target T ...] [--enum-tables full|consecutive] [--session PID]";
+        if (command == "gui") suffix += " | regmapc [--json] gui <project> --discover";
         descriptor.insert("usage", descriptor.value("usage").toString() + suffix); descriptors[i] = descriptor;
     }
     schema.insert("commands", descriptors);
+    schema.insert("reference_check_contract",QJsonObject{
+        {"query","references <project> <stable-id>..."},{"preview_member","apply.result.reference_checks"},
+        {"kinds",QJsonArray{"structured","text"}},{"structured_properties",QJsonArray{"parent"}},
+        {"text_properties",QJsonArray{"description"}},{"text_is_advisory",true},{"automatic_edits",false},
+        {"scope","Qualified ancestor names or the nearest parent scope; ambiguous cross-scope matches retain candidate stable IDs."}});
+    schema.insert("collaborative_commit_contract",QJsonObject{
+        {"entry","apply --session PID"},{"revision_guard","loaded disk revision and GUI edit generation"},
+        {"result_members",QJsonArray{"saved","saved_revision","gui_adopted","gui","gui_recovery","commit_id"}},
+        {"blocked_states",QJsonArray{"dirty","active_editor","modal","pending_conflict","gui_generation_changed","session_unavailable","session_expired","commit_in_progress","revision_conflict"}},
+        {"recovery","Run gui_recovery without reapplying the patch; discover a new session when disconnected."}});
     auto operations = schema.value("operation_schemas").toObject();
     const QJsonObject selector{{"kind", "workspace|page|block|register|field|enum|all"},
         {"names", "exact case-sensitive name array"}, {"ids", "stable ID array"}, {"parents", "existing parent ID array"},
@@ -8770,17 +8795,19 @@ descendantCount(
         "  regmapc [--json] version\n"
         "  regmapc [--json] schema\n"
         "  regmapc [--json] gui <project> --session <pid> [--expect <sha256:...>] [--adopt] [--select <stable-id>]\n"
+        "  regmapc [--json] gui <project> --discover\n"
         "  regmapc [--json] init <project.regmap.yaml> [--name <workspace-name>] [--workspace-id <stable-id>] [--output-dir <relative-path>] [--target <target>]... [--xlsx-file <relative-path>] [--c-header-file <relative-path>] [--markdown-file <relative-path>] [--no-generate]\n"
         "  regmapc [--json] summary <project.regmap.yaml>\n"
         "  regmapc [--json] list <project.regmap.yaml> [--kind <kind>] [--parent <stable-id> [--recursive]] [--tag <tag>] [--offset <count>] [--limit <count> | --all] [--expect <sha256:...>]\n"
         "  regmapc [--json] find <project.regmap.yaml> <query> [--exact] [--require-one] [--kind <kind>] [--parent <stable-id> [--recursive]] [--tag <tag>] [--offset <count>] [--limit <count> | --all] [--expect <sha256:...>]\n"
         "  regmapc [--json] get <project.regmap.yaml> [stable-id] [--expect <sha256:...>]\n"
         "  regmapc [--json] get-many <project.regmap.yaml> <stable-id>... [--expect <sha256:...>]\n"
+        "  regmapc [--json] references <project.regmap.yaml> <stable-id>... [--expect <sha256:...>]\n"
         "  regmapc [--json] validate <project.regmap.yaml>\n"
         "  regmapc [--json] diff <before.regmap.yaml> <after.regmap.yaml> [--kind <kind>] [--offset <count>] [--limit <count>] [--expect-before <sha256:...>] [--expect-after <sha256:...>] [--require-equal]\n"
         "  regmapc [--json] status <project.regmap.yaml> [--target <target>]... [--require-current]\n"
         "  regmapc [--json] generate <project.regmap.yaml> [--target <target>]... [--dry-run] [--expect <sha256:...>]\n"
-        "  regmapc [--json] apply <project.regmap.yaml> <patch.json|-> [--dry-run] [--expect <sha256:...> | --force]\n"
+        "  regmapc [--json] apply <project.regmap.yaml> <patch.json|-> [--dry-run] [--expect <sha256:...> | --force] [--session <pid>]\n"
         "\n"
         "Object kinds: workspace, page, block, register, field, enum, all\n"
         "Generation targets: xlsx, c-header, markdown\n"
@@ -10680,6 +10707,18 @@ void writeTextResponse(
          ++index) {
         const QString& token =
             arguments.at(index);
+        if (token == "--session") {
+            if (!options.session.isEmpty() || optionValueMissing(arguments,index)) {
+                error = "--session requires one positive process ID."; return false;
+            }
+            options.session = arguments.at(++index);
+            bool ok = false;
+            const auto pid = options.session.toLongLong(&ok);
+            if (!ok || pid <= 0 || QString::number(pid) != options.session) {
+                error = "--session requires a positive process ID."; return false;
+            }
+            continue;
+        }
         if (token == "--preflight") {
             if (options.preflight) { error = "--preflight may be specified only once."; return false; }
             options.preflight = true; continue;
@@ -12841,12 +12880,17 @@ void addGenerationRecovery(
 {
     QString project, session, expected, selected;
     bool adopt = false;
+    bool discover = false;
     const auto invalid = [](const QString& message) {
         return usageError(QStringLiteral("gui"), message);
     };
     for (qsizetype i = 1; i < arguments.size(); ++i) {
         const QString token = arguments.at(i);
         if ((terminator < 0 || i < terminator) && token.startsWith(QLatin1Char('-'))) {
+            if (token == "--discover") {
+                if (discover) return invalid("--discover cannot be repeated.");
+                discover = true; continue;
+            }
             if (token == QStringLiteral("--adopt")) {
                 if (adopt) return invalid(QStringLiteral("--adopt cannot be repeated."));
                 adopt = true;
@@ -12868,6 +12912,16 @@ void addGenerationRecovery(
     }
     bool validPid = false;
     const auto pid = session.toLongLong(&validPid);
+    if (discover) {
+        if (project.isEmpty() || !session.isEmpty() || adopt || !expected.isEmpty() || !selected.isEmpty())
+            return invalid("--discover requires only a project path.");
+        CommandResponse response;
+        response.command = "gui"; response.project = QFileInfo(project).absoluteFilePath(); response.ok = true;
+        const auto sessions = discoverGuiSessions(response.project);
+        response.result = QJsonObject{{"sessions",sessions},{"status",sessions.isEmpty() ? "not_found" : "available"},
+            {"writes_performed",false},{"suggestion",sessions.isEmpty() ? "Open this project in Csrio and discover sessions again." : "Select a session explicitly before committing or recovering."}};
+        return response;
+    }
     if (project.isEmpty() || !validPid || pid <= 0 || session != QString::number(pid))
         return invalid(QStringLiteral("gui requires a project path and --session with a positive process ID."));
     if ((!expected.isEmpty() && !QRegularExpression(QStringLiteral("^sha256:[0-9a-f]{64}$")).match(expected).hasMatch()) ||
@@ -12891,7 +12945,7 @@ void addGenerationRecovery(
         response.error = result.value(QStringLiteral("error")).toString();
         const QString code = result.value(QStringLiteral("error_code")).toString();
         if (response.ok) response.exitCode = ExitCode::success;
-        else if (code == "revision_conflict" || code == "dirty" || code == "active_editor" || code == "pending_conflict")
+        else if (code == "revision_conflict" || code == "dirty" || code == "active_editor" || code == "pending_conflict" || code == "modal" || code == "commit_in_progress")
             response.exitCode = ExitCode::revisionConflict;
         else if (code == "invalid_request") response.exitCode = ExitCode::usageError;
         else response.exitCode = ExitCode::projectError;
@@ -12904,7 +12958,8 @@ void addGenerationRecovery(
     response.error = QStringLiteral("This build has no SuiteApp SDK session support. Offline commands remain available.");
 #endif
     response.result = QJsonObject{{"status", "unavailable"}, {"session", session},
-        {"error_code", "session_unavailable"}, {"writes_performed", false}, {"adopted", false}, {"located", false}};
+        {"error_code", "session_unavailable"}, {"writes_performed", false}, {"adopted", false}, {"located", false},
+        {"reconnect",QJsonObject{{"command","gui"},{"arguments",QJsonArray{"gui",response.project,"--discover"}}}}};
     return response;
 }
 
@@ -15290,9 +15345,54 @@ void addGenerationRecovery(
     return response;
 }
 
-[[nodiscard]] CommandResponse runApply(
+[[nodiscard]] CommandResponse runReferences(const QStringList& arguments, qsizetype terminator)
+{
+    if (arguments.size() < 3) return usageError("references","references requires a project path and at least one stable ID.");
+    QString expected;
+    std::vector<ObjectId> targets;
+    for (qsizetype index = 2; index < arguments.size(); ++index) {
+        const auto& token = arguments.at(index);
+        if ((terminator < 0 || index < terminator) && token.startsWith('-')) {
+            if (token != "--expect" || !expected.isEmpty() || optionValueMissing(arguments,index))
+                return usageError("references","Only one --expect <revision> option is supported.");
+            expected = arguments.at(++index);
+            if (!validRevision(expected)) return usageError("references","--expect requires a SHA-256 revision.");
+        } else targets.push_back(token.toStdString());
+    }
+    if (targets.empty()) return usageError("references","At least one stable ID is required.");
+    auto opened = open(arguments.at(1));
+    CommandResponse response;
+    response.command = "references"; response.project = opened.path; response.revision = opened.revision;
+    response.diagnostics = std::move(opened.open.diagnostics);
+    if (!opened.open.workspace) { response.exitCode = ExitCode::projectError; return response; }
+    if (!enforceReadRevision(response,expected)) return response;
+    const auto model = inspectModel(*opened.open.workspace);
+    for (const auto& target : targets) if (!model.contains(target)) {
+        response.diagnostics.push_back(cliDiagnostic(objectNotFoundCode,"Reference target does not exist.",opened.path,target));
+        response.exitCode = ExitCode::projectError; return response;
+    }
+    const auto findings = referenceFindingsJson(findReferences(*opened.open.workspace,targets));
+    response.result = QJsonObject{{"references",findings},{"count",findings.size()},
+        {"text_is_advisory",true},{"writes_performed",false}};
+    response.ok = true;
+    return response;
+}
+
+[[nodiscard]] CommandResponse blockedGuiCommit(CommandResponse response, const QJsonObject& state, const QString& stage)
+{
+    response.ok = false;
+    response.error = state.value("error").toString();
+    auto result = response.result.toObject();
+    result.insert("saved",false); result.insert("gui_adopted",false); result.insert("gui",state);
+    result.insert("failure",QJsonObject{{"stage",stage},{"writes_performed",false}});
+    response.result = result;
+    response.exitCode = state.value("error_code") == "session_unavailable" ? ExitCode::inputError : ExitCode::revisionConflict;
+    return response;
+}
+
+[[nodiscard]] CommandResponse runApplyImpl(
     const QStringList& arguments,
-    QTextStream& standardInput, const std::vector<ConsistencyRule>& rules)
+    QTextStream& standardInput, const std::vector<ConsistencyRule>& rules, GuiCommitClient& gui, QJsonArray& references)
 {
     ApplyOptions options;
     QString optionErrorText;
@@ -15308,6 +15408,7 @@ void addGenerationRecovery(
             optionSuggestion);
     }
 
+    if (!options.session.isEmpty()) gui.setTarget(options.session,QFileInfo(options.projectPath).absoluteFilePath());
     QString patchErrorText;
     const auto patch =
         readPatch(
@@ -15501,6 +15602,11 @@ void addGenerationRecovery(
             false);
     }
 
+    if (!options.session.isEmpty()) {
+        const auto prepared = gui.begin(options.session, opened.path, opened.revision, options.dryRun);
+        if (!prepared.value("ok").toBool()) return blockedGuiCommit(response,prepared,"gui_prepare");
+    }
+
     const QJsonArray operations =
         patch->value(
                   QStringLiteral(
@@ -15556,6 +15662,7 @@ void addGenerationRecovery(
         workspaceJson(candidate) !=
         workspaceJson(
             *opened.open.workspace);
+    references = referenceFindingsJson(checkReferenceChanges(*opened.open.workspace,candidate));
     std::vector<Diagnostic>
         candidateValidation =
             timed("candidate_validation", [&] { return validateWorkspace(candidate); });
@@ -15752,6 +15859,14 @@ void addGenerationRecovery(
         return response;
     }
 
+    if (gui.prepared()) {
+        const auto confirmed = gui.confirm();
+        if (!confirmed.value("ok").toBool()) {
+            response.result = applyResult(false,changed,false,false,false,
+                opened.revision,opened.revision,changes,artifacts,repair);
+            return blockedGuiCommit(response,confirmed,"gui_confirm");
+        }
+    }
     const auto saveDiagnostics = timed("save_model", [&] {
         return saveProjectFile(candidateManifest, candidate, opened.open.sourceSha256);
     });
@@ -16025,6 +16140,51 @@ void addGenerationRecovery(
     return response;
 }
 
+[[nodiscard]] CommandResponse runApply(
+    const QStringList& arguments, QTextStream& standardInput, const std::vector<ConsistencyRule>& rules)
+{
+    GuiCommitClient gui;
+    QJsonArray references;
+    auto response = runApplyImpl(arguments,standardInput,rules,gui,references);
+    if (response.result.isObject()) {
+        auto result = response.result.toObject();
+        result.insert("reference_checks",references);
+        result.insert("remaining_reference_count",static_cast<qint64>(std::ranges::count_if(references,[](const QJsonValue& value) {
+            return value.toObject().value("status") == "remaining";
+        })));
+        response.result = result;
+    }
+    if (!gui.enabled()) return response;
+    auto result = response.result.toObject();
+    const bool saved = result.value("saved").toBool();
+    result.insert("saved",saved);
+    const auto revision = result.value("new_revision").toString();
+    auto state = gui.state();
+    if (saved && gui.prepared()) state = gui.finish(revision);
+    else { gui.cancel(); state = gui.state(); }
+    const bool adopted = saved && state.value("gui_adopted").toBool();
+    result.insert("saved_revision", saved && !revision.isEmpty() ? QJsonValue(revision) : QJsonValue(QJsonValue::Null));
+    result.insert("gui_adopted",adopted);
+    result.insert("gui",state);
+    result.insert("commit_id",gui.token());
+    if (saved && !adopted) {
+        QJsonArray recoveryArguments{"gui",response.project,"--session",gui.session()};
+        if (!revision.isEmpty()) { recoveryArguments.append("--expect"); recoveryArguments.append(revision); recoveryArguments.append("--adopt"); }
+        result.insert("gui_recovery",QJsonObject{{"command","gui"},{"expected_revision",revision},
+            {"arguments",recoveryArguments},{"reapply_patch",false},
+            {"requires_revision_lookup",revision.isEmpty()},
+            {"discover_arguments",QJsonArray{"gui",response.project,"--discover"}}});
+        if (!result.contains("failure")) result.insert("failure",QJsonObject{{"stage","gui_adopt"},{"model_saved",true}});
+        if (response.ok) {
+            response.ok = false;
+            response.error = "Model was saved, but GUI adoption did not complete. Use gui_recovery; do not repeat apply.";
+            response.exitCode = state.value("error_code") == "session_unavailable" ? ExitCode::inputError : ExitCode::revisionConflict;
+        }
+    }
+    response.result = result;
+    return response;
+}
+
 } // namespace
 
 int run(
@@ -16260,6 +16420,8 @@ int run(
                   command,
                   QStringLiteral(
                       "generate requires a project path."));
+    } else if (command == "references") {
+        response = runReferences(arguments,optionTerminatorIndex);
     } else if (
         command ==
         QStringLiteral("apply")) {
@@ -16299,7 +16461,10 @@ int run(
         auto result = response.result.toObject();
         const bool failed = !response.ok;
         const bool generationFailed = result.value("saved").toBool() || result.value("failure").toObject().value("stage") == "generation";
-        result.insert("generation_state", failed ? (generationFailed ? "failed" : "not_started") : response.generationDeferred ? "deferred" : result.value("dry_run").toBool() ? "previewed" : result.value("generated").toBool() ? "partial" : "not_generated");
+        result.insert("generation_state", response.generationDeferred && result.value("saved").toBool() ? "deferred"
+            : result.value("generated").toBool() ? "partial"
+            : failed ? (generationFailed ? "failed" : "not_started") : response.generationDeferred ? "deferred"
+            : result.value("dry_run").toBool() ? "previewed" : "not_generated");
         result.insert("pending_outputs", response.pendingOutputs);
         result.insert("selected_outputs_current", result.value("outputs_current"));
         result.insert("outputs_current", QJsonValue(QJsonValue::Null));
