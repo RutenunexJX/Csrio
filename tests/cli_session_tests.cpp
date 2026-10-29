@@ -3,6 +3,7 @@
 #include "suite_integration.hpp"
 #include "workbench_theme.hpp"
 #include "regmap/core/serialization.hpp"
+#include "regmap/core/project.hpp"
 #include <suiteapp/transport.h>
 #include <QApplication>
 #include <QCryptographicHash>
@@ -19,6 +20,9 @@
 #include <QtTest>
 #include <chrono>
 #include <future>
+#ifdef Q_OS_WIN
+#include <qt_windows.h>
+#endif
 
 namespace {
 QByteArray readFile(const QString& path) {
@@ -79,6 +83,18 @@ struct OwnedWindow : QProcess {
         if (state() != NotRunning) { terminate(); if (!waitForFinished(5000)) { kill(); waitForFinished(); } }
     }
 };
+#ifdef Q_OS_WIN
+struct ReadLock {
+    HANDLE handle;
+    explicit ReadLock(const QString& path, DWORD sharing = FILE_SHARE_READ | FILE_SHARE_WRITE)
+        : handle(CreateFileW(reinterpret_cast<LPCWSTR>(path.utf16()), GENERIC_READ,
+            sharing, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr)) {}
+    ~ReadLock() { release(); }
+    void release() { if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle); handle = INVALID_HANDLE_VALUE; }
+    ReadLock(const ReadLock&) = delete;
+    ReadLock& operator=(const ReadLock&) = delete;
+};
+#endif
 }
 
 class CliSessionTests : public QObject {
@@ -93,6 +109,178 @@ private slots:
         QCoreApplication::setOrganizationName("CsrioCliSessionTests");
         QCoreApplication::setApplicationName("IsolatedGui");
         WorkbenchTheme::apply(*qApp);
+    }
+    void repeatedlySavesAndAdoptsWithoutReopening() {
+        QTemporaryDir directory;
+        const QString project = directory.filePath(QStringLiteral("连续协作.regmap.yaml"));
+        QVERIFY(invoke({"init",project,"--no-generate","--workspace-id","workspace-main"}).value("ok").toBool());
+        MainWindow window;
+        window.show();
+        QVERIFY(window.openProjectPath(project,false));
+        regmap::workbench::RegMapSuiteIntegration integration(&window);
+        QVERIFY(integration.startSession());
+        auto* controller = window.findChild<ProjectController*>();
+        QVERIFY(controller);
+        const auto session = QCoreApplication::applicationPid();
+        for (int round = 0; round < 6; ++round) {
+            const QString before = revision(project);
+            const QString name = QStringLiteral("Round %1 中文").arg(round);
+            auto operations = round == 0 ? hierarchy() : QJsonArray{};
+            operations.append(QJsonObject{{"op","set"},{"id","workspace-main"},
+                {"property","name"},{"value",name}});
+            const QString patch = writePatch(directory.path(),operations);
+            QStringList arguments{"apply",project,patch,"--expect",before};
+            const bool deferred = round % 2 != 0;
+            if (deferred) arguments.append("--defer-generation");
+            const auto applied = invoke(arguments);
+            QVERIFY2(applied.value("ok").toBool(),QJsonDocument(applied).toJson().constData());
+            QVERIFY(state(applied).value("saved").toBool());
+            QCOMPARE(state(applied).value("generated").toBool(),!deferred);
+            const QString after = applied.value("revision").toString();
+            QVERIFY(after != before);
+            const auto adopted = gui(project,session,{"--expect",after,"--adopt"});
+            QVERIFY2(adopted.value("ok").toBool(),QJsonDocument(adopted).toJson().constData());
+            QCOMPARE(controller->adoptedRevision(),after);
+            QCOMPARE(QString::fromStdString(controller->workspace()->name),name);
+            QVERIFY(!controller->isDirty());
+            if (deferred) {
+                const auto generated = invoke({"generate",project,"--expect",after});
+                QVERIFY2(generated.value("ok").toBool(),QJsonDocument(generated).toJson().constData());
+                QCOMPARE(revision(project),after);
+            }
+            QVERIFY(invoke({"status",project,"--require-current"}).value("ok").toBool());
+        }
+        QVERIFY(window.close());
+        const auto files = diskFiles(directory.path());
+        for (auto it=files.begin();it!=files.end();++it) QFile::setPermissions(it.key(),QFileDevice::ReadOwner|QFileDevice::WriteOwner);
+    }
+    void reportsLockedModelAndRecoversOnce_data() {
+        QTest::addColumn<bool>("deferred");
+        QTest::newRow("default-generation") << false;
+        QTest::newRow("deferred-generation") << true;
+    }
+    void reportsLockedModelAndRecoversOnce() {
+#ifndef Q_OS_WIN
+        QSKIP("Controlled Windows sharing locks are required.");
+#else
+        QFETCH(bool,deferred);
+        QTemporaryDir directory;
+        const QString project = directory.filePath(QStringLiteral("被占用的工程.regmap.yaml"));
+        QVERIFY(invoke({"init",project,"--no-generate","--workspace-id","workspace-main"}).value("ok").toBool());
+        MainWindow window;
+        window.show();
+        QVERIFY(window.openProjectPath(project,false));
+        regmap::workbench::RegMapSuiteIntegration integration(&window);
+        QVERIFY(integration.startSession());
+        const QString before = revision(project);
+        const auto original = readFile(project);
+        const QString patch = writePatch(directory.path(),hierarchy());
+        QStringList arguments{"apply",project,patch,"--expect",before};
+        if (deferred) arguments.append("--defer-generation");
+        ReadLock lock(project);
+        QVERIFY(lock.handle != INVALID_HANDLE_VALUE);
+        QVERIFY(invoke(arguments + QStringList{"--dry-run"}).value("ok").toBool());
+        const auto failed = invoke(arguments);
+        QCOMPARE(failed.value("actual_exit").toInt(),4);
+        QVERIFY(!state(failed).value("saved").toBool());
+        QCOMPARE(state(failed).value("failure").toObject().value("stage").toString(),QStringLiteral("save_model"));
+        const auto diagnostic = failed.value("diagnostics").toArray().last().toObject();
+        QCOMPARE(diagnostic.value("code").toString(),QStringLiteral("RM1103"));
+        const auto error = diagnostic.value("file_error").toObject();
+        qInfo().noquote() << "Locked model diagnostic:" << QJsonDocument(error).toJson(QJsonDocument::Compact);
+        QCOMPARE(error.value("stage").toString(),QStringLiteral("replace"));
+        QCOMPARE(error.value("role").toString(),QStringLiteral("target"));
+        QCOMPARE(QFileInfo(error.value("target_path").toString()).absoluteFilePath(),project);
+        QVERIFY(!error.value("temporary_path").toString().isEmpty());
+        QVERIFY(error.value("native_error_code").toInt() == ERROR_ACCESS_DENIED ||
+                error.value("native_error_code").toInt() == ERROR_SHARING_VIOLATION);
+        QCOMPARE(error.value("attempts").toInt(),4);
+        QVERIFY(!error.value("error_text").toString().isEmpty());
+        QVERIFY(!error.value("recovery").toString().isEmpty());
+        QCOMPARE(readFile(project),original);
+        QCOMPARE(revision(project),before);
+        QVERIFY(invoke({"validate",project}).value("ok").toBool());
+        lock.release();
+        const auto recovered = invoke(arguments);
+        QVERIFY2(recovered.value("ok").toBool(),QJsonDocument(recovered).toJson().constData());
+        const QString after = recovered.value("revision").toString();
+        QVERIFY(gui(project,QCoreApplication::applicationPid(),{"--expect",after,"--adopt"}).value("ok").toBool());
+        auto* controller = window.findChild<ProjectController*>();
+        QVERIFY(controller);
+        QCOMPARE(controller->workspace()->addressSpaces.front().blocks.size(),std::size_t(2));
+        // A stale retry cannot apply the already successful patch twice.
+        QCOMPARE(invoke(arguments).value("actual_exit").toInt(),3);
+        QCOMPARE(revision(project),after);
+        QVERIFY(window.close());
+        const auto files = diskFiles(directory.path());
+        for (auto it=files.begin();it!=files.end();++it) QFile::setPermissions(it.key(),QFileDevice::ReadOwner|QFileDevice::WriteOwner);
+#endif
+    }
+    void rejectsExclusiveReadLockWithoutWrites() {
+#ifndef Q_OS_WIN
+        QSKIP("Controlled Windows sharing locks are required.");
+#else
+        QTemporaryDir directory;
+        const QString project = directory.filePath(QStringLiteral("exclusive.regmap.yaml"));
+        QVERIFY(invoke({"init",project,"--no-generate","--workspace-id","workspace-main"}).value("ok").toBool());
+        const QString before = revision(project);
+        const auto original = readFile(project);
+        const QString patch = writePatch(directory.path(),hierarchy());
+        ReadLock lock(project,0);
+        QVERIFY(lock.handle != INVALID_HANDLE_VALUE);
+        const auto failed = invoke({"apply",project,patch,"--expect",before});
+        QVERIFY(!failed.value("ok").toBool());
+        QVERIFY(!state(failed).value("saved").toBool());
+        QCOMPARE(state(failed).value("failure").toObject().value("stage").toString(),QStringLiteral("load_project"));
+        const auto error = failed.value("diagnostics").toArray().first().toObject().value("file_error").toObject();
+        QCOMPARE(error.value("stage").toString(),QStringLiteral("open_read"));
+        QCOMPARE(error.value("native_error_code").toInt(),int(ERROR_SHARING_VIOLATION));
+        lock.release();
+        QCOMPARE(readFile(project),original);
+        QVERIFY(invoke({"validate",project}).value("ok").toBool());
+#endif
+    }
+    void recoversOutputsWithoutRepeatingSavedMutation() {
+#ifndef Q_OS_WIN
+        QSKIP("Controlled Windows sharing locks are required.");
+#else
+        QTemporaryDir directory;
+        const QString project = directory.filePath(QStringLiteral("output-recovery.regmap.yaml"));
+        QVERIFY(invoke({"init",project,"--no-generate","--workspace-id","workspace-main"}).value("ok").toBool());
+        QString patch = writePatch(directory.path(),hierarchy());
+        QVERIFY(invoke({"apply",project,patch,"--expect",revision(project)}).value("ok").toBool());
+        const auto opened = regmap::openProject(project.toStdWString());
+        QVERIFY(opened.manifest);
+        const QString output = QString::fromStdWString(opened.manifest->targets.front().path.resolved.wstring());
+        const auto originalOutput = readFile(output);
+        patch = writePatch(directory.path(),QJsonArray{QJsonObject{{"op","copy"},{"id","block-ch0"},
+            {"new_id","block-extra"},{"parent_id","page-main"},{"value",QJsonObject{{"name","Extra"},{"base","auto"}}}}});
+        const QString before = revision(project);
+        ReadLock lock(output);
+        QVERIFY(lock.handle != INVALID_HANDLE_VALUE);
+        const auto failed = invoke({"apply",project,patch,"--expect",before});
+        QCOMPARE(failed.value("actual_exit").toInt(),4);
+        QVERIFY(state(failed).value("saved").toBool());
+        QVERIFY(!state(failed).value("generated").toBool());
+        QCOMPARE(state(failed).value("failure").toObject().value("stage").toString(),QStringLiteral("write_outputs"));
+        QCOMPARE(readFile(output),originalOutput);
+        const auto savedModel = readFile(project);
+        const QString after = revision(project);
+        QVERIFY(before != after);
+        const auto recovery = state(failed).value("recovery").toObject();
+        QCOMPARE(recovery.value("command").toString(),QStringLiteral("generate"));
+        QStringList arguments;
+        for (const auto& argument : recovery.value("arguments").toArray()) arguments.append(argument.toString());
+        lock.release();
+        const auto recovered = invoke(arguments);
+        QVERIFY2(recovered.value("ok").toBool(),QJsonDocument(recovered).toJson().constData());
+        QCOMPARE(readFile(project),savedModel);
+        QCOMPARE(revision(project),after);
+        QCOMPARE(regmap::openProject(project.toStdWString()).workspace->addressSpaces.front().blocks.size(),std::size_t(3));
+        QVERIFY(invoke({"status",project,"--require-current"}).value("ok").toBool());
+        const auto files = diskFiles(directory.path());
+        for (auto it=files.begin();it!=files.end();++it) QFile::setPermissions(it.key(),QFileDevice::ReadOwner|QFileDevice::WriteOwner);
+#endif
     }
     void publicCliProtectsWindowEdits() {
         QTemporaryDir directory;

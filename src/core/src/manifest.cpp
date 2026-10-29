@@ -515,54 +515,21 @@ detail::ProjectDocument detail::readProjectDocument(
     result.path = std::filesystem::absolute(path).lexically_normal();
 
     YAML::Node root;
-    QFile file(
-        QString::fromStdWString(
-            result.path
-                .wstring()));
-    if (!file.open(
-            QIODevice::ReadOnly)) {
+    const auto input = readFileSnapshot(result.path);
+    if (input.error) {
         Diagnostic diagnostic;
         diagnostic.code = invalidYamlCode;
-        diagnostic.message =
-            "Cannot read manifest: " +
-            file.errorString()
-                .toUtf8()
-                .toStdString();
-        diagnostic.source.workbook =
-            result.path;
-        result.diagnostics.push_back(
-            std::move(diagnostic));
+        diagnostic.message = "Cannot read manifest: " + describeFileIoError(*input.error);
+        diagnostic.fileError = input.error;
+        diagnostic.source.workbook = result.path;
+        result.diagnostics.push_back(std::move(diagnostic));
         return result;
     }
     ++result.metrics.fileReads;
-    const QByteArray bytes =
-        file.readAll();
-    if (file.error() !=
-        QFileDevice::NoError) {
-        Diagnostic diagnostic;
-        diagnostic.code = invalidYamlCode;
-        diagnostic.message =
-            "Cannot read manifest: " +
-            file.errorString()
-                .toUtf8()
-                .toStdString();
-        diagnostic.source.workbook =
-            result.path;
-        result.diagnostics.push_back(
-            std::move(diagnostic));
-        return result;
-    }
-    if (computeDigest) {
-        result.sha256 = QCryptographicHash::hash(bytes, QCryptographicHash::Sha256)
-                            .toHex().toStdString();
-    }
+    if (computeDigest) result.sha256 = input.sha256;
     try {
         ++result.metrics.yamlParses;
-        root = YAML::Load(
-            std::string(
-                bytes.constData(),
-                static_cast<std::size_t>(
-                    bytes.size())));
+        root = YAML::Load(input.bytes);
     } catch (const YAML::Exception& error) {
         Diagnostic diagnostic;
         diagnostic.code = invalidYamlCode;

@@ -57,6 +57,7 @@ ProjectOpenResult openProject(const std::filesystem::path& manifestPath)
     result.manifest = std::move(loaded.manifest_);
     result.workspace = std::move(loaded.workspace_);
     result.diagnostics = std::move(loaded.loadDiagnostics_);
+    result.sourceSha256 = std::move(loaded.sourceSha256_);
     std::move(
         loaded.modelDiagnostics_.begin(),
         loaded.modelDiagnostics_.end(),

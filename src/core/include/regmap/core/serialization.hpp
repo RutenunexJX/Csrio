@@ -39,6 +39,7 @@ struct ProjectTextSerializationResult {
 
 [[nodiscard]] std::vector<Diagnostic> saveProjectFile(
     const ProjectManifest& manifest,
-    const Workspace& workspace);
+    const Workspace& workspace,
+    std::string_view expectedSha256 = {});
 
 } // namespace regmap

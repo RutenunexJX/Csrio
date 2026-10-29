@@ -38,6 +38,7 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -72,6 +73,10 @@ private slots:
     void handlesAtomicCommitSharingConflicts_data();
     void handlesAtomicCommitSharingConflicts();
     void handlesExternalChangesDuringAtomicRetry();
+    void guardsLoadedRevisionAtSave();
+    void reportsTemporaryFileFailure();
+    void reportsProjectDirectoryFailure();
+    void readsWhileAtomicallyReplacing();
     void savesPublicFormatsThroughSharingConflicts_data();
     void savesPublicFormatsThroughSharingConflicts();
     void roundTripsExtendedModel();
@@ -1011,7 +1016,111 @@ void CoreTests::handlesAtomicCommitSharingConflicts()
     if (!transient) {
         QVERIFY(result->error != QFileDevice::NoError);
         QVERIFY(!result->errorText.isEmpty());
+        QVERIFY(result->fileError.has_value());
+        QCOMPARE(result->fileError->stage, std::string("replace"));
+        QCOMPARE(result->fileError->role, std::string("target"));
+        QCOMPARE(result->fileError->targetPath, std::filesystem::path(path.toStdWString()));
+        QVERIFY(!result->fileError->temporaryPath.empty());
+        QVERIFY(result->fileError->nativeErrorCode.has_value());
+        QVERIFY(*result->fileError->nativeErrorCode == ERROR_ACCESS_DENIED ||
+                *result->fileError->nativeErrorCode == ERROR_SHARING_VIOLATION);
+        QCOMPARE(result->fileError->attempts, 4);
     }
+    QCOMPARE(QDir(directory.path()).entryList({".csrio-*.tmp"}, QDir::Files | QDir::Hidden).size(), 0);
+#endif
+}
+
+void CoreTests::guardsLoadedRevisionAtSave()
+{
+    QTemporaryDir directory;
+    auto opened = openStableProject(directory);
+    QVERIFY(opened.workspace && opened.manifest);
+    const QString path = QString::fromStdWString(opened.manifest->manifestPath.wstring());
+    const auto original = readFileBytes(path);
+    QCOMPARE(QByteArray::fromStdString(opened.sourceSha256),
+        QCryptographicHash::hash(original, QCryptographicHash::Sha256).toHex());
+    // Simulate a change after the caller's final revision check but before
+    // AtomicFileWriter takes its initial snapshot.
+    writeTextFile(path, original + "\n# external revision\n");
+    const auto external = readFileBytes(path);
+    opened.workspace->name = "must not overwrite external revision";
+    const auto diagnostics = regmap::saveProjectFile(
+        *opened.manifest, *opened.workspace, opened.sourceSha256);
+    QCOMPARE(diagnostics.size(), std::size_t(1));
+    QVERIFY(diagnostics.front().fileError);
+    QCOMPARE(diagnostics.front().fileError->stage, std::string("revision_check"));
+    QCOMPARE(readFileBytes(path), external);
+    QVERIFY(regmap::openProject(opened.manifest->manifestPath).workspace);
+}
+
+void CoreTests::reportsTemporaryFileFailure()
+{
+#ifndef Q_OS_WIN
+    QSKIP("Windows native error diagnostics are required.");
+#else
+    QTemporaryDir directory;
+    const QString path = directory.filePath(QStringLiteral("missing/目标.dat"));
+    const auto result = regmap::detail::AtomicFileWriter(path).write("data");
+    QVERIFY(!result.committed);
+    QVERIFY(result.fileError);
+    QCOMPARE(result.fileError->stage, std::string("create_temporary"));
+    QCOMPARE(result.fileError->role, std::string("temporary"));
+    QCOMPARE(result.fileError->path, result.fileError->temporaryPath);
+    QCOMPARE(result.fileError->targetPath, std::filesystem::path(path.toStdWString()));
+    QCOMPARE(result.fileError->nativeErrorCode.value(), DWORD(ERROR_PATH_NOT_FOUND));
+    QVERIFY(!result.fileError->errorText.empty());
+    QVERIFY(!result.fileError->recovery.empty());
+    QVERIFY(!QFileInfo::exists(path));
+#endif
+}
+
+void CoreTests::readsWhileAtomicallyReplacing()
+{
+    QTemporaryDir directory;
+    const QString path = directory.filePath(QStringLiteral("并发读取.dat"));
+    QByteArray bytes(1024 * 1024, 'a');
+    writeTextFile(path, bytes);
+    std::atomic<bool> ready{false};
+    std::atomic<int> reads{0};
+    std::atomic<int> failures{0};
+    std::jthread reader([&](std::stop_token stop) {
+        while (!stop.stop_requested()) {
+            const auto read = regmap::readFileSnapshot(path.toStdWString());
+            if (read.error || read.bytes.size() != static_cast<std::size_t>(bytes.size())) ++failures;
+            ++reads;
+            ready = true;
+        }
+    });
+    while (!ready.load()) std::this_thread::yield();
+    for (int index = 0; index < 12; ++index) {
+        const auto written = regmap::detail::AtomicFileWriter(path).write(bytes);
+        QVERIFY2(written.committed, qPrintable(written.errorText));
+    }
+    reader.request_stop();
+    reader.join();
+    QVERIFY(reads.load() > 0);
+    QCOMPARE(failures.load(), 0);
+    QCOMPARE(readFileBytes(path), bytes);
+}
+
+void CoreTests::reportsProjectDirectoryFailure()
+{
+#ifndef Q_OS_WIN
+    QSKIP("Windows native directory error diagnostics are required.");
+#else
+    QTemporaryDir directory;
+    const QString blocker = directory.filePath(QStringLiteral("not-a-directory"));
+    writeTextFile(blocker, "preserve this file");
+    const std::filesystem::path path((blocker + "/child/project.yaml").toStdWString());
+    const auto diagnostics = regmap::saveProjectFile(stableManifest(path), stableWorkspace());
+    QCOMPARE(diagnostics.size(), std::size_t(1));
+    const auto error = diagnostics.front().fileError;
+    QVERIFY(error);
+    QCOMPARE(error->stage, std::string("create_directory"));
+    QCOMPARE(error->role, std::string("directory"));
+    QVERIFY(error->nativeErrorCode.has_value());
+    QCOMPARE(error->targetPath, path);
+    QCOMPARE(readFileBytes(blocker), QByteArray("preserve this file"));
 #endif
 }
 

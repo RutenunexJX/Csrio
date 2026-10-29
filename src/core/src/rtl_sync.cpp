@@ -571,6 +571,7 @@ std::vector<Diagnostic> writeManagedRtl(const std::filesystem::path& path,
     if (!written.committed) {
         addDiagnostic(diagnostics, writeCode,
                       "Cannot atomically write managed RTL: " + written.errorText.toStdString(), path);
+        diagnostics.back().fileError = written.fileError;
     }
     return diagnostics;
 }

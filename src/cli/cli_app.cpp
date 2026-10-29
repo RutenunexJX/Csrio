@@ -876,7 +876,7 @@ collectDiffObjectStates(
 [[nodiscard]] QJsonObject diagnosticJson(
     const Diagnostic& diagnostic)
 {
-    return {
+    QJsonObject result{
         {QStringLiteral("severity"),
          severityText(
              diagnostic.severity)},
@@ -889,6 +889,22 @@ collectDiffObjectStates(
         {QStringLiteral("source"),
          sourceJson(diagnostic.source)},
     };
+    if (diagnostic.fileError) {
+        const auto& error = *diagnostic.fileError;
+        result.insert(QStringLiteral("file_error"), QJsonObject{
+            {QStringLiteral("stage"), fromUtf8(error.stage)},
+            {QStringLiteral("role"), fromUtf8(error.role)},
+            {QStringLiteral("path"), fromPath(error.path)},
+            {QStringLiteral("target_path"), fromPath(error.targetPath)},
+            {QStringLiteral("temporary_path"), fromPath(error.temporaryPath)},
+            {QStringLiteral("native_error_code"), error.nativeErrorCode
+                ? QJsonValue(static_cast<qint64>(*error.nativeErrorCode)) : QJsonValue(QJsonValue::Null)},
+            {QStringLiteral("error_text"), fromUtf8(error.errorText)},
+            {QStringLiteral("attempts"), error.attempts},
+            {QStringLiteral("recovery"), fromUtf8(error.recovery)},
+        });
+    }
+    return result;
 }
 
 [[nodiscard]] QJsonArray diagnosticsJson(
@@ -905,22 +921,11 @@ collectDiffObjectStates(
 }
 
 [[nodiscard]] QString fileRevision(
-    const QString& filePath)
+    const QString& filePath, std::optional<FileIoError>* error = nullptr)
 {
-    QFile file(filePath);
-    if (!file.open(
-            QIODevice::ReadOnly)) {
-        return {};
-    }
-    QCryptographicHash hash(
-        QCryptographicHash::Sha256);
-    if (!hash.addData(&file)) {
-        return {};
-    }
-    return QStringLiteral("sha256:%1")
-        .arg(
-            QString::fromLatin1(
-                hash.result().toHex()));
+    const auto input = readFileSnapshot(filePath.toStdWString(), false);
+    if (error) *error = input.error;
+    return input.error ? QString{} : QStringLiteral("sha256:") + fromUtf8(input.sha256);
 }
 
 [[nodiscard]] OpenedProject open(
@@ -931,16 +936,15 @@ collectDiffObjectStates(
     result.path =
         QFileInfo(requestedPath)
             .absoluteFilePath();
-    result.revision =
-        fileRevision(result.path);
     result.open = openProject(
         toPath(result.path));
     if (result.open.manifest) {
         result.path = fromPath(
             result.open.manifest
                 ->manifestPath);
-        result.revision =
-            fileRevision(result.path);
+        if (!result.open.sourceSha256.empty()) {
+            result.revision = QStringLiteral("sha256:") + fromUtf8(result.open.sourceSha256);
+        }
     }
     if (auto* metrics = CliMetrics::current(); metrics && result.open.workspace)
         metrics->objectCount = inspectModel(*result.open.workspace).size();
@@ -7848,7 +7852,9 @@ descendantCount(
                   QStringLiteral(
                       "validation"),
                   QStringLiteral(
-                      "generation")}},
+                      "generation"),
+                  QStringLiteral("verify_revision"),
+                  QStringLiteral("save_model")}},
              {QStringLiteral(
                   "diagnostic_index_member"),
               QStringLiteral(
@@ -15384,6 +15390,13 @@ void addGenerationRecovery(
                 .diagnostics);
     if (!opened.open.manifest ||
         !opened.open.workspace) {
+        response.result = QJsonObject{
+            {QStringLiteral("saved"), false},
+            {QStringLiteral("failure"), QJsonObject{
+                {QStringLiteral("stage"), QStringLiteral("load_project")},
+                {QStringLiteral("writes_performed"), false},
+            }},
+        };
         response.exitCode =
             ExitCode::projectError;
         return response;
@@ -15694,8 +15707,22 @@ void addGenerationRecovery(
         return response;
     }
 
-    const QString revisionBeforeSave =
-        fileRevision(opened.path);
+    std::optional<FileIoError> revisionError;
+    const QString revisionBeforeSave = fileRevision(opened.path, &revisionError);
+    if (revisionError) {
+        auto diagnostic = cliDiagnostic(revisionReadFailureCode,
+            "Cannot verify the revision before saving: " + describeFileIoError(*revisionError), opened.path);
+        diagnostic.fileError = revisionError;
+        response.diagnostics.push_back(std::move(diagnostic));
+        QJsonObject result = applyResult(false, changed, false, false, false,
+            opened.revision, {}, changes, artifacts, repair);
+        result.insert(QStringLiteral("failure"), prewriteFailureJson(
+            QStringLiteral("verify_revision"), operations, changes, response.diagnostics,
+            QStringLiteral("Revision could not be read; no model or outputs were saved.")));
+        response.result = result;
+        response.exitCode = ExitCode::writeError;
+        return response;
+    }
     if (revisionBeforeSave !=
         opened.revision) {
         return revisionConflict(
@@ -15725,12 +15752,25 @@ void addGenerationRecovery(
         return response;
     }
 
-    appendUniqueDiagnostics(
-        response.diagnostics,
-        timed("save_model", [&] { return saveProjectFile(candidateManifest, candidate); }));
+    const auto saveDiagnostics = timed("save_model", [&] {
+        return saveProjectFile(candidateManifest, candidate, opened.open.sourceSha256);
+    });
+    if (std::ranges::any_of(saveDiagnostics, [](const Diagnostic& diagnostic) {
+            return diagnostic.fileError && diagnostic.fileError->stage == "revision_check";
+        })) {
+        auto conflict = revisionConflict(opened.revision, fileRevision(opened.path), changes, changed);
+        appendUniqueDiagnostics(conflict.diagnostics, saveDiagnostics);
+        auto result = conflict.result.toObject();
+        result.insert(QStringLiteral("failure"), prewriteFailureJson(
+            QStringLiteral("save_model"), operations, changes, conflict.diagnostics, conflict.error));
+        conflict.result = result;
+        return conflict;
+    }
+    appendUniqueDiagnostics(response.diagnostics, saveDiagnostics);
     if (hasErrors(
             response.diagnostics)) {
-        response.result =
+        response.error = QStringLiteral("Model was not saved; existing project content was preserved.");
+        QJsonObject result =
             applyResult(
                 false,
                 true,
@@ -15742,19 +15782,22 @@ void addGenerationRecovery(
                 changes,
                 artifacts,
                 repair);
+        result.insert(QStringLiteral("failure"), prewriteFailureJson(
+            QStringLiteral("save_model"), operations, changes, response.diagnostics, response.error));
+        response.result = result;
         response.exitCode =
             ExitCode::writeError;
         return response;
     }
 
-    const QString newRevision =
-        fileRevision(opened.path);
+    const QString newRevision = fileRevision(opened.path, &revisionError);
     if (newRevision.isEmpty()) {
         response.diagnostics.push_back(
             cliDiagnostic(
                 revisionReadFailureCode,
                 "Project was saved, but its new revision could not be calculated.",
                 opened.path));
+        response.diagnostics.back().fileError = revisionError;
         QJsonObject result =
             applyResult(
                 false,
@@ -15772,6 +15815,11 @@ void addGenerationRecovery(
             opened.path,
             QStringLiteral(
                 "saved_revision_unavailable"));
+        result.insert(QStringLiteral("failure"), QJsonObject{
+            {QStringLiteral("stage"), QStringLiteral("read_saved_revision")},
+            {QStringLiteral("model_saved"), true},
+            {QStringLiteral("message"), QStringLiteral("Model was saved. Do not repeat apply; verify the revision and use generate to recover outputs.")},
+        });
         response.result = result;
         response.exitCode =
             ExitCode::writeError;
@@ -15823,11 +15871,16 @@ void addGenerationRecovery(
                 opened.path,
                 reason,
                 newRevision);
+            result.insert(QStringLiteral("failure"), QJsonObject{
+                {QStringLiteral("stage"), QStringLiteral("write_outputs")},
+                {QStringLiteral("model_saved"), true},
+                {QStringLiteral("message"), QStringLiteral("Model was saved, but outputs are incomplete or stale. Do not repeat apply; use the generate recovery command.")},
+            });
             return result;
         };
     const QString
         revisionBeforeOutputs =
-            fileRevision(opened.path);
+            fileRevision(opened.path, &revisionError);
     if (revisionBeforeOutputs
             .isEmpty()) {
         response.diagnostics.push_back(
@@ -15835,6 +15888,7 @@ void addGenerationRecovery(
                 revisionReadFailureCode,
                 "Project was saved, but its revision could not be verified before writing outputs.",
                 opened.path));
+        response.diagnostics.back().fileError = revisionError;
         response.result =
             pendingResult(
                 QStringLiteral(
@@ -15888,7 +15942,7 @@ void addGenerationRecovery(
         std::move(
             writeReport.diagnostics));
     const QString revisionAfterOutputs =
-        fileRevision(opened.path);
+        fileRevision(opened.path, &revisionError);
     if (revisionAfterOutputs
             .isEmpty()) {
         response.diagnostics.push_back(
@@ -15896,6 +15950,7 @@ void addGenerationRecovery(
                 revisionReadFailureCode,
                 "Outputs were processed, but the project revision could not be verified afterward.",
                 opened.path));
+        response.diagnostics.back().fileError = revisionError;
         response.result =
             pendingResult(
                 QStringLiteral(

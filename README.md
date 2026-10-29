@@ -1,6 +1,12 @@
 # Csrio
 
-Current version: `0.4.10`.
+Current version: `0.4.11`.
+
+Release 0.4.11 hardens Windows atomic saves while the GUI remains open.
+Read handles allow delete sharing and close before parsing. Bounded retries
+revalidate the loaded revision, and failures report the original Windows code
+and affected file. If the model was saved but outputs failed, use generate
+to recover outputs without applying the mutation again.
 
 Release 0.4.10 measures XLSX row heights from fonts, column widths and wrapped text.
 Long descriptions and enum content stay complete, with oversized cells spanning rows.

@@ -2,6 +2,7 @@ add_library(
     regmap_core
     src/atomic_file_writer.cpp
     src/external_changes.cpp
+    src/file_io.cpp
     src/document_layout.cpp
     src/consistency.cpp
     src/generation.cpp

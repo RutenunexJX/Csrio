@@ -46,12 +46,8 @@ namespace {
     if (path.empty()) {
         return {};
     }
-    QFile file(fromPath(path));
-    if (!file.open(QIODevice::ReadOnly)) {
-        return {};
-    }
-    QCryptographicHash digest(QCryptographicHash::Sha256);
-    return digest.addData(&file) ? digest.result() : QByteArray{};
+    const auto input = regmap::readFileSnapshot(path, false);
+    return input.error ? QByteArray{} : QByteArray::fromHex(QByteArray::fromStdString(input.sha256));
 }
 
 [[nodiscard]] bool writeRecoveryMetadata(
@@ -1516,7 +1512,8 @@ bool ProjectController::persistSynchronizedModel(
     {
         const PhaseTimer timer(this, "phaseSyncSaveProjectMs");
         appendDiagnostics(
-            syncDiagnostics_, regmap::saveProjectFile(*manifest_, *store_.workspace()));
+            syncDiagnostics_, regmap::saveProjectFile(*manifest_, *store_.workspace(),
+                acceptedManifestDigestKnown_ ? acceptedManifestDigest_.toHex().toStdString() : std::string{}));
     }
     if (!containsErrors(syncDiagnostics_)) {
         acceptedManifestDigest_ =

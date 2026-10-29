@@ -998,6 +998,7 @@ std::vector<Diagnostic> saveSyncBaseline(const std::filesystem::path& path,
         addFileDiagnostic(diagnostics, baselineWriteCode,
                           "Cannot atomically write the synchronization baseline: " +
                               written.errorText.toStdString(), path);
+        diagnostics.back().fileError = written.fileError;
     }
     return diagnostics;
 }

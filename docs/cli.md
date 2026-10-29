@@ -780,7 +780,7 @@ diagnostics, and recovery fields. The envelope's `exit_status` identifies the fa
 and `error_code` identifies its primary diagnostic without inspecting the English message.
 
 When every operation succeeds but the candidate cannot be saved, `result.failure.stage` is
-`validation` or `generation`. In these stages `operation_index`, `json_pointer`, and `operation`
+`validation`, `generation`, `verify_revision`, or `save_model`. In these stages `operation_index`, `json_pointer`, and `operation`
 are `null` because no single operation necessarily owns the failure. The object instead returns:
 
 ```json
@@ -799,9 +799,55 @@ are `null` because no single operation necessarily owns the failure. The object 
 `error_diagnostic_indexes` points directly into the response's top-level `diagnostics` array;
 `error_codes` and `object_ids` are de-duplicated conveniences. A generation-stage failure means
 the candidate model passed validation but one or more configured read-only outputs could not be
-constructed in memory. Neither stage writes the project or outputs. Failures after the model has
-already been saved intentionally remain represented by `saved`, `outputs_current`, and
-`recovery`, because claiming rollback in that state would be incorrect.
+constructed in memory. A `save_model` failure means the atomic replacement did not commit;
+the existing project remains intact. These stages do not commit the project or outputs.
+Failures after the model has already been saved return `saved: true`, `outputs_current: false`,
+and a `generate` recovery command. Their `failure.stage` is `write_outputs` (or
+`read_saved_revision` if the saved revision could not be read), with `model_saved: true`.
+Do not repeat the patch in this case: run the recovery command, which checks the saved revision
+and regenerates outputs without applying the mutation again.
+
+### Windows atomic save diagnostics
+
+Project reads, revision hashes, and GUI adoption release their read handles before parsing or
+validation and permit Windows delete sharing. Saving creates a temporary file in the destination
+directory, flushes its data, and atomically renames it while retaining the source handle.
+The extended Windows rename permits existing readers that explicitly share delete access;
+filesystems without this support use the original atomic rename with the same revision guard.
+There is no fallback to copying over or truncating the destination. Sharing/lock/access-denied
+failures receive at most four attempts, with delays of 100, 200, and 400 ms. Every attempt and
+the final replacement check the destination against the loaded revision. A changed revision
+returns exit code 3; an exhausted save returns exit code 4 and `saved: false`.
+
+I/O diagnostics add an optional `file_error` object without changing JSON API version 1:
+
+```json
+{
+  "stage": "replace",
+  "role": "target",
+  "path": "C:/projects/device.regmap.yaml",
+  "target_path": "C:/projects/device.regmap.yaml",
+  "temporary_path": "C:/projects/.csrio-<unique-id>.tmp",
+  "native_error_code": 32,
+  "error_text": "The process cannot access the file because it is being used by another process.",
+  "attempts": 4,
+  "recovery": "Check the reported file's sharing locks and directory permissions, then retry with the current revision. No in-place overwrite was attempted."
+}
+```
+
+`stage` identifies `open_read`, `read`, `create_directory`, `create_temporary`, `write_temporary`,
+`flush_temporary`, `revision_check`, or `replace`. `role` identifies `target`, `temporary`, or `directory`;
+`replacement` means a rename failed but a target-access probe could not attribute the failure
+to one file. Both paths remain available. The error code and text are from the failing Windows
+call, not a later probe or cleanup call. A revision mismatch has no native error code.
+An exclusive lock that prevents initial loading returns `failure.stage: load_project`,
+`saved: false`, and an `open_read` diagnostic without applying any operations.
+
+A clean GUI can remain open across repeated `apply` / `gui --adopt` calls, including
+`--defer-generation`. Adoption still requires the expected revision and rejects a dirty GUI,
+an active editor, or an unresolved synchronization conflict. If a lock persists, inspect the
+reported paths and their permissions, release the conflicting access, obtain the current
+revision, and review the patch before retrying. No holder process is inferred from the error.
 
 ### Repair a project with validation errors
 

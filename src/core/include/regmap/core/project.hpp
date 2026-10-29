@@ -65,6 +65,7 @@ struct ProjectOpenResult {
     std::optional<ProjectManifest> manifest;
     std::optional<Workspace> workspace;
     std::vector<Diagnostic> diagnostics;
+    std::string sourceSha256{};
 
     [[nodiscard]] bool hasErrors() const noexcept;
 };

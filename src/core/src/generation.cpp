@@ -903,6 +903,7 @@ std::vector<Diagnostic> writeGeneratedArtifacts(const std::vector<GeneratedArtif
                     written.errorText),
                 {},
                 std::move(source));
+            diagnostics.back().fileError = written.fileError;
             restorePermissions();
             continue;
         }

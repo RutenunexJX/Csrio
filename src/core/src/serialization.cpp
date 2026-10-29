@@ -8,6 +8,10 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+
+#ifdef Q_OS_WIN
+#include "windows_file.hpp"
+#endif
 #include <QIODevice>
 #include <QString>
 #include <yaml-cpp/yaml.h>
@@ -853,31 +857,19 @@ WorkspaceFileLoadResult loadWorkspaceFromProjectFile(const std::filesystem::path
 {
     WorkspaceFileLoadResult result;
     const std::filesystem::path absolutePath = std::filesystem::absolute(path).lexically_normal();
-    QFile file(fromPath(absolutePath));
-    if (!file.open(QIODevice::ReadOnly)) {
+    const auto input = readFileSnapshot(absolutePath);
+    if (input.error) {
         addDiagnostic(
             result.diagnostics,
             invalidYamlCode,
-            "Cannot read project model: " + file.errorString().toUtf8().toStdString(),
+            "Cannot read project model: " + describeFileIoError(*input.error),
             absolutePath,
             {},
             "workspace");
+        result.diagnostics.back().fileError = input.error;
         return result;
     }
-    const QByteArray bytes = file.readAll();
-    if (file.error() != QFileDevice::NoError) {
-        addDiagnostic(
-            result.diagnostics,
-            invalidYamlCode,
-            "Cannot read project model: " + file.errorString().toUtf8().toStdString(),
-            absolutePath,
-            {},
-            "workspace");
-        return result;
-    }
-    return loadWorkspaceFromProjectText(
-        std::string_view(bytes.constData(), static_cast<std::size_t>(bytes.size())),
-        absolutePath);
+    return loadWorkspaceFromProjectText(input.bytes, absolutePath);
 }
 
 ProjectTextSerializationResult serializeProjectText(
@@ -929,16 +921,30 @@ ProjectTextSerializationResult serializeProjectText(
     return result;
 }
 
-std::vector<Diagnostic> saveProjectFile(const ProjectManifest& manifest, const Workspace& workspace)
+std::vector<Diagnostic> saveProjectFile(
+    const ProjectManifest& manifest, const Workspace& workspace, std::string_view expectedSha256)
 {
     const QString filePath = fromPath(manifest.manifestPath);
-    const detail::AtomicFileWriter writer(filePath);
+    const detail::AtomicFileWriter writer(filePath,
+        QByteArray(expectedSha256.data(), static_cast<qsizetype>(expectedSha256.size())));
     ProjectTextSerializationResult serialized = serializeProjectText(manifest, workspace);
     if (!serialized.text) {
         return std::move(serialized.diagnostics);
     }
 
     const QFileInfo fileInfo(filePath);
+#ifdef Q_OS_WIN
+    if (auto error = detail::createWindowsDirectory(fileInfo.absolutePath().toStdWString())) {
+        error->targetPath = manifest.manifestPath;
+        Diagnostic diagnostic;
+        diagnostic.code = writeFailureCode;
+        diagnostic.message = "Cannot create the project file directory: " + describeFileIoError(*error);
+        diagnostic.source.workbook = manifest.manifestPath;
+        diagnostic.fileError = std::move(error);
+        serialized.diagnostics.push_back(std::move(diagnostic));
+        return serialized.diagnostics;
+    }
+#else
     if (!QDir().mkpath(fileInfo.absolutePath())) {
         Diagnostic diagnostic;
         diagnostic.code = writeFailureCode;
@@ -947,6 +953,7 @@ std::vector<Diagnostic> saveProjectFile(const ProjectManifest& manifest, const W
         serialized.diagnostics.push_back(std::move(diagnostic));
         return serialized.diagnostics;
     }
+#endif
 
     const std::string& text = *serialized.text;
     const QByteArray bytes(text.data(), static_cast<qsizetype>(text.size()));
@@ -956,6 +963,7 @@ std::vector<Diagnostic> saveProjectFile(const ProjectManifest& manifest, const W
         diagnostic.code = writeFailureCode;
         diagnostic.message =
             "Cannot atomically save the project file: " + written.errorText.toStdString();
+        diagnostic.fileError = written.fileError;
         diagnostic.source.workbook = manifest.manifestPath;
         serialized.diagnostics.push_back(std::move(diagnostic));
     }
