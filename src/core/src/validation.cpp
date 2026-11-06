@@ -1,5 +1,7 @@
 #include "regmap/core/validation.hpp"
 
+#include "signed_magnitude.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
@@ -16,6 +18,9 @@
 
 namespace regmap {
 namespace {
+
+using detail::SignedMagnitude;
+using detail::parseSignedMagnitude;
 
 constexpr std::string_view missingIdentityCode = "RM3000";
 constexpr std::string_view duplicateIdCode = "RM3001";
@@ -95,34 +100,6 @@ void addDiagnostic(std::vector<Diagnostic>& diagnostics, std::string_view code, 
 [[nodiscard]] bool canWrite(AccessMode access) noexcept
 {
     return access == AccessMode::writeOnly || access == AccessMode::readWrite;
-}
-
-struct SignedMagnitude {
-    bool negative{false};
-    UnsignedValue magnitude;
-};
-
-[[nodiscard]] std::optional<SignedMagnitude> parseSignedMagnitude(std::string_view text)
-{
-    while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front())) != 0) {
-        text.remove_prefix(1);
-    }
-    while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back())) != 0) {
-        text.remove_suffix(1);
-    }
-    if (text.empty()) {
-        return std::nullopt;
-    }
-    bool negative = false;
-    if (text.front() == '-' || text.front() == '+') {
-        negative = text.front() == '-';
-        text.remove_prefix(1);
-    }
-    const auto magnitude = UnsignedValue::parse(text);
-    if (!magnitude) {
-        return std::nullopt;
-    }
-    return SignedMagnitude{negative && !magnitude->isZero(), *magnitude};
 }
 
 [[nodiscard]] int compareMagnitude(const UnsignedValue& left, const UnsignedValue& right)

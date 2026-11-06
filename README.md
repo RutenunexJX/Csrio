@@ -1,6 +1,11 @@
 # Csrio
 
-Current version: `0.4.12`.
+Current version: `0.4.13`.
+
+Release 0.4.13 normalizes C header range macros using the same numeric parsing rules as
+model validation. Leading zeroes, explicit base prefixes, digit separators, and signed bounds
+retain their numeric values in register, field, and nested-field macros. C11/C17 compilation
+tests verify the generated constants; invalid or unrepresentable bounds report `RM4004`.
 
 Release 0.4.12 adds native CLI/GUI collaborative commits with revision and
 edit-generation protection. GUI synchronization can be retried without

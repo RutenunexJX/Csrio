@@ -16,3 +16,9 @@ available.
 
 Messages are presentation text. Workbench logic and tests use `code`, `severity`, `object_id`,
 and source coordinates rather than parsing messages.
+
+`RM4004` reports a numeric range bound that cannot be emitted as a C `int64_t` or `uint64_t`
+constant. C header generation parses bounds with the same rules as model validation, then
+emits normalized `INT64_C` / `UINT64_C` expressions. Leading zeroes remain decimal, `0o`
+prefixes are converted, and digit separators are removed. Invalid or unrepresentable bounds
+produce a generation error instead of an invalid or truncated macro; source values are unchanged.

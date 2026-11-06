@@ -5,6 +5,7 @@
 
 #include "path_identity.hpp"
 #include "atomic_file_writer.hpp"
+#include "signed_magnitude.hpp"
 
 #include <QByteArray>
 #include <QDir>
@@ -35,6 +36,7 @@ constexpr std::string_view writeFailureCode = "RM4000";
 constexpr std::string_view symbolCollisionCode = "RM4001";
 constexpr std::string_view addressOverflowCode = "RM4002";
 constexpr std::string_view invalidOutputOptionCode = "RM4003";
+constexpr std::string_view invalidCRangeCode = "RM4004";
 [[nodiscard]] std::string outputWriteFailureMessage(const GeneratedArtifact& artifact,
                                                     std::string_view operation,
                                                     const QString& error)
@@ -187,6 +189,34 @@ template <typename Value, typename Compare>
     return cUnsignedLiteral(UnsignedValue(value));
 }
 
+[[nodiscard]] std::optional<std::string> cRangeLiteral(std::string_view text, FieldType type)
+{
+    const auto value = detail::parseSignedMagnitude(text);
+    if (!value) {
+        return std::nullopt;
+    }
+    const auto magnitude = value->magnitude.toUInt64();
+    if (!magnitude) {
+        return std::nullopt;
+    }
+    if (type == FieldType::unsignedInteger && !value->negative) {
+        return cUnsignedLiteral(*magnitude);
+    }
+    if (type != FieldType::signedInteger) {
+        return std::nullopt;
+    }
+    constexpr auto maximum = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    if (value->negative && *magnitude == maximum + 1) {
+        // The positive magnitude of INT64_MIN is not representable as int64_t.
+        return "(-INT64_C(9223372036854775807) - INT64_C(1))";
+    }
+    if (*magnitude > maximum) {
+        return std::nullopt;
+    }
+    const std::string literal = "INT64_C(" + std::to_string(*magnitude) + ')';
+    return value->negative ? "(-" + literal + ')' : literal;
+}
+
 [[nodiscard]] std::string escapeMarkdown(std::string value)
 {
     std::string result;
@@ -259,6 +289,32 @@ void addDiagnostic(std::vector<Diagnostic>& diagnostics, std::string_view code, 
     diagnostic.objectId = objectId;
     diagnostic.source = std::move(source);
     diagnostics.push_back(std::move(diagnostic));
+}
+
+template <typename Owner>
+void generateCRanges(std::ostringstream& output, std::string_view prefix, const Owner& owner,
+                     std::vector<Diagnostic>& diagnostics)
+{
+    const auto emitBound = [&](std::string_view suffix, std::string_view property,
+                               const std::optional<std::string>& bound) {
+        if (!bound) {
+            return;
+        }
+        const auto literal = cRangeLiteral(*bound, owner.type);
+        if (!literal) {
+            const auto source = owner.propertySources.find(property);
+            addDiagnostic(diagnostics, invalidCRangeCode,
+                          "Cannot generate C range macro '" + std::string(prefix) +
+                              std::string(suffix) + "' from '" + *bound +
+                              "': a valid int64_t (signed) or uint64_t (unsigned) value is required.",
+                          owner.id, source == owner.propertySources.end() ? owner.source
+                                                                         : source->second);
+            return;
+        }
+        output << "#define " << prefix << suffix << ' ' << *literal << '\n';
+    };
+    emitBound("_MIN", "minimum", owner.minimumValue);
+    emitBound("_MAX", "maximum", owner.maximumValue);
 }
 
 struct CMacroDefinition {
@@ -377,7 +433,7 @@ void validateCHeaderMacros(const Workspace& workspace, std::string_view guard,
 }
 
 void generateCField(std::ostringstream& output, const Field& field, std::string_view parentSymbol,
-                    std::uint64_t parentLsb)
+                    std::uint64_t parentLsb, std::vector<Diagnostic>& diagnostics)
 {
     const std::uint64_t width = field.width();
     if (width == 0) {
@@ -394,12 +450,7 @@ void generateCField(std::ostringstream& output, const Field& field, std::string_
         output << "#define " << currentFieldSymbol << "_MASK_HEX \"" << mask.toHexString()
                << "\"\n";
     }
-    if (field.minimumValue) {
-        output << "#define " << currentFieldSymbol << "_MIN (" << *field.minimumValue << ")\n";
-    }
-    if (field.maximumValue) {
-        output << "#define " << currentFieldSymbol << "_MAX (" << *field.maximumValue << ")\n";
-    }
+    generateCRanges(output, currentFieldSymbol, field, diagnostics);
     if (field.type == FieldType::boolean && field.enumValues.empty()) {
         output << "#define " << currentFieldSymbol << "_FALSE UINT64_C(0)\n"
                << "#define " << currentFieldSymbol << "_TRUE UINT64_C(1)\n";
@@ -415,7 +466,7 @@ void generateCField(std::ostringstream& output, const Field& field, std::string_
         output << '\n';
     }
     for (const Field* member : orderedFields(field.members)) {
-        generateCField(output, *member, currentFieldSymbol, absoluteLsb);
+        generateCField(output, *member, currentFieldSymbol, absoluteLsb, diagnostics);
     }
 }
 
@@ -528,12 +579,7 @@ void generateMarkdownEnums(std::ostringstream& output, const std::vector<Field>&
                        << "#define " << regSymbol << "_ADDR " << cUnsignedLiteral(*address)
                        << "\n#define " << regSymbol << "_OFFSET " << cUnsignedLiteral(reg->offset)
                        << "\n#define " << regSymbol << "_WIDTH " << reg->width << "u\n";
-                if (reg->minimumValue) {
-                    output << "#define " << regSymbol << "_MIN (" << *reg->minimumValue << ")\n";
-                }
-                if (reg->maximumValue) {
-                    output << "#define " << regSymbol << "_MAX (" << *reg->maximumValue << ")\n";
-                }
+                generateCRanges(output, regSymbol, *reg, diagnostics);
                 if (reg->initialValue.has_value()) {
                     if (reg->initialValue->fitsInBits(64)) {
                         output << "#define " << regSymbol << "_INITIAL "
@@ -568,7 +614,7 @@ void generateMarkdownEnums(std::ostringstream& output, const std::vector<Field>&
                 }
 
                 for (const Field* field : orderedFields(*reg)) {
-                    generateCField(output, *field, regSymbol, 0);
+                    generateCField(output, *field, regSymbol, 0, diagnostics);
                 }
                 output << '\n';
             }

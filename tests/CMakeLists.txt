@@ -37,6 +37,23 @@ set_tests_properties(
         ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>"
 )
 
+enable_language(C)
+qt_add_executable(regmap_c_header_range_tests c_header_range_tests.cpp)
+set_target_properties(regmap_c_header_range_tests PROPERTIES AUTOMOC ON WIN32_EXECUTABLE OFF)
+target_link_libraries(regmap_c_header_range_tests PRIVATE RegMap::Core Qt6::Test)
+target_compile_definitions(regmap_c_header_range_tests PRIVATE
+    REGMAP_TEST_CMAKE="${CMAKE_COMMAND}"
+    REGMAP_TEST_C_COMPILER="${CMAKE_C_COMPILER}"
+    REGMAP_TEST_GENERATOR="${CMAKE_GENERATOR}"
+    REGMAP_TEST_GENERATOR_PLATFORM="${CMAKE_GENERATOR_PLATFORM}"
+    REGMAP_TEST_GENERATOR_TOOLSET="${CMAKE_GENERATOR_TOOLSET}")
+regmap_enable_warnings(regmap_c_header_range_tests)
+add_test(NAME regmap_c_header_range_tests COMMAND regmap_c_header_range_tests
+    -o "${CMAKE_CURRENT_BINARY_DIR}/c_header_range.log,txt" -o -,txt)
+set_tests_properties(regmap_c_header_range_tests PROPERTIES
+    ENVIRONMENT_MODIFICATION
+        "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;PATH=path_list_prepend:${REGMAP_TEST_TOOLCHAIN_RUNTIME_DIR}")
+
 if(TARGET RegMap::Cli)
     qt_add_executable(
         regmap_cli_tests
