@@ -490,9 +490,14 @@ void writeMeasuredRow(QXlsx::Document& document, int& row,
         if (rowSpan > 1 || cell.columnSpan > 1)
             document.mergeCells(QXlsx::CellRange(row, column, lastRow,
                                 column + cell.columnSpan - 1), cell.format);
-        const bool emptyText = cell.value.metaType() == QMetaType::fromType<QString>() &&
-            cell.value.toString().isEmpty();
-        document.write(row, column, emptyText ? QVariant{} : cell.value, cell.format);
+        const bool isText = cell.value.metaType() == QMetaType::fromType<QString>();
+        const bool emptyText = isText && cell.value.toString().isEmpty();
+        if (isText && !emptyText) {
+            if (auto* worksheet = document.currentWorksheet())
+                worksheet->writeString(row, column, cell.value.toString(), cell.format);
+        } else {
+            document.write(row, column, emptyText ? QVariant{} : cell.value, cell.format);
+        }
         column += cell.columnSpan;
     }
     row = lastRow;

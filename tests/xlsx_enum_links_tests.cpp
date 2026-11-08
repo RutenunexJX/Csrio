@@ -2,10 +2,13 @@
 #include "regmap/core/project.hpp"
 #include "regmap/core/serialization.hpp"
 #include "regmap/core/rtl_sync.hpp"
+#include "regmap/core/validation.hpp"
+#include "regmap/core/xlsx_export.hpp"
 
 #include <xlsxcell.h>
 #include <xlsxdocument.h>
 #include <xlsxworksheet.h>
+#include <xlsxzipreader_p.h>
 
 #include <QBuffer>
 #include <QDirIterator>
@@ -163,12 +166,114 @@ struct Fixture {
 class XlsxEnumLinksTests : public QObject {
     Q_OBJECT
 private slots:
+    void preservesTextCells_data();
+    void preservesTextCells();
     void laysOutLongContentThroughCliAndGui_data();
     void laysOutLongContentThroughCliAndGui();
     void distinguishesInternalAndExternalLinks();
     void exportsNamedLinksThroughCliAndGui_data();
     void exportsNamedLinksThroughCliAndGui();
 };
+
+void XlsxEnumLinksTests::preservesTextCells_data()
+{
+    QTest::addColumn<QString>("content");
+    QTest::newRow("formula") << QStringLiteral("=1+1");
+    QTest::newRow("formula-function") << QStringLiteral("=SUM(1,2)");
+    QTest::newRow("formula-multiline") << QStringLiteral("=1+1\n中文说明 & <原文>");
+    QTest::newRow("numeric-text") << QStringLiteral("0010");
+    QTest::newRow("literal-prefixes") << QStringLiteral("+1 -1 @name");
+    QTest::newRow("unicode-whitespace") << QStringLiteral("  中文说明 & <原文> \"quoted\"  ");
+    QTest::newRow("url-text") << QStringLiteral("https://example.invalid/register");
+}
+
+void XlsxEnumLinksTests::preservesTextCells()
+{
+    QFETCH(QString, content);
+    Fixture fixture(false);
+    auto project = openProject(std::filesystem::path(fixture.path.toStdWString()));
+    QVERIFY(project.workspace.has_value());
+    auto& workspace = *project.workspace;
+    auto& page = workspace.addressSpaces.front();
+    auto& reg = page.blocks.front().registers.front();
+    page.description = content.toStdString();
+    reg.name = content.toStdString();
+    reg.description = content.toStdString();
+    reg.initialValue.reset();
+    reg.tags.clear();
+    for (auto& field : reg.fields) {
+        field.description = content.toStdString();
+    }
+    QVERIFY(validateWorkspace(workspace).empty());
+
+    const auto exported = exportReadOnlyWorkbook(workspace, true);
+    QVERIFY(exported.diagnostics.empty());
+    QVERIFY(!exported.bytes.empty());
+    const QString path = fixture.directory.filePath(QStringLiteral("literal-text.xlsx"));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    const auto byteCount = static_cast<qint64>(exported.bytes.size());
+    QCOMPARE(file.write(reinterpret_cast<const char*>(exported.bytes.data()), byteCount), byteCount);
+    file.close();
+
+    // Inspect the saved archive, not XML reserialized from a loaded worksheet.
+    QXlsx::ZipReader archive(path);
+    QVERIFY(archive.exists());
+    int worksheetCount = 0;
+    for (const auto& entry : archive.filePaths()) {
+        if (!entry.startsWith(QStringLiteral("xl/worksheets/")) ||
+            !entry.endsWith(QStringLiteral(".xml"))) continue;
+        ++worksheetCount;
+        const auto bytes = archive.fileData(entry);
+        QVERIFY(!bytes.isEmpty());
+        QXmlStreamReader xml(bytes);
+        while (!xml.atEnd()) {
+            xml.readNext();
+            QVERIFY2(!(xml.isStartElement() && xml.name() == QLatin1String("f")),
+                     qPrintable(QStringLiteral("Unexpected formula node in %1").arg(entry)));
+        }
+        QVERIFY2(!xml.hasError(), qPrintable(xml.errorString()));
+    }
+    QXlsx::Document book(path);
+    QVERIFY(book.load());
+    QCOMPARE(worksheetCount, book.sheetNames().size());
+    QCOMPARE(worksheetCount, 2);
+    QVERIFY(book.selectSheet(book.sheetNames().at(1)));
+    int registerRow = 0;
+    int fieldRow = 0;
+    for (int row = 1; row <= book.dimension().lastRow(); ++row) {
+        if (book.read(row, 3).toString() == content) registerRow = row;
+        if (book.read(row, 3).toString() == QStringLiteral("CH08_RANGE")) fieldRow = row;
+    }
+    QVERIFY(registerRow > 0);
+    QVERIFY(fieldRow > registerRow);
+    const auto checkText = [&](int row, int column) {
+        const auto cell = book.cellAt(row, column);
+        QVERIFY(cell);
+        QCOMPARE(cell->cellType(), QXlsx::Cell::SharedStringType);
+        QCOMPARE(cell->value().toString(), content);
+        QVERIFY(!cell->hasFormula());
+    };
+    checkText(2, 6); // Page metadata writes directly through writeMeasuredRow.
+    checkText(registerRow, 3);
+    checkText(registerRow, 11);
+    checkText(fieldRow, 11);
+    const auto width = book.cellAt(registerRow, 5);
+    QVERIFY(width);
+    QCOMPARE(width->cellType(), QXlsx::Cell::NumberType);
+    QCOMPARE(width->value().toUInt(), reg.width);
+    QCOMPARE(book.read(registerRow, 1).toString(), QStringLiteral("0x00000000"));
+    for (const int column : {7, 9}) { // Missing value and empty QString both remain blank.
+        const auto blank = book.cellAt(registerRow, column);
+        QVERIFY(blank);
+        QCOMPARE(blank->cellType(), QXlsx::Cell::NumberType);
+        QVERIFY(blank->value().isNull());
+        QVERIFY(!blank->hasFormula());
+    }
+    const auto links = hyperlinks(*book.currentWorksheet());
+    QCOMPARE(links.size(), 7); // Only the intentional consecutive-enum links remain.
+    for (const auto& link : links) QVERIFY(!link.external);
+}
 
 void XlsxEnumLinksTests::distinguishesInternalAndExternalLinks()
 {
