@@ -34631,6 +34631,32 @@ void GuiSmokeTests::rejectsInvalidManagedRtl()
     }));
     QVERIFY(!controller.isDirty());
 
+    QVERIFY(controller.editWorkspace(QStringLiteral("Local description"),
+                                     [](regmap::Workspace& workspace) {
+                                         workspace.name = "Local edit retained";
+                                     }));
+    editManagedRtlValue(rtlPath, QStringLiteral("reg-status"), QStringLiteral("offset"),
+                        QStringLiteral("8'shff"));
+    QTRY_VERIFY_WITH_TIMEOUT(std::ranges::any_of(
+        controller.diagnostics(), [](const regmap::Diagnostic& diagnostic) {
+            return diagnostic.code == "RM5003" &&
+                   diagnostic.message.find("8'shff") != std::string::npos;
+        }), 8000);
+    QCOMPARE(regmap::findRegister(*controller.workspace(), "reg-status")->offset, std::uint64_t{0});
+    QVERIFY(controller.isDirty());
+    editManagedRtlValue(rtlPath, QStringLiteral("reg-status"), QStringLiteral("offset"),
+                        QStringLiteral("8'h108"));
+    QTRY_COMPARE_WITH_TIMEOUT(regmap::findRegister(*controller.workspace(), "reg-status")->offset,
+                              std::uint64_t{8}, 8000);
+    QCOMPARE(controller.workspace()->name, "Local edit retained");
+    QVERIFY(controller.isDirty());
+    controller.save();
+    QVERIFY(!controller.hasProjectErrors());
+    QVERIFY(!controller.isDirty());
+    const auto reopened = regmap::openProject(std::filesystem::path(manifestPath.toStdWString()));
+    QVERIFY(reopened.workspace.has_value());
+    QCOMPARE(reopened.workspace->name, "Local edit retained");
+    QCOMPARE(regmap::findRegister(*reopened.workspace, "reg-status")->offset, std::uint64_t{8});
     makeGeneratedFilesWritable(directory.path());
 }
 
@@ -34647,7 +34673,7 @@ void GuiSmokeTests::synchronizesManagedRtlEdits()
     QVERIFY(QFileInfo::exists(rtlPath));
     QVERIFY(!controller.isDirty());
     editManagedRtlValue(rtlPath, QStringLiteral("reg-status"), QStringLiteral("offset"),
-                        QStringLiteral("64'h8"));
+                        QStringLiteral("8'h108"));
 
     QTRY_COMPARE_WITH_TIMEOUT(regmap::findRegister(*controller.workspace(), "reg-status")->offset,
                               std::uint64_t{8}, 8000);
@@ -34656,6 +34682,10 @@ void GuiSmokeTests::synchronizesManagedRtlEdits()
     const auto reopened = regmap::openProject(std::filesystem::path(manifestPath.toStdWString()));
     QVERIFY(reopened.workspace.has_value());
     QCOMPARE(regmap::findRegister(*reopened.workspace, "reg-status")->offset, std::uint64_t{8});
+    const auto exported = regmap::parseManagedRtl(std::filesystem::path(rtlPath.toStdWString()));
+    QVERIFY(!exported.hasErrors());
+    QVERIFY(exported.workspace.has_value());
+    QCOMPARE(regmap::findRegister(*exported.workspace, "reg-status")->offset, std::uint64_t{8});
     makeGeneratedFilesWritable(directory.path());
 }
 
@@ -34816,9 +34846,10 @@ void GuiSmokeTests::resolvesRtlConflictFromDiffPanel()
                                         QStringLiteral("0x4")));
     QTRY_VERIFY_WITH_TIMEOUT(state->text().startsWith(QStringLiteral("Unsaved")), 2000);
     editManagedRtlValue(rtlPath, QStringLiteral("reg-status"), QStringLiteral("offset"),
-                        QStringLiteral("64'h8"));
+                        QStringLiteral("8'h108"));
 
     QTRY_VERIFY_WITH_TIMEOUT(conflictBar->isVisible(), 8000);
+    QCOMPARE(controller->conflicts().front().rtlValue, std::optional<std::string>("0x8"));
     QVERIFY(conflictSummary->text().contains(QStringLiteral("1 RTL conflict")));
     QVERIFY(keepWorkbench->isVisible());
     QVERIFY(useRtl->isVisible());
@@ -34903,6 +34934,10 @@ void GuiSmokeTests::resolvesRtlConflictFromDiffPanel()
     QTRY_VERIFY_WITH_TIMEOUT(state->text().startsWith(QStringLiteral("Synchronized")), 8000);
     QVERIFY(state->toolTip().startsWith(QStringLiteral("Conflicts resolved")));
     QVERIFY(!state->toolTip().contains(QStringLiteral("paused"), Qt::CaseInsensitive));
+    const auto exported = regmap::parseManagedRtl(std::filesystem::path(rtlPath.toStdWString()));
+    QVERIFY(!exported.hasErrors());
+    QVERIFY(exported.workspace.has_value());
+    QCOMPARE(regmap::findRegister(*exported.workspace, "reg-status")->offset, std::uint64_t{8});
     makeGeneratedFilesWritable(directory.path());
 }
 

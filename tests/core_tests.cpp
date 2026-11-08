@@ -91,6 +91,8 @@ private slots:
     void groupsOnlyExplicitContiguousTransactions();
     void diffSnapshotsOwnTheirInput();
     void roundTripsManagedRtl();
+    void importsManagedRtlLiterals_data();
+    void importsManagedRtlLiterals();
     void preservesManagedRtlSourceLocations();
     void rejectsInvalidManagedRtlStructure();
     void preservesUnmanagedRtlText();
@@ -2241,6 +2243,144 @@ void CoreTests::roundTripsManagedRtl()
     QVERIFY(reg != nullptr);
     QCOMPARE(reg->offset, std::uint64_t{0x100});
     QVERIFY(reg->propertySources.at("offset").row.has_value());
+}
+
+void CoreTests::importsManagedRtlLiterals_data()
+{
+    QTest::addColumn<QString>("literal");
+    QTest::addColumn<QString>("expected");
+    QTest::addColumn<QString>("errorCode");
+    const auto valid = [](const char* literal, const char* expected) {
+        QTest::newRow(literal) << QString::fromLatin1(literal)
+                               << QString::fromLatin1(expected) << QString{};
+    };
+    valid("8'h1ff", "255");
+    valid("8'b111111111", "255");
+    valid("8'o777", "255");
+    valid("8'd511", "255");
+    valid("16'hff", "255");
+    valid("16'b11111111", "255");
+    valid("16'o377", "255");
+    valid("16'd255", "255");
+    valid("1'h3", "1");
+    valid("1'd2", "0");
+    valid("8'd256", "0");
+    valid("8'H1_F__F_", "255");
+    valid("1_6 'h ff", "255");
+    valid("8'h1_0000_0000_0000_00ff", "255");
+    valid("8'd18446744073709551871", "255");
+    valid("64'h1ffffffffffffffff", "18446744073709551615");
+    valid("64'd18446744073709551615", "18446744073709551615");
+    valid("65'h0ffffffffffffffff", "18446744073709551615");
+    valid("128'h100000000000000000000000000000000", "0");
+    valid("128'hff", "255");
+    valid("1000000000'hff", "255");
+    valid("8'sh7f", "127");
+    valid("8'sh100", "0");
+    valid("16'shff", "255");
+    valid("9'sd255", "255");
+    valid("'shff", "255");
+    valid("'sd2147483648", "2147483648");
+    valid("'h100000000", "4294967296");
+    valid("'b11111111", "255");
+    valid("'o377", "255");
+    valid("'d255", "255");
+    valid("255", "255");
+    valid("1_000", "1000");
+    valid("1__000_", "1000");
+    valid("010", "10");
+    valid("0xff", "255");
+    for (const char* literal : {
+             "0'h1", "-8'h1", "+8'h1", "size'h1", "0x8'h1", "_8'h1",
+             "18446744073709551616'h1", "8'", "8's", "8'h", "8'q1", "8'h_ff",
+             "8'h_", "8'hfg", "8'b2", "8'o8", "8'd0xff", "8'd+1", "8'd-1",
+             "8'd1 2", "8'h1x", "8'bz", "8'o?", "8'dX", "8'h1 + 1", "'1",
+             "8'shff", "8'sd255", "1'sb1", "'sh80000000", "'sh100000000",
+             "65'sh10000000000000000", "-1", "_1"}) {
+        QTest::newRow(literal) << QString::fromLatin1(literal) << QString{}
+                               << QStringLiteral("RM5003");
+    }
+    for (const char* literal : {"65'h10000000000000000", "128'd18446744073709551616"}) {
+        QTest::newRow(literal) << QString::fromLatin1(literal) << QString{}
+                               << QStringLiteral("RM5002");
+    }
+}
+
+void CoreTests::importsManagedRtlLiterals()
+{
+    QFETCH(QString, literal);
+    QFETCH(QString, expected);
+    QFETCH(QString, errorCode);
+    auto workspace = stableWorkspace();
+    auto& space = workspace.addressSpaces.front();
+    space.blocks.clear();
+    space.addressWidth = 64;
+    space.baseAddress = expected == QStringLiteral("0") ? 1 : 0;
+    QVERIFY(regmap::validateWorkspace(workspace).empty());
+    regmap::WorkspaceStore store(workspace);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString path = directory.filePath(QStringLiteral("literals.sv"));
+    const std::filesystem::path rtlPath(path.toStdWString());
+    QVERIFY(regmap::writeManagedRtl(rtlPath, "literal_test", workspace).empty());
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    QStringList lines = QString::fromUtf8(file.readAll()).split('\n');
+    file.close();
+    bool changed = false;
+    for (QString& line : lines) {
+        if (!line.contains(QStringLiteral("RMW:VALUE")) ||
+            !line.contains(QStringLiteral("\"id\":\"space-main\"")) ||
+            !line.contains(QStringLiteral("\"property\":\"base\""))) continue;
+        const qsizetype equals = line.indexOf('=');
+        const qsizetype semicolon = line.indexOf(';', equals);
+        QVERIFY(equals >= 0 && semicolon > equals);
+        line.replace(equals + 1, semicolon - equals - 1, QStringLiteral(" ") + literal);
+        changed = true;
+    }
+    QVERIFY(changed);
+    writeTextFile(path, lines.join('\n').toUtf8());
+    const auto parsed = regmap::parseManagedRtl(rtlPath);
+    if (!errorCode.isEmpty()) {
+        QVERIFY(parsed.hasErrors());
+        QVERIFY(!parsed.workspace.has_value());
+        QVERIFY(std::ranges::any_of(parsed.diagnostics, [&](const regmap::Diagnostic& diagnostic) {
+            return QString::fromStdString(diagnostic.code) == errorCode;
+        }));
+        if (errorCode == QStringLiteral("RM5003")) {
+            const auto& diagnostic = parsed.diagnostics.front();
+            QCOMPARE(diagnostic.objectId, "space-main");
+            QCOMPARE(diagnostic.source.workbook, rtlPath);
+            QVERIFY(diagnostic.source.row.has_value());
+            QVERIFY(diagnostic.message.find(literal.toStdString()) != std::string::npos);
+        }
+        QVERIFY(!store.dirty());
+        QCOMPARE(store.workspace()->addressSpaces.front().baseAddress, space.baseAddress);
+        return;
+    }
+    QVERIFY(!parsed.hasErrors());
+    QVERIFY(parsed.workspace.has_value());
+    const auto expectedValue = regmap::UnsignedValue::parse(expected.toStdString())->toUInt64().value();
+    QCOMPARE(parsed.workspace->addressSpaces.front().baseAddress, expectedValue);
+    const auto changes = regmap::diffWorkspaces(workspace, *parsed.workspace);
+    QCOMPARE(changes.size(), std::size_t{1});
+    const auto preview = regmap::planWorkspaceChanges(workspace, *parsed.workspace,
+                                                     {changes.front().stableId});
+    QVERIFY(preview.valid());
+    QCOMPARE(preview.workspace->addressSpaces.front().baseAddress, expectedValue);
+    QVERIFY(!store.dirty());
+    auto edit = store.prepareReplacement(*preview.workspace, store.revision());
+    QVERIFY(edit.has_value());
+    QVERIFY(store.commitPreparedEdit("Import managed RTL", std::move(*edit)));
+    QCOMPARE(store.workspace()->addressSpaces.front().baseAddress, expectedValue);
+    QVERIFY(store.undo());
+    QCOMPARE(store.workspace()->addressSpaces.front().baseAddress, space.baseAddress);
+    QVERIFY(store.redo());
+    QVERIFY(regmap::writeManagedRtl(rtlPath, "literal_test", *store.workspace()).empty());
+    const auto exported = regmap::parseManagedRtl(rtlPath);
+    QVERIFY(!exported.hasErrors());
+    QVERIFY(exported.workspace.has_value());
+    QVERIFY(regmap::diffWorkspaces(*store.workspace(), *exported.workspace).empty());
 }
 
 void CoreTests::preservesManagedRtlSourceLocations()

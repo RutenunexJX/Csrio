@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <cstdint>
 #include <iomanip>
 #include <map>
@@ -84,42 +85,90 @@ void addDiagnostic(std::vector<Diagnostic>& diagnostics, std::string_view code, 
 
 [[nodiscard]] std::optional<UnsignedValue> parseSystemVerilogUnsigned(std::string_view text)
 {
-    std::string value = trim(text);
-    value.erase(std::remove(value.begin(), value.end(), '_'), value.end());
+    const std::string value = trim(text);
     const auto apostrophe = value.find('\'');
+    const auto digitsForBase = [](std::string digits, unsigned base)
+        -> std::optional<std::string> {
+        if (digits.empty() || digits.front() == '_') {
+            return std::nullopt;
+        }
+        for (const char character : digits) {
+            if (character == '_') continue;
+            const int lower = std::tolower(static_cast<unsigned char>(character));
+            unsigned digit = base;
+            if (lower >= '0' && lower <= '9') {
+                digit = static_cast<unsigned>(lower - '0');
+            } else if (lower >= 'a' && lower <= 'f') {
+                digit = static_cast<unsigned>(lower - 'a' + 10);
+            }
+            if (digit >= base) return std::nullopt;
+        }
+        std::erase(digits, '_');
+        return digits;
+    };
     if (apostrophe == std::string::npos) {
-        return UnsignedValue::parse(value);
+        const auto digits = digitsForBase(value, 10);
+        return UnsignedValue::parse(digits.value_or(value));
+    }
+    std::optional<std::size_t> width;
+    const std::string sizeText = trim(std::string_view(value).substr(0, apostrophe));
+    if (!sizeText.empty()) {
+        const auto digits = digitsForBase(sizeText, 10);
+        if (!digits) return std::nullopt;
+        std::size_t size = 0;
+        const auto parsed = std::from_chars(digits->data(), digits->data() + digits->size(), size);
+        if (parsed.ec != std::errc{} || parsed.ptr != digits->data() + digits->size() || size == 0) {
+            return std::nullopt;
+        }
+        width = size;
     }
     if (apostrophe + 2 > value.size()) {
         return std::nullopt;
     }
     std::size_t baseIndex = apostrophe + 1;
-    if (value[baseIndex] == 's' || value[baseIndex] == 'S') {
+    const bool isSigned = value[baseIndex] == 's' || value[baseIndex] == 'S';
+    if (isSigned) {
         ++baseIndex;
     }
     if (baseIndex >= value.size()) {
         return std::nullopt;
     }
     const char base = static_cast<char>(std::tolower(static_cast<unsigned char>(value[baseIndex])));
-    const std::string digits = value.substr(baseIndex + 1);
-    if (digits.empty() || std::ranges::any_of(digits, [](char character) {
-            return character == 'x' || character == 'X' || character == 'z' || character == 'Z' ||
-                   character == '?';
-        })) {
-        return std::nullopt;
-    }
+    unsigned radix = 10;
+    std::string prefix;
     switch (base) {
     case 'h':
-        return UnsignedValue::parse("0x" + digits);
+        radix = 16;
+        prefix = "0x";
+        break;
     case 'd':
-        return UnsignedValue::parse(digits);
+        break;
     case 'b':
-        return UnsignedValue::parse("0b" + digits);
+        radix = 2;
+        prefix = "0b";
+        break;
     case 'o':
-        return UnsignedValue::parse("0o" + digits);
+        radix = 8;
+        prefix = "0o";
+        break;
     default:
         return std::nullopt;
     }
+    const auto digits = digitsForBase(trim(std::string_view(value).substr(baseIndex + 1)), radix);
+    if (!digits) return std::nullopt;
+    auto parsed = UnsignedValue::parse(prefix + *digits);
+    if (!parsed) return std::nullopt;
+    // Truncate before model validation, without allocating for zero extension.
+    if (width && parsed->bitWidth() > *width) {
+        *parsed = parsed->slice(0, *width);
+    }
+    // Unsized signed decimal literals have room for a sign bit. Based binary,
+    // octal and hex literals use at least 32 bits, with the top bit as the sign.
+    if (isSigned && (width || base != 'd')) {
+        const std::size_t signWidth = width.value_or(std::max(std::size_t{32}, parsed->bitWidth()));
+        if (parsed->testBit(signWidth - 1)) return std::nullopt;
+    }
+    return parsed;
 }
 
 [[nodiscard]] std::string compactJson(const QJsonObject& object)
@@ -478,10 +527,18 @@ RtlParseResult parseManagedRtl(const std::filesystem::path& path)
             marker.object().value(QStringLiteral("property")).toString().toStdString();
         const auto parsedValue = parseSystemVerilogUnsigned(match.captured(1).toStdString());
         const auto object = objects.find(id);
-        if (object == objects.end() || propertyName.empty() || !parsedValue) {
+        if (object == objects.end() || propertyName.empty()) {
             addDiagnostic(
                 result.diagnostics, valueCode,
-                "RMW:VALUE references an unknown object/property or has an unsupported literal.",
+                "RMW:VALUE references an unknown object/property.",
+                path, lineNumber, id);
+            continue;
+        }
+        if (!parsedValue) {
+            addDiagnostic(
+                result.diagnostics, valueCode,
+                "RMW:VALUE requires a supported non-negative integer literal; check its size, "
+                "base and digits: " + match.captured(1).trimmed().toStdString(),
                 path, lineNumber, id);
             continue;
         }

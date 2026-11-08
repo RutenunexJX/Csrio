@@ -28,8 +28,27 @@ endmodule
 ## Editable values
 
 Numeric model properties are emitted as SystemVerilog `localparam` literals followed by an
-`RMW:VALUE` JSON marker. Decimal, binary, octal, and hexadecimal unsigned literals are accepted;
-underscores are allowed. Unknown (`x`), high-impedance (`z`), and wildcard digits are rejected.
+`RMW:VALUE` JSON marker. Decimal, binary, octal, and hexadecimal literals are accepted.
+For based literals, a positive decimal size before the apostrophe determines the value's bit
+width: excess high bits are discarded and shorter values are zero-extended. For example,
+`8'h1ff`, `8'b111111111`, `8'o777`, and `8'd511` all import as 255; `16'hff` also imports as 255.
+Sizes and digits may contain underscores after their first digit. Values wider than 64 bits
+are parsed before truncation, so `8'h1_0000_0000_0000_00ff` still imports as 255. A large declared
+size does not allocate padding for zero extension.
+
+The optional `s`/`S` marker is honored after truncation. Non-negative results are accepted
+(`16'shff` is 255); negative results (`8'shff` or `8'sd255`) cannot be represented by these
+unsigned model properties and are rejected. Unsized signed binary, octal, and hexadecimal
+literals use at least 32 bits; unsized signed decimal literals retain a sign bit. Unknown
+(`x`), high-impedance (`z`), wildcard digits, zero/invalid sizes, expressions, and unbased
+fill literals such as `'1` are unsupported and produce `RM5003` with the literal and source
+line. Decimal values and the existing Csrio `0x`/`0b`/`0o` numeric forms remain supported.
+
+The resulting value must also fit the target model property. A 65-bit address that still
+needs 65 bits after truncation is rejected, as are reset values outside their register width.
+The importer reads the literal, not arbitrary SystemVerilog expressions or assignment casts.
+Invalid RTL leaves the current model and local edits intact; correct the literal and retry
+synchronization. Re-export emits a canonical literal with the preserved numeric value.
 
 Text and token properties are held in the `properties` object of the corresponding
 `RMW:OBJECT` JSON comment. Numeric `localparam` values take precedence over the duplicated JSON
