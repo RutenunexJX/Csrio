@@ -29,7 +29,7 @@ foreach ($line in [IO.File]::ReadAllLines($sums)) {
 if ($checked.Count -ne $files.Count - 1) { throw 'Checksum inventory is incomplete' }
 foreach ($file in $files) {
     $relative = [IO.Path]::GetRelativePath($packageRoot, $file.FullName).Replace('\', '/')
-    if ($file.Extension -ieq '.exe' -and $relative -cnotin @('Csrio.exe', 'regmapc.exe')) {
+    if ($file.Extension -ieq '.exe' -and $relative -cnotin @('Csrio.exe', 'regmapc.exe', 'regmap-xlsx-render.exe')) {
         throw "Unexpected executable in Csrio runtime: $relative"
     }
     if ($relative -ne 'SHA256SUMS.txt' -and -not $checked.Contains($relative)) {
@@ -40,7 +40,8 @@ foreach ($file in $files) {
         throw "Development content in runtime: $relative"
     }
 }
-foreach ($relative in @('Csrio.exe', 'regmapc.exe', 'ElaWidgetTools.dll',
+foreach ($relative in @('Csrio.exe', 'regmapc.exe', 'regmap-xlsx-render.exe', 'ElaWidgetTools.dll',
+    'resources/xlsx/NotoSansSC.ttf', 'resources/xlsx/OFL.txt', 'plugins/platforms/qoffscreen.dll',
     'Qt6Core.dll', 'Qt6Gui.dll', 'Qt6Widgets.dll', 'plugins/platforms/qwindows.dll',
     'README.md', 'docs/cli.md', 'docs/ela-native-capabilities.md', 'docs/examples/cli-same-session.ps1', 'BUILD-INFO.txt',
     'licenses/ElaWidgetTools/LICENSE', 'licenses/ElaWidgetTools/FontAwesome-LICENSE.txt',
@@ -52,6 +53,10 @@ foreach ($relative in @('Csrio.exe', 'regmapc.exe', 'ElaWidgetTools.dll',
     if (-not (Test-Path -LiteralPath (Join-Path $packageRoot $relative) -PathType Leaf)) {
         throw "Missing runtime or notice: $relative"
     }
+}
+if ((Get-FileHash -LiteralPath (Join-Path $packageRoot 'resources/xlsx/NotoSansSC.ttf') -Algorithm SHA256).Hash -ne
+    'a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da') {
+    throw 'Pinned XLSX font checksum mismatch'
 }
 $info = Get-Content -LiteralPath (Join-Path $packageRoot 'BUILD-INFO.txt') -Raw
 foreach ($line in @('Csrio', "Version: $ExpectedVersion", "Revision: $ExpectedRevision", "Source state: $ExpectedSourceState",
