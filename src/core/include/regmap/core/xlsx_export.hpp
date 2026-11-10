@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <vector>
+#include <stop_token>
 
 namespace regmap {
 
@@ -13,6 +14,7 @@ struct XlsxExportResult {
     std::vector<Diagnostic> diagnostics;
 };
 
-[[nodiscard]] XlsxExportResult exportReadOnlyWorkbook(const Workspace& workspace, bool consecutiveEnums = false);
+[[nodiscard]] XlsxExportResult exportReadOnlyWorkbook(const Workspace& workspace, bool consecutiveEnums = false,
+                                                      std::stop_token cancellation = {});
 
 } // namespace regmap

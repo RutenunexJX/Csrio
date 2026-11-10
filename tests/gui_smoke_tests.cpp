@@ -213,6 +213,8 @@ private slots:
     void deletesSelectedRowsAtomically();
     void deletesSelectedEnumValuesAtomically();
     void dragsFieldsAndResolvesOverlaps();
+    void startsFirstDragAfterSelectionRefresh();
+    void cancelsDragWhenContextChanges();
     void navigatesBitfieldWithKeyboard();
     void movesFieldsOneBitWithKeyboard();
     void rejectsFieldMoveThatInvalidatesValueContracts();
@@ -319,6 +321,7 @@ private slots:
     void rejectsUnsafeDeleteAndShift();
     void editsUndoesAndSavesProject();
     void rejectsInvalidManagedRtl();
+    void preservesLocalEditsOnMalformedMultilineRtl();
     void synchronizesManagedRtlEdits();
     void synchronizesManagedRtlRegisterOrderWithExistingBaseline();
     void synchronizesManagedRtlRegisterReparentWithExistingBaseline();
@@ -602,9 +605,11 @@ void createBitfieldDragProject(const QString& path)
     file.close();
 
     const QString originalRange = QStringLiteral("                  msb: 0\n"
-                                                 "                  lsb: 0\n");
+                                                 "                  lsb: 0\n"
+                                                 "                  type: bool\n");
     const QString widenedRange = QStringLiteral("                  msb: 3\n"
-                                                "                  lsb: 0\n");
+                                                "                  lsb: 0\n"
+                                                "                  type: bits\n");
     QCOMPARE(text.count(originalRange), 1);
     text.replace(originalRange, widenedRange);
 
@@ -2059,6 +2064,7 @@ void GuiSmokeTests::createsWorkbenchFirstProject()
     ProjectController controller;
 
     QVERIFY(controller.createProject(manifestPath));
+    QTRY_VERIFY_WITH_TIMEOUT(!controller.generationPending(), 30000);
     QVERIFY(controller.workspace() != nullptr);
     QCOMPARE(controller.workspace()->name, std::string("new-device"));
     QVERIFY(!controller.workspace()->id.empty());
@@ -2103,6 +2109,7 @@ void GuiSmokeTests::createsAndReopensProjectUnderUnicodePath()
     QVERIFY(
         created.createProject(
             manifestPath));
+    QTRY_VERIFY_WITH_TIMEOUT(!created.generationPending(), 30000);
     QVERIFY(created.workspace() != nullptr);
     QCOMPARE(
         QString::fromUtf8(
@@ -13599,6 +13606,123 @@ void GuiSmokeTests::dragsFieldsAndResolvesOverlaps()
                  testCase.finalObstacleMsb);
 
         makeGeneratedFilesWritable(directory.path());
+    }
+}
+
+void GuiSmokeTests::startsFirstDragAfterSelectionRefresh()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString manifest = directory.filePath(QStringLiteral("first-drag.regmap.yaml"));
+    createBitfieldDragProject(manifest);
+    MainWindow window;
+    window.resize(1200, 760);
+    window.show();
+    window.openProjectPath(manifest);
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    auto* controller = window.findChild<ProjectController*>();
+    auto* registers = window.findChild<QTableView*>(QStringLiteral("registerView"));
+    auto* fields = window.findChild<QTableView*>(QStringLiteral("fieldView"));
+    auto* bitfield = window.findChild<BitfieldView*>(QStringLiteral("bitfieldView"));
+    QVERIFY(controller && registers && fields && bitfield);
+    QVERIFY(!controller->hasProjectErrors());
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+    const auto openFields = registers->model()->index(0, 5);
+    QTest::mouseClick(registers->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      registers->visualRect(openFields).center());
+    QTRY_VERIFY(bitfield->isVisible());
+    // Select the other field first: preselecting READY hides the original bug.
+    int obstacleRow = -1;
+    for (int row = 0; row < fields->model()->rowCount(); ++row)
+        if (fields->model()->index(row, 0).data(Qt::UserRole + 1).toString() == "field-obstacle") obstacleRow = row;
+    QVERIFY(obstacleRow >= 0);
+    fields->setCurrentIndex(fields->model()->index(obstacleRow, 0));
+    QCoreApplication::processEvents();
+    QVERIFY(!bitfield->grab().isNull());
+    QVERIFY(!controller->isDirty());
+    QSignalSpy moved(bitfield, &BitfieldView::fieldMoveRequested);
+    const auto drag = [&](std::uint32_t from, std::uint32_t to) {
+        // QWindow events exercise the native window and normal widget routing.
+        const QPoint press = bitfield->mapTo(&window, bitfieldPointForBit(bitfield, from));
+        QTest::mousePress(window.windowHandle(), Qt::LeftButton, Qt::NoModifier, press);
+        QCoreApplication::processEvents();
+        // Selecting a field can resize the pane; target the refreshed geometry.
+        const QPoint release = bitfield->mapTo(&window, bitfieldPointForBit(bitfield, to));
+        QTest::mouseMove(window.windowHandle(), release, 20);
+        QTest::mouseRelease(window.windowHandle(), Qt::LeftButton, Qt::NoModifier, release);
+        QCoreApplication::processEvents();
+    };
+    drag(1, 13);
+    QCOMPARE(moved.count(), 1);
+    QCOMPARE(regmap::findField(*controller->workspace(), "field-ready")->lsb, std::uint32_t{12});
+    QVERIFY(controller->isDirty());
+    QVERIFY(regmap::validateWorkspace(*controller->workspace()).empty());
+    const QString artifacts = qEnvironmentVariable("REGMAP_TEST_ARTIFACT_DIR");
+    if (!artifacts.isEmpty()) {
+        QVERIFY(QDir().mkpath(artifacts));
+        QVERIFY(window.grab().save(QDir(artifacts).filePath("first-drag.png")));
+    }
+    controller->undo();
+    QCOMPARE(regmap::findField(*controller->workspace(), "field-ready")->lsb, std::uint32_t{0});
+    QVERIFY(!controller->isDirty());
+    controller->redo();
+    QCOMPARE(regmap::findField(*controller->workspace(), "field-ready")->lsb, std::uint32_t{12});
+    QVERIFY(controller->isDirty());
+    drag(13, 17);
+    QCOMPARE(moved.count(), 2);
+    QCOMPARE(regmap::findField(*controller->workspace(), "field-ready")->lsb, std::uint32_t{16});
+    controller->undo();
+    controller->undo();
+    QVERIFY(!controller->isDirty());
+    makeGeneratedFilesWritable(directory.path());
+}
+
+void GuiSmokeTests::cancelsDragWhenContextChanges()
+{
+    regmap::Field field;
+    field.id = "moving";
+    field.name = "MOVING";
+    field.msb = 3;
+    regmap::Register reg;
+    reg.id = "original";
+    reg.width = 32;
+    reg.type = regmap::FieldType::structure;
+    reg.fields = {field};
+    regmap::Field container;
+    container.id = "container";
+    container.name = "CONTAINER";
+    container.msb = 31;
+    container.type = regmap::FieldType::structure;
+    container.members = {field};
+    for (int scenario = 0; scenario < 4; ++scenario) {
+        BitfieldView view;
+        view.resize(900, 188);
+        if (scenario < 2) view.setRegister(&reg);
+        else view.setFieldContainer(&container, nullptr);
+        view.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&view));
+        QVERIFY(!view.grab().isNull());
+        QSignalSpy moved(&view, &BitfieldView::fieldMoveRequested);
+        connect(&view, &BitfieldView::fieldActivated, &view, [&] {
+            if (scenario == 0) {
+                auto other = reg;
+                other.id = "other-register";
+                view.setRegister(&other);
+            } else if (scenario == 1) view.setRegister(nullptr);
+            else if (scenario == 2) {
+                auto other = container;
+                other.id = "other-container";
+                view.setFieldContainer(&other, nullptr);
+            } else {
+                view.setFieldContainer(&container, &field);
+                view.resize(1200, 188);
+            }
+        });
+        QTest::mousePress(view.windowHandle(), Qt::LeftButton, Qt::NoModifier, bitfieldPointForBit(&view, 1));
+        QTest::mouseMove(view.windowHandle(), bitfieldPointForBit(&view, 13), 20);
+        QTest::mouseRelease(view.windowHandle(), Qt::LeftButton, Qt::NoModifier, bitfieldPointForBit(&view, 13));
+        QCOMPARE(moved.count(), scenario == 3 ? 1 : 0);
+        if (scenario == 3) QCOMPARE(moved.front().at(1).toUInt(), std::uint32_t{12});
     }
 }
 
@@ -29417,6 +29541,7 @@ void GuiSmokeTests::doesNotCacheOutputChecksAcrossRefreshes()
     createTwoRegisterProject(manifest);
     ProjectController controller;
     QVERIFY(controller.openProject(manifest));
+    QTRY_VERIFY_WITH_TIMEOUT(!controller.generationPending(), 30000);
     const auto markdown = std::ranges::find_if(controller.artifacts(), [](const auto& artifact) {
         return artifact.kind == regmap::GenerationTargetKind::markdown;
     });
@@ -29446,6 +29571,7 @@ void GuiSmokeTests::doesNotCacheOutputChecksAcrossRefreshes()
     QVERIFY(QMetaObject::invokeMethod(&controller, "refreshGeneratedFileState", Qt::DirectConnection));
     QVERIFY(!notifiedCurrent);
     controller.generateNow();
+    QTRY_VERIFY_WITH_TIMEOUT(!controller.generationPending(), 30000);
     QVERIFY(controller.generatedArtifactIsCurrent(index));
     QPointer<ProjectController> closing = new ProjectController;
     QVERIFY(closing->openProject(manifest));
@@ -34660,6 +34786,64 @@ void GuiSmokeTests::rejectsInvalidManagedRtl()
     makeGeneratedFilesWritable(directory.path());
 }
 
+void GuiSmokeTests::preservesLocalEditsOnMalformedMultilineRtl()
+{
+    QTemporaryDir directory;
+    const auto manifest = directory.filePath(QStringLiteral("multiline.regmap.yaml"));
+    const auto rtl = directory.filePath(QStringLiteral("rtl/gui_registers.sv"));
+    createProject(manifest);
+    ProjectController controller;
+    QVERIFY(controller.openProject(manifest));
+    const auto read = [](const QString& path) {
+        QFile file(path);
+        return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray{};
+    };
+    const auto originalModel = read(manifest);
+    const auto originalRtl = read(rtl);
+    const auto edit = [&](bool valid) {
+        QString text = QString::fromUtf8(originalRtl);
+        auto lines = text.split('\n');
+        for (auto& line : lines) {
+            if (!line.contains("RMW:VALUE") || !line.contains("\"id\":\"reg-status\"") ||
+                !line.contains("\"property\":\"offset\"")) continue;
+            const auto marker = line.mid(line.indexOf("// RMW:VALUE"));
+            line = QStringLiteral("localparam logic [7:0] OFFSET =\n 8'h108%1\n %2")
+                       .arg(valid ? ";" : "", marker);
+        }
+        QFile file(rtl);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        const auto bytes = lines.join('\n').toUtf8();
+        QCOMPARE(file.write(bytes), bytes.size());
+    };
+    QVERIFY(controller.editWorkspace(QStringLiteral("Local edit"), [](regmap::Workspace& workspace) {
+        workspace.name = "Local edit retained";
+    }));
+    edit(false);
+    const auto malformed = read(rtl);
+    QTRY_VERIFY_WITH_TIMEOUT(controller.hasProjectErrors(), 8000);
+    QVERIFY(std::ranges::any_of(controller.diagnostics(), [](const auto& diagnostic) {
+        return diagnostic.code == "RM5003" && diagnostic.objectId == "reg-status";
+    }));
+    QCOMPARE(controller.workspace()->name, "Local edit retained");
+    QCOMPARE(regmap::findRegister(*controller.workspace(), "reg-status")->offset, std::uint64_t{0});
+    QVERIFY(controller.isDirty());
+    QCOMPARE(read(manifest), originalModel);
+    QCOMPARE(read(rtl), malformed);
+    edit(true);
+    QTRY_COMPARE_WITH_TIMEOUT(regmap::findRegister(*controller.workspace(), "reg-status")->offset,
+                              std::uint64_t{8}, 8000);
+    QCOMPARE(controller.workspace()->name, "Local edit retained");
+    QVERIFY(controller.isDirty());
+    controller.save();
+    QVERIFY(!controller.hasProjectErrors());
+    QVERIFY(!controller.isDirty());
+    const auto exported = regmap::parseManagedRtl(std::filesystem::path(rtl.toStdWString()));
+    QVERIFY(!exported.hasErrors());
+    QVERIFY(exported.workspace);
+    QCOMPARE(regmap::findRegister(*exported.workspace, "reg-status")->offset, std::uint64_t{8});
+    makeGeneratedFilesWritable(directory.path());
+}
+
 void GuiSmokeTests::synchronizesManagedRtlEdits()
 {
     QTemporaryDir directory;
@@ -34932,7 +35116,7 @@ void GuiSmokeTests::resolvesRtlConflictFromDiffPanel()
     QTRY_COMPARE_WITH_TIMEOUT(registers->model()->index(0, 1).data().toString(),
                               QStringLiteral("0x8"), 8000);
     QTRY_VERIFY_WITH_TIMEOUT(state->text().startsWith(QStringLiteral("Synchronized")), 8000);
-    QVERIFY(state->toolTip().startsWith(QStringLiteral("Conflicts resolved")));
+    QVERIFY(state->toolTip().startsWith(QStringLiteral("Generated")));
     QVERIFY(!state->toolTip().contains(QStringLiteral("paused"), Qt::CaseInsensitive));
     const auto exported = regmap::parseManagedRtl(std::filesystem::path(rtlPath.toStdWString()));
     QVERIFY(!exported.hasErrors());
@@ -34976,7 +35160,8 @@ void GuiSmokeTests::reportsAndResolvesRtlConflicts()
 
 int main(int argc, char** argv)
 {
-    qputenv("QT_QPA_PLATFORM", QByteArrayLiteral("offscreen"));
+    if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM"))
+        qputenv("QT_QPA_PLATFORM", QByteArrayLiteral("offscreen"));
     QApplication application(argc, argv);
     GuiSmokeTests tests;
     return QTest::qExec(&tests, argc, argv);

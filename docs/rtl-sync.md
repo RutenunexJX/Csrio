@@ -29,6 +29,13 @@ endmodule
 
 Numeric model properties are emitted as SystemVerilog `localparam` literals followed by an
 `RMW:VALUE` JSON marker. Decimal, binary, octal, and hexadecimal literals are accepted.
+Declarations may span lines, including around `=` and before `;`. Ordinary line and block
+comments may separate tokens. Keep each `// RMW:VALUE {...}` marker on one line, either
+within its declaration or after its terminating semicolon (on that line or a following
+comment line), before the next declaration or `RMW:OBJECT`. Each marker must identify one
+existing numeric property and appear exactly once. Missing semicolons, multiple assignments,
+duplicate markers and unsupported marked declarations produce `RM5003`; they never silently
+fall back to the older `RMW:OBJECT` value. Diagnostics retain the marker's physical line.
 For based literals, a positive decimal size before the apostrophe determines the value's bit
 width: excess high bits are discarded and shorter values are zero-extended. For example,
 `8'h1ff`, `8'b111111111`, `8'o777`, and `8'd511` all import as 255; `16'hff` also imports as 255.

@@ -1,4 +1,5 @@
 #include "regmap/core/xlsx_export.hpp"
+#include "xlsx_renderer.hpp"
 
 #include "regmap/core/model_tokens.hpp"
 #include "regmap/core/document_layout.hpp"
@@ -302,7 +303,7 @@ void writeLittleEndian16(
 {
     WorkbookFormats result;
 
-    result.title.setFontName(QStringLiteral("Microsoft YaHei"));
+    result.title.setFontName(QStringLiteral("Noto Sans SC"));
     result.title.setFontSize(16);
     result.title.setFontBold(true);
     result.title.setFontColor(QColor(QStringLiteral("#FFFFFF")));
@@ -312,7 +313,7 @@ void writeLittleEndian16(
     result.title.setVerticalAlignment(QXlsx::Format::AlignTop);
     result.title.setTextWrap(true);
 
-    result.header.setFontName(QStringLiteral("Microsoft YaHei"));
+    result.header.setFontName(QStringLiteral("Noto Sans SC"));
     result.header.setFontSize(10);
     result.header.setFontBold(true);
     result.header.setFontColor(QColor(QStringLiteral("#FFFFFF")));
@@ -326,7 +327,7 @@ void writeLittleEndian16(
     result.header.setTextWrap(true);
     result.header.setLocked(true);
 
-    result.body.setFontName(QStringLiteral("Microsoft YaHei"));
+    result.body.setFontName(QStringLiteral("Noto Sans SC"));
     result.body.setFontSize(10);
     result.body.setFontColor(QColor(QStringLiteral("#243447")));
     result.body.setPatternForegroundColor(QColor(QStringLiteral("#FFF9E6")));
@@ -356,17 +357,17 @@ void writeLittleEndian16(
     result.field.setTextWrap(true);
 
     result.fieldAddress = result.field;
-    result.fieldAddress.setFontName(QStringLiteral("Cascadia Mono"));
+    result.fieldAddress.setFontName(QStringLiteral("Noto Sans SC"));
     result.fieldAddress.setHorizontalAlignment(QXlsx::Format::AlignHCenter);
     result.fieldAddress.setNumberFormat(QStringLiteral("@"));
 
     result.address = result.body;
-    result.address.setFontName(QStringLiteral("Cascadia Mono"));
+    result.address.setFontName(QStringLiteral("Noto Sans SC"));
     result.address.setHorizontalAlignment(QXlsx::Format::AlignHCenter);
     result.address.setNumberFormat(QStringLiteral("@"));
 
     result.addressAlternate = result.alternate;
-    result.addressAlternate.setFontName(QStringLiteral("Cascadia Mono"));
+    result.addressAlternate.setFontName(QStringLiteral("Noto Sans SC"));
     result.addressAlternate.setHorizontalAlignment(QXlsx::Format::AlignHCenter);
     result.addressAlternate.setNumberFormat(QStringLiteral("@"));
 
@@ -380,12 +381,12 @@ void writeLittleEndian16(
     result.sectionAlternate.setPatternBackgroundColor(QColor(QStringLiteral("#EDF2F7")));
 
     result.sectionAddress = result.section;
-    result.sectionAddress.setFontName(QStringLiteral("Cascadia Mono"));
+    result.sectionAddress.setFontName(QStringLiteral("Noto Sans SC"));
     result.sectionAddress.setHorizontalAlignment(QXlsx::Format::AlignHCenter);
     result.sectionAddress.setNumberFormat(QStringLiteral("@"));
 
     result.sectionAddressAlternate = result.sectionAlternate;
-    result.sectionAddressAlternate.setFontName(QStringLiteral("Cascadia Mono"));
+    result.sectionAddressAlternate.setFontName(QStringLiteral("Noto Sans SC"));
     result.sectionAddressAlternate.setHorizontalAlignment(QXlsx::Format::AlignHCenter);
     result.sectionAddressAlternate.setNumberFormat(QStringLiteral("@"));
 
@@ -398,7 +399,7 @@ void writeLittleEndian16(
     result.pageValue.setPatternBackgroundColor(QColor(QStringLiteral("#FFFFFF")));
 
     result.pageAddress = result.pageValue;
-    result.pageAddress.setFontName(QStringLiteral("Cascadia Mono"));
+    result.pageAddress.setFontName(QStringLiteral("Noto Sans SC"));
     result.pageAddress.setHorizontalAlignment(QXlsx::Format::AlignHCenter);
     result.pageAddress.setNumberFormat(QStringLiteral("@"));
 
@@ -416,7 +417,7 @@ void writeLittleEndian16(
     result.reserved.setPatternBackgroundColor(QColor(QStringLiteral("#E2E3E5")));
 
     result.reservedAddress = result.reserved;
-    result.reservedAddress.setFontName(QStringLiteral("Cascadia Mono"));
+    result.reservedAddress.setFontName(QStringLiteral("Noto Sans SC"));
     result.reservedAddress.setHorizontalAlignment(QXlsx::Format::AlignHCenter);
     result.reservedAddress.setNumberFormat(QStringLiteral("@"));
 
@@ -436,7 +437,8 @@ struct ExportCell {
     QImage device(1, 1, QImage::Format_ARGB32_Premultiplied);
     device.setDotsPerMeterX(3780);
     device.setDotsPerMeterY(3780);
-    const QFont font = format.font();
+    QFont font = format.font();
+    font.setStyleStrategy(QFont::NoFontMerging);
     const QFontMetricsF metrics(font, &device);
     QTextOption option;
     option.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
@@ -991,7 +993,8 @@ void configureColumns(QXlsx::Document& document, const std::vector<double>& widt
     painter.setPen(QPen(QColor(QStringLiteral("#D6B656")), 1));
     painter.drawRect(QRect(0, 0, image.width() - 1, image.height() - 1));
 
-    QFont titleFont(QStringLiteral("Microsoft YaHei"), 10);
+    QFont titleFont(QStringLiteral("Noto Sans SC"), 10);
+    titleFont.setStyleStrategy(QFont::NoFontMerging);
     titleFont.setBold(true);
     painter.setFont(titleFont);
     painter.setPen(QColor(QStringLiteral("#7F6000")));
@@ -999,7 +1002,8 @@ void configureColumns(QXlsx::Document& document, const std::vector<double>& widt
                      Qt::AlignLeft | Qt::AlignVCenter,
                      QStringLiteral("%1 - %2-bit field layout").arg(text(reg.name)).arg(reg.width));
 
-    QFont markerFont(QStringLiteral("Microsoft YaHei"), 8);
+    QFont markerFont(QStringLiteral("Noto Sans SC"), 8);
+    markerFont.setStyleStrategy(QFont::NoFontMerging);
     const QRect barRect(horizontalMargin, barTop, imageWidth - horizontalMargin * 2, barHeight);
     painter.fillRect(barRect, QColor(QStringLiteral("#FFF9E6")));
     painter.fillRect(barRect, QBrush(QColor(QStringLiteral("#D6B656")), Qt::BDiagPattern));
@@ -1007,10 +1011,11 @@ void configureColumns(QXlsx::Document& document, const std::vector<double>& widt
     painter.drawRect(barRect.adjusted(0, 0, -1, -1));
 
     const std::uint64_t registerWidth = std::max<std::uint64_t>(1, reg.width);
-    QFont fieldFont(QStringLiteral("Microsoft YaHei"), 8);
+    QFont fieldFont(QStringLiteral("Noto Sans SC"), 8);
+    fieldFont.setStyleStrategy(QFont::NoFontMerging);
     fieldFont.setBold(true);
     painter.setFont(fieldFont);
-    const QFontMetrics fieldMetrics(fieldFont);
+    const QFontMetrics fieldMetrics(fieldFont, &image);
 
     for (std::size_t index = 0; index < fields.size(); ++index) {
         const Field& field = *fields[index];
@@ -1058,9 +1063,10 @@ void configureColumns(QXlsx::Document& document, const std::vector<double>& widt
         }
     }
 
-    QFont legendFont(QStringLiteral("Microsoft YaHei"), 8);
+    QFont legendFont(QStringLiteral("Noto Sans SC"), 8);
+    legendFont.setStyleStrategy(QFont::NoFontMerging);
     painter.setFont(legendFont);
-    const QFontMetrics legendMetrics(legendFont);
+    const QFontMetrics legendMetrics(legendFont, &image);
     painter.setPen(QColor(QStringLiteral("#594300")));
     const int legendColumnWidth = (imageWidth - horizontalMargin * 2) / legendColumns;
     if (fields.empty()) {
@@ -1308,7 +1314,7 @@ void addDiagnostic(std::vector<Diagnostic>& diagnostics, std::string message)
 
 } // namespace
 
-XlsxExportResult exportReadOnlyWorkbook(const Workspace& workspace, bool consecutiveEnums)
+XlsxExportResult detail::renderReadOnlyWorkbook(const Workspace& workspace, bool consecutiveEnums)
 {
     XlsxExportResult result;
     QHashSeed::setDeterministicGlobalSeed();

@@ -16,6 +16,8 @@
 #include <QPointer>
 #include <QSaveFile>
 #include <QVariant>
+#include <QFutureWatcher>
+#include <QtConcurrentRun>
 
 #include <algorithm>
 #include <iterator>
@@ -297,7 +299,7 @@ const std::vector<regmap::GeneratedArtifact>& ProjectController::artifacts() con
 bool ProjectController::generatedArtifactIsCurrent(
     std::size_t index) const
 {
-    if (index >= artifacts_.size()) {
+    if (generationPending_ || index >= artifacts_.size()) {
         return false;
     }
     if (generatedStateSnapshot_ &&
@@ -1027,6 +1029,7 @@ void ProjectController::reloadImpl(
     bool automatic,
     regmap::ProjectLoadSnapshot* preloaded, bool synchronize)
 {
+    generationCancellation_.request_stop();
     if (manifestPath_.empty()) {
         return;
     }
@@ -1377,7 +1380,7 @@ void ProjectController::synchronizeRtl(bool automatic, bool persistWhenClean)
         if (persistSynchronizedModel(automatic)) {
             emit syncStatusChanged(
                 automatic ? QStringLiteral("Workbench and managed RTL synchronized")
-                          : QStringLiteral("Project, managed RTL, and read-only outputs saved"));
+                          : QStringLiteral("Project and managed RTL saved; read-only outputs are generating"));
         }
         return;
     }
@@ -1474,7 +1477,7 @@ void ProjectController::resolveConflicts(regmap::MergePreference preference)
     emit comparisonChanged();
     if (persistSynchronizedModel()) {
         emit syncStatusChanged(
-            QStringLiteral("Conflicts resolved; Workbench, RTL, and read-only outputs synchronized"));
+            QStringLiteral("Conflicts resolved; Workbench and RTL saved; read-only outputs are generating"));
     }
 }
 
@@ -1618,6 +1621,11 @@ void ProjectController::generateNow()
     synchronizeRtl(false, true);
 }
 
+ProjectController::~ProjectController()
+{
+    generationCancellation_.request_stop();
+}
+
 void ProjectController::generateImpl(bool automatic, bool writeOutputs)
 {
     const PhaseTimer phaseTimer(this, "phaseSyncGenerateMs");
@@ -1631,24 +1639,49 @@ void ProjectController::generateImpl(bool automatic, bool writeOutputs)
     if (!automatic) {
         emit syncStatusChanged(QStringLiteral("Generating read-only artifacts..."));
     }
-    auto generation = regmap::generateArtifacts(*store_.workspace(), *manifest_);
-    artifacts_ = std::move(generation.artifacts);
-    ++artifactsRevision_;
-    generationDiagnostics_ = std::move(generation.diagnostics);
-    if (writeOutputs && !containsErrors(generationDiagnostics_)) {
-        appendDiagnostics(
-            generationDiagnostics_, regmap::writeGeneratedArtifacts(artifacts_));
-    }
-    rebuildDiagnostics();
-    emit generationChanged();
-    emit diagnosticsChanged();
-
-    if (!automatic) {
-        emit syncStatusChanged(
-            containsErrors(generationDiagnostics_)
-                ? QStringLiteral("Generation failed")
-                : QStringLiteral("Generated %1 read-only artifact(s)").arg(artifacts_.size()));
-    }
+    generationCancellation_.request_stop();
+    generationCancellation_ = std::stop_source{};
+    const auto cancellation = generationCancellation_.get_token();
+    const auto request = ++generationRequest_;
+    const auto revision = store_.revision();
+    const auto path = manifestPath_;
+    const auto digest = acceptedManifestDigest_;
+    generationPending_ = true;
+    auto* watcher = new QFutureWatcher<regmap::GenerationResult>(this);
+    connect(watcher, &QFutureWatcher<regmap::GenerationResult>::finished, this,
+        [this, watcher, request, revision, path, digest, cancellation, automatic, writeOutputs] {
+            watcher->deleteLater();
+            if (request != generationRequest_) return;
+            generationPending_ = false;
+            if (cancellation.stop_requested() || revision != store_.revision() || path != manifestPath_ ||
+                digest != acceptedManifestDigest_ || manifestChangedOnDisk()) {
+                const QPointer<ProjectController> guard(this);
+                emit generationChanged();
+                if (!guard) return;
+                emit syncStatusChanged(QStringLiteral("Generation discarded: project changed; retry generation"));
+                return;
+            }
+            auto generation = watcher->result();
+            artifacts_ = std::move(generation.artifacts);
+            ++artifactsRevision_;
+            generationDiagnostics_ = std::move(generation.diagnostics);
+            if (writeOutputs && !containsErrors(generationDiagnostics_))
+                appendDiagnostics(generationDiagnostics_, regmap::writeGeneratedArtifacts(artifacts_));
+            refreshWatchPaths();
+            rebuildDiagnostics();
+            const QPointer<ProjectController> guard(this);
+            emit generationChanged();
+            if (!guard) return;
+            emit diagnosticsChanged();
+            if (!guard) return;
+            if (containsErrors(generationDiagnostics_))
+                emit syncStatusChanged(QStringLiteral("Model state retained; read-only output generation failed"));
+            else if (!automatic || writeOutputs)
+                emit syncStatusChanged(QStringLiteral("Generated %1 read-only artifact(s)").arg(artifacts_.size()));
+        });
+    watcher->setFuture(QtConcurrent::run([workspace = *store_.workspace(), manifest = *manifest_, cancellation] {
+        return regmap::generateArtifacts(workspace, manifest, {}, cancellation);
+    }));
 }
 
 void ProjectController::rebuildDiagnostics()
@@ -1683,13 +1716,6 @@ void ProjectController::rebuildDiagnostics()
 
 void ProjectController::refreshWatchPaths()
 {
-    if (!watcher_.files().isEmpty()) {
-        watcher_.removePaths(watcher_.files());
-    }
-    if (!watcher_.directories().isEmpty()) {
-        watcher_.removePaths(watcher_.directories());
-    }
-
     QStringList files;
     QStringList directories;
     if (!manifestPath_.empty()) {
@@ -1726,12 +1752,17 @@ void ProjectController::refreshWatchPaths()
             directories.push_back(directory);
         }
     }
-    if (!files.empty()) {
-        watcher_.addPaths(files);
-    }
-    if (!directories.empty()) {
-        watcher_.addPaths(directories);
-    }
+    // Adding generated files must not tear down source watches and lose queued
+    // native file notifications while background rendering finishes.
+    const QStringList wanted = files + directories;
+    const QStringList current = watcher_.files() + watcher_.directories();
+    QStringList removed, added;
+    for (const auto& path : current)
+        if (!wanted.contains(path)) removed.push_back(path);
+    for (const auto& path : wanted)
+        if (!current.contains(path)) added.push_back(path);
+    if (!removed.isEmpty()) watcher_.removePaths(removed);
+    if (!added.isEmpty()) watcher_.addPaths(added);
 }
 
 const regmap::WorkspaceDiffSnapshot& ProjectController::currentDiffSnapshot()
@@ -1756,6 +1787,7 @@ std::vector<regmap::ModelChange> ProjectController::diffFromBaseline()
 
 void ProjectController::notifyModelEdited()
 {
+    generationCancellation_.request_stop();
     changes_ = baseline_ && store_.workspace()
         ? diffFromBaseline()
         : std::vector<regmap::ModelChange> {};
@@ -2036,6 +2068,7 @@ void ProjectController::onWatchedFileChanged(const QString& path)
         generatedFileRefreshTimer_.start();
         return;
     }
+    generationCancellation_.request_stop();
     pendingFiles_.insert(path);
     fileSnapshots_.remove(path);
     stabilityAttempts_ = 0;

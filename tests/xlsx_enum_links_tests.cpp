@@ -1,4 +1,6 @@
 #include "project_controller.hpp"
+#include "main_window.hpp"
+#include "workbench_theme.hpp"
 #include "regmap/core/project.hpp"
 #include "regmap/core/serialization.hpp"
 #include "regmap/core/rtl_sync.hpp"
@@ -11,8 +13,12 @@
 #include <xlsxzipreader_p.h>
 
 #include <QBuffer>
+#include <QAction>
 #include <QDirIterator>
 #include <QFile>
+#include <QFontDatabase>
+#include <QFontInfo>
+#include <QScreen>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -21,6 +27,7 @@
 #include <QUrl>
 #include <QXmlStreamReader>
 #include <QtTest>
+#include <memory>
 
 namespace {
 using namespace regmap;
@@ -30,10 +37,15 @@ QByteArray read(const QString& path)
     return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray{};
 }
 struct Reply { int code; QJsonObject root; QByteArray bytes; };
-Reply cli(QStringList args, const QJsonObject& input = {})
+Reply cli(QStringList args, const QJsonObject& input = {}, const QString& platform = {})
 {
     args.prepend("--json");
     QProcess process;
+    if (!platform.isEmpty()) {
+        auto environment = QProcessEnvironment::systemEnvironment();
+        environment.insert("QT_QPA_PLATFORM", platform);
+        process.setProcessEnvironment(environment);
+    }
     process.start(QString::fromUtf8(REGMAP_CLI_EXECUTABLE), args);
     if (!process.waitForStarted(10000)) return {-1, {}, process.errorString().toUtf8()};
     if (!input.isEmpty()) process.write(QJsonDocument(input).toJson(QJsonDocument::Compact));
@@ -154,11 +166,11 @@ struct Fixture {
         QDirIterator files(directory.path(), QDir::Files, QDirIterator::Subdirectories);
         while (files.hasNext()) QFile::setPermissions(files.next(), QFileDevice::ReadOwner | QFileDevice::WriteOwner);
     }
-    Reply setMode(const QString& mode)
+    Reply setMode(const QString& mode, const QString& platform = {})
     {
         const auto revision = cli({"summary",path}).root.value("revision").toString();
         return cli({"apply",path,"-","--expect",revision,"--enum-tables",mode},
-                   {{"api_version",1},{"operations",QJsonArray{}}});
+                   {{"api_version",1},{"operations",QJsonArray{}}}, platform);
     }
 };
 }
@@ -173,6 +185,10 @@ private slots:
     void distinguishesInternalAndExternalLinks();
     void exportsNamedLinksThroughCliAndGui_data();
     void exportsNamedLinksThroughCliAndGui();
+    void comparesWindowAndOffscreenExports();
+    void preservesOutputsDuringCancelledGeneration();
+    void reportsMissingRendererAndRecovers();
+    void exportsEmptyWorkspace();
 };
 
 void XlsxEnumLinksTests::preservesTextCells_data()
@@ -362,6 +378,7 @@ void XlsxEnumLinksTests::exportsNamedLinksThroughCliAndGui()
         QVERIFY(!controller.hasProjectErrors());
         QVERIFY(!controller.hasConflicts());
         controller.generateNow();
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.generationPending(), 30000);
         QVERIFY(!controller.hasProjectErrors());
         QCOMPARE(read(fixture.xlsx), cliWorkbook);
         QCOMPARE(read(fixture.header), header);
@@ -422,7 +439,7 @@ void XlsxEnumLinksTests::laysOutLongContentThroughCliAndGui()
         expected.replace(QLatin1Char('\r'), QLatin1Char('\n'));
         QCOMPARE(book.read(row, 11).toString(), expected);
         const auto format = book.cellAt(row, 11)->format();
-        QCOMPARE(format.fontName(), QStringLiteral("Microsoft YaHei"));
+        QCOMPARE(format.fontName(), QStringLiteral("Noto Sans SC"));
         QCOMPARE(format.fontSize(), 10);
         QVERIFY(!format.fontBold());
         QVERIFY(format.textWrap());
@@ -455,9 +472,191 @@ void XlsxEnumLinksTests::laysOutLongContentThroughCliAndGui()
     ProjectController controller;
     QVERIFY(controller.openProject(fixture.path));
     controller.generateNow();
+    QTRY_VERIFY_WITH_TIMEOUT(!controller.generationPending(), 30000);
     QVERIFY(!controller.hasProjectErrors());
     QCOMPARE(read(fixture.xlsx), cliWorkbook);
     QCOMPARE(read(fixture.header), header);
+}
+
+void XlsxEnumLinksTests::comparesWindowAndOffscreenExports()
+{
+    Fixture fixture(true, true);
+    const auto cliPlatform = qEnvironmentVariable("REGMAP_TEST_XLSX_CLI_PLATFORM", "offscreen");
+    const auto generated = fixture.setMode("consecutive", cliPlatform);
+    QVERIFY2(generated.code == 0, generated.bytes.constData());
+    const auto cliWorkbook = read(fixture.xlsx);
+    QVERIFY(!cliWorkbook.isEmpty());
+    const auto manifest = read(fixture.path);
+    WorkbenchTheme::apply(*qApp);
+    MainWindow window;
+    window.resize(1200, 760);
+    window.show();
+    window.openProjectPath(fixture.path);
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    auto* controller = window.findChild<ProjectController*>();
+    QVERIFY(controller);
+    QVERIFY(!controller->hasProjectErrors());
+    QVERIFY(!controller->hasConflicts());
+    QTRY_VERIFY_WITH_TIMEOUT(!controller->generationPending(), 30000);
+    // Exercise the production window action and require a newly written output.
+    QVERIFY(QFile::setPermissions(fixture.xlsx, QFileDevice::ReadOwner | QFileDevice::WriteOwner));
+    QVERIFY(QFile::remove(fixture.xlsx));
+    auto* saveSync = window.findChild<QAction*>(QStringLiteral("saveSyncAction"));
+    QVERIFY(saveSync);
+    saveSync->trigger();
+    QVERIFY(controller->generationPending());
+    QTRY_VERIFY_WITH_TIMEOUT(!controller->generationPending(), 30000);
+    QVERIFY(!controller->hasProjectErrors());
+    const auto guiWorkbook = read(fixture.xlsx);
+    const QString artifacts = qEnvironmentVariable("REGMAP_TEST_ARTIFACT_DIR");
+    QFont font(QStringLiteral("Microsoft YaHei"), 8);
+    QFontInfo info(font);
+    const auto fontInfo = QStringLiteral("Parent Qt=%1 platform=%2 font=%3 resolved=%4 exact=%5 pointSize=%6 dpi=%7 families=%8 cliPlatform=%9")
+        .arg(qVersion(), QGuiApplication::platformName(), font.family(), info.family())
+        .arg(info.exactMatch()).arg(info.pointSizeF()).arg(QGuiApplication::primaryScreen()->logicalDotsPerInch())
+        .arg(QFontDatabase::families().size()).arg(cliPlatform) +
+        QStringLiteral(" scale=%1 DPR=%2; renderer=offscreen/96DPI/NotoSansSC(pinned)")
+            .arg(qEnvironmentVariable("QT_SCALE_FACTOR"))
+            .arg(QGuiApplication::primaryScreen()->devicePixelRatio());
+    qInfo().noquote() << fontInfo;
+    if (!artifacts.isEmpty()) {
+        QVERIFY(QDir().mkpath(artifacts));
+        const auto save = [&](const QString& name, const QByteArray& bytes) {
+            QFile file(QDir(artifacts).filePath(name));
+            return file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size();
+        };
+        QVERIFY(save("cli.xlsx", cliWorkbook));
+        QVERIFY(save("gui.xlsx", guiWorkbook));
+        QVERIFY(save("input.regmap.yaml", manifest));
+        QVERIFY(save("font-environment.txt", fontInfo.toUtf8()));
+        QVERIFY(window.grab().save(QDir(artifacts).filePath("export-window.png")));
+    }
+    QCOMPARE(read(fixture.path), manifest);
+    QCOMPARE(guiWorkbook, cliWorkbook);
+    saveSync->trigger();
+    QVERIFY(controller->generationPending());
+    QTRY_VERIFY_WITH_TIMEOUT(!controller->generationPending(), 30000);
+    QCOMPARE(read(fixture.xlsx), guiWorkbook);
+    const auto checked = cli({"status", fixture.path, "--target", "xlsx"}, {}, cliPlatform);
+    QVERIFY2(checked.code == 0, checked.bytes.constData());
+    QVERIFY2(checked.root.value("result").toObject().value("outputs_current").toBool(), checked.bytes.constData());
+    auto changed = *controller->workspace();
+    changed.addressSpaces.front().blocks.front().registers.front().description += " changed 中文";
+    const auto changedOutput = exportReadOnlyWorkbook(changed, true);
+    QVERIFY(changedOutput.diagnostics.empty());
+    GeneratedArtifact artifact;
+    artifact.kind = GenerationTargetKind::xlsx;
+    artifact.path = std::filesystem::path(fixture.xlsx.toStdWString());
+    artifact.binaryContent = changedOutput.bytes;
+    QCOMPARE(inspectGeneratedArtifact(artifact).state, GeneratedArtifactState::modified);
+}
+
+void XlsxEnumLinksTests::preservesOutputsDuringCancelledGeneration()
+{
+    Fixture fixture(false, true);
+    const auto generated = fixture.setMode("consecutive");
+    QVERIFY2(generated.code == 0, generated.bytes.constData());
+    const auto original = read(fixture.xlsx);
+    auto controller = std::make_unique<ProjectController>();
+    QVERIFY(controller->openProject(fixture.path));
+    QTRY_VERIFY_WITH_TIMEOUT(!controller->generationPending(), 30000);
+    controller->generateNow();
+    QVERIFY(controller->generationPending());
+    bool eventDelivered = false;
+    QTimer::singleShot(0, controller.get(), [&] {
+        eventDelivered = controller->editWorkspace("Edit while rendering", [](Workspace& value) {
+            value.name = "Unsaved Chinese 中文 snapshot";
+        });
+    });
+    QTRY_VERIFY(eventDelivered);
+    QTRY_VERIFY_WITH_TIMEOUT(!controller->generationPending(), 30000);
+    QVERIFY(controller->isDirty());
+    QCOMPARE(read(fixture.xlsx), original);
+    const auto manifest = read(fixture.path);
+    const auto unsaved = exportReadOnlyWorkbook(*controller->workspace(), true);
+    QVERIFY(unsaved.diagnostics.empty());
+    QVERIFY(QByteArray(reinterpret_cast<const char*>(unsaved.bytes.data()),
+        static_cast<qsizetype>(unsaved.bytes.size())) != original);
+    QCOMPARE(read(fixture.path), manifest);
+    QVERIFY(controller->isDirty());
+    controller->generateNow();
+    QVERIFY(controller->generationPending());
+    controller.reset(); // Destruction cancels the worker; its callback cannot write outputs.
+    QTest::qWait(350);
+    QCOMPARE(read(fixture.xlsx), original);
+    ProjectController recovered;
+    QVERIFY(recovered.openProject(fixture.path));
+    recovered.generateNow();
+    QTRY_VERIFY_WITH_TIMEOUT(!recovered.generationPending(), 30000);
+    QVERIFY(!recovered.hasProjectErrors());
+    QVERIFY(read(fixture.xlsx) != original);
+}
+
+void XlsxEnumLinksTests::reportsMissingRendererAndRecovers()
+{
+    Fixture fixture(false);
+    const auto loaded = loadWorkspaceFromProjectFile(std::filesystem::path(fixture.path.toStdWString()));
+    QVERIFY(loaded.workspace);
+    QTemporaryDir isolated;
+    QVERIFY(isolated.isValid());
+    const QString cliPath = isolated.filePath(QFileInfo(QString::fromUtf8(REGMAP_CLI_EXECUTABLE)).fileName());
+    QVERIFY(QFile::copy(QString::fromUtf8(REGMAP_CLI_EXECUTABLE), cliPath));
+    const auto invoke = [&] {
+        QProcess process;
+        process.start(cliPath, {"--json", "generate", fixture.path});
+        if (!process.waitForFinished(30000)) return Reply{-1, {}, process.errorString().toUtf8()};
+        const auto output = process.readAllStandardOutput();
+        return Reply{process.exitCode(), QJsonDocument::fromJson(output).object(), output};
+    };
+    const auto missing = invoke();
+    qInfo().noquote() << "Missing renderer:" << missing.bytes;
+    QVERIFY2(missing.code != 0, missing.bytes.constData());
+    QVERIFY(missing.bytes.contains("RM4100"));
+    QVERIFY(missing.bytes.contains("locate"));
+    QVERIFY(!QFileInfo::exists(fixture.xlsx));
+    const QDir runtime(QCoreApplication::applicationDirPath());
+#ifdef Q_OS_WIN
+    const QString renderer = "regmap-xlsx-render.exe";
+#else
+    const QString renderer = "regmap-xlsx-render";
+#endif
+    QVERIFY(QFile::copy(runtime.filePath(renderer), isolated.filePath(renderer)));
+    const auto missingFont = invoke();
+    qInfo().noquote() << "Missing font:" << missingFont.bytes;
+    QVERIFY2(missingFont.code != 0, missingFont.bytes.constData());
+    QVERIFY(missingFont.bytes.contains("font"));
+    QVERIFY(QDir().mkpath(isolated.filePath("resources/xlsx")));
+    {
+        QFile invalidFont(isolated.filePath("resources/xlsx/NotoSansSC.ttf"));
+        QVERIFY(invalidFont.open(QIODevice::WriteOnly));
+        QVERIFY(invalidFont.write("invalid font") > 0);
+    }
+    const auto corruptFont = invoke();
+    qInfo().noquote() << "Corrupt font:" << corruptFont.bytes;
+    QVERIFY2(corruptFont.code != 0, corruptFont.bytes.constData());
+    QVERIFY(corruptFont.bytes.contains("checksum mismatch"));
+    QVERIFY(QFile::remove(isolated.filePath("resources/xlsx/NotoSansSC.ttf")));
+    QVERIFY(QFile::copy(runtime.filePath("resources/xlsx/NotoSansSC.ttf"), isolated.filePath("resources/xlsx/NotoSansSC.ttf")));
+    const auto recovered = invoke();
+    qInfo().noquote() << "Restored dependencies:" << recovered.bytes;
+    QVERIFY2(recovered.code == 0, recovered.bytes.constData());
+    const auto first = read(fixture.xlsx);
+    QVERIFY(!first.isEmpty());
+    QVERIFY(QFile::remove(isolated.filePath(renderer)));
+    const auto failedAgain = invoke();
+    QVERIFY(failedAgain.code != 0);
+    QCOMPARE(read(fixture.xlsx), first);
+}
+
+void XlsxEnumLinksTests::exportsEmptyWorkspace()
+{
+    Workspace workspace;
+    workspace.id = "empty";
+    workspace.name = "空工程 Empty";
+    const auto first = exportReadOnlyWorkbook(workspace);
+    QVERIFY(first.diagnostics.empty());
+    QVERIFY(!first.bytes.empty());
+    QCOMPARE(exportReadOnlyWorkbook(workspace).bytes, first.bytes);
 }
 
 QTEST_MAIN(XlsxEnumLinksTests)

@@ -13821,6 +13821,9 @@ void MainWindow::updateSyncPresentation(const QString& message)
     } else if (controller_.hasConflicts()) {
         state = QStringLiteral("conflict");
         text = QStringLiteral("Conflict · %1").arg(controller_.conflicts().size());
+    } else if (controller_.generationPending() && !controller_.isDirty()) {
+        state = QStringLiteral("busy");
+        text = QStringLiteral("Saved · generating outputs…");
     } else if (busy) {
         state = QStringLiteral("busy");
         text =

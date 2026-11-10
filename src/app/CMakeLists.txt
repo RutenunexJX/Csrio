@@ -1,4 +1,4 @@
-find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Concurrent)
 
 add_library(
     regmap_workbench_ui
@@ -69,6 +69,7 @@ if(REGMAP_ENABLE_ELA)
 endif()
 target_include_directories(regmap_workbench_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_features(regmap_workbench_ui PUBLIC cxx_std_20)
+target_link_libraries(regmap_workbench_ui PRIVATE Qt6::Concurrent)
 regmap_enable_warnings(regmap_workbench_ui)
 
 qt_add_executable(regmap_workbench WIN32 main.cpp)
@@ -115,6 +116,7 @@ if(WIN32)
         TARGET regmap_workbench
         OUTPUT_SCRIPT regmap_workbench_deploy_script
         NO_TRANSLATIONS
+        DEPLOY_TOOL_OPTIONS "--include-plugins" "qoffscreen"
     )
     install(
         SCRIPT "${regmap_workbench_deploy_script}"

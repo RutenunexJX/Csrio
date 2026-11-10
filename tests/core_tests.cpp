@@ -93,6 +93,8 @@ private slots:
     void roundTripsManagedRtl();
     void importsManagedRtlLiterals_data();
     void importsManagedRtlLiterals();
+    void importsMultilineManagedRtl_data();
+    void importsMultilineManagedRtl();
     void preservesManagedRtlSourceLocations();
     void rejectsInvalidManagedRtlStructure();
     void preservesUnmanagedRtlText();
@@ -2383,6 +2385,105 @@ void CoreTests::importsManagedRtlLiterals()
     QVERIFY(regmap::diffWorkspaces(*store.workspace(), *exported.workspace).empty());
 }
 
+void CoreTests::importsMultilineManagedRtl_data()
+{
+    QTest::addColumn<QString>("declaration");
+    QTest::addColumn<bool>("valid");
+    const QString marker = QStringLiteral("// RMW:VALUE {\"id\":\"space-main\",\"property\":\"base\"}");
+    const auto row = [&](const char* name, const QString& text, bool valid = true) {
+        QTest::newRow(name) << QString(text).replace(QStringLiteral("@marker"), marker) << valid;
+    };
+    row("after-equals", "localparam logic [7:0] BASE =\n 8'h108; @marker");
+    row("before-equals", "localparam logic [7:0] BASE\n = 8'h108; @marker");
+    row("all-tokens", "localparam\n logic\n [7:0]\n BASE\n =\n 8'h108\n ;\n @marker");
+    row("marker-inside", "localparam logic [7:0] BASE = // ordinary comment\n @marker\n 8'h108;");
+    row("marker-before-semicolon", "localparam logic [7:0] BASE = 8'h108 // explanation\n @marker\n ;");
+    row("block-comments", "localparam /* type */ logic [7:0] BASE /* = ; */ =\n /* RMW:VALUE invalid\n // RMW:VALUE {} */ 8'h108; @marker");
+    row("crlf", "localparam logic [7:0] BASE\r\n = 8'h108;\r\n @marker");
+    row("untyped", "localparam BASE =\n 8'h108; @marker");
+    row("quoted-marker-is-data", "localparam string TEXT = \"// RMW:VALUE {};\";\nlocalparam BASE = 8'h108; @marker");
+    row("missing-semicolon", "localparam logic [7:0] BASE =\n 8'h108 @marker", false);
+    row("wrong-declaration", "parameter logic [7:0] BASE =\n 8'h108; @marker", false);
+    row("multiple-assignment", "localparam logic [7:0] BASE = 8'h108, OTHER = 0; @marker", false);
+    row("multiple-markers", "localparam BASE = 8'h108; @marker\n @marker", false);
+    row("duplicate-property", "localparam BASE = 8'h108; @marker\nlocalparam OTHER = 4; @marker", false);
+    row("expression", "localparam BASE =\n (4 + 4); @marker", false);
+    row("unknown-digit", "localparam BASE =\n 8'hx; @marker", false);
+    row("negative-signed", "localparam BASE =\n 8'shff; @marker", false);
+    row("bad-metadata", "localparam BASE = 8'h108; // RMW:VALUE {invalid}", false);
+    row("orphan-marker", "@marker", false);
+    row("unknown-property", "localparam BASE = 8; // RMW:VALUE {\"id\":\"space-main\",\"property\":\"typo\"}", false);
+    row("text-property", "localparam BASE = 8; // RMW:VALUE {\"id\":\"space-main\",\"property\":\"name\"}", false);
+}
+
+void CoreTests::importsMultilineManagedRtl()
+{
+    QFETCH(QString, declaration);
+    QFETCH(bool, valid);
+    auto workspace = stableWorkspace();
+    workspace.addressSpaces.front().blocks.clear();
+    workspace.addressSpaces.front().baseAddress = 0;
+    QVERIFY(regmap::validateWorkspace(workspace).empty());
+    regmap::WorkspaceStore store(workspace);
+    QTemporaryDir directory;
+    const QString path = directory.filePath(QStringLiteral("multiline.sv"));
+    const std::filesystem::path rtlPath(path.toStdWString());
+    QVERIFY(regmap::writeManagedRtl(rtlPath, "multiline_test", workspace).empty());
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    auto lines = QString::fromUtf8(file.readAll()).split('\n');
+    file.close();
+    bool changed = false;
+    for (auto& line : lines) {
+        if (line.contains("RMW:VALUE") && line.contains("\"id\":\"space-main\"") &&
+            line.contains("\"property\":\"base\"")) {
+            line = declaration;
+            changed = true;
+        }
+    }
+    QVERIFY(changed);
+    const QByteArray input = lines.join('\n').toUtf8();
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    QCOMPARE(file.write(input), input.size());
+    file.close();
+    const auto parsed = regmap::parseManagedRtl(rtlPath);
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    QCOMPARE(file.readAll(), input);
+    file.close();
+    QCOMPARE(parsed.hasErrors(), !valid);
+    if (!valid) {
+        QVERIFY(!parsed.workspace);
+        QVERIFY(std::ranges::any_of(parsed.diagnostics, [&](const auto& diagnostic) {
+            return diagnostic.code == "RM5003" && diagnostic.source.workbook == rtlPath &&
+                   diagnostic.source.row.has_value();
+        }));
+        QVERIFY(!store.dirty());
+        QCOMPARE(store.workspace()->addressSpaces.front().baseAddress, std::uint64_t{0});
+        return;
+    }
+    QVERIFY(parsed.workspace);
+    QCOMPARE(parsed.workspace->addressSpaces.front().baseAddress, std::uint64_t{8});
+    const auto sourceLine = parsed.workspace->addressSpaces.front().propertySources.at("base").row;
+    QVERIFY(sourceLine);
+    QVERIFY(QString::fromUtf8(input).split('\n').at(*sourceLine - 1).contains("\"property\":\"base\""));
+    const auto changes = regmap::diffWorkspaces(workspace, *parsed.workspace);
+    QCOMPARE(changes.size(), std::size_t{1});
+    const auto preview = regmap::planWorkspaceChanges(workspace, *parsed.workspace, {changes.front().stableId});
+    QVERIFY(preview.valid());
+    auto edit = store.prepareReplacement(*preview.workspace, store.revision());
+    QVERIFY(edit);
+    QVERIFY(store.commitPreparedEdit("Import multiline RTL", std::move(*edit)));
+    QVERIFY(store.dirty());
+    QVERIFY(store.undo());
+    QCOMPARE(store.workspace()->addressSpaces.front().baseAddress, std::uint64_t{0});
+    QVERIFY(store.redo());
+    QVERIFY(regmap::writeManagedRtl(rtlPath, "multiline_test", *store.workspace()).empty());
+    const auto exported = regmap::parseManagedRtl(rtlPath);
+    QVERIFY(!exported.hasErrors());
+    QVERIFY(exported.workspace);
+    QVERIFY(regmap::diffWorkspaces(*store.workspace(), *exported.workspace).empty());
+}
+
 void CoreTests::preservesManagedRtlSourceLocations()
 {
     auto workspace = stableWorkspace();
@@ -3238,7 +3339,7 @@ void CoreTests::generatesReadOnlyArtifacts()
     const auto reservedNameCell = workbook.cellAt(25, 3);
     QVERIFY(reservedAddressCell != nullptr);
     QVERIFY(reservedNameCell != nullptr);
-    QCOMPARE(reservedAddressCell->format().fontName(), QStringLiteral("Cascadia Mono"));
+    QCOMPARE(reservedAddressCell->format().fontName(), QStringLiteral("Noto Sans SC"));
     QCOMPARE(reservedNameCell->format().patternForegroundColor(),
              QColor(QStringLiteral("#E2E3E5")));
     QCOMPARE(reservedNameCell->format().fontColor(), QColor(QStringLiteral("#9C0006")));

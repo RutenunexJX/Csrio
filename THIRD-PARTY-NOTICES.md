@@ -8,6 +8,7 @@ following components retain their original copyrights and licenses.
 | ElaWidgetTools | MIT; Liniyous, upstream `454cac2d57a47d3cc28577dc817793aec1881ca7` | `thirdparty/elawidgettools/LICENSE`, `REGMAP-NOTICE.md`, `UPSTREAM-REVISION.md`, patches |
 | ZeroSlack compatibility changes | Apache-2.0; exact imports recorded in REGMAP-NOTICE.md | `thirdparty/elawidgettools/ZeroSlack-Apache-2.0.txt` |
 | Font Awesome Free Solid 6.7.2 | SIL OFL 1.1; Fonticons, Inc. | `thirdparty/elawidgettools/Font/FontAwesome-LICENSE.txt` |
+| Noto Sans SC | SIL OFL 1.1; Adobe; Google Fonts commit `2894aab31764f10f29c421bdfd2340d3b382d384` | `thirdparty/noto-sans-sc/OFL.txt`; installed as `resources/xlsx/OFL.txt` |
 | yaml-cpp | MIT; Jesse Beder | `thirdparty/runtime-licenses/yaml-cpp-MIT.txt`; pinned fallback 0.8.0 in `cmake/RegMapDependencies.cmake` |
 | QXlsx | MIT; QXlsx contributors | `thirdparty/runtime-licenses/QXlsx-MIT.txt`; commit `8a13e1c86e5d4fb5e3b2fb09c7b632514f1d54ca` and local patches in `cmake/patches` |
 | Qt 6.10.2 | LGPLv3 for selected modules, plus bundled dependencies' own terms | `thirdparty/runtime-licenses/Qt-LGPLv3.txt`, `GCC-COPYING3.txt` |

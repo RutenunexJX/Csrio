@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.24)
 
 project(
     Csrio
-    VERSION 0.4.15
+    VERSION 0.4.16
     DESCRIPTION "Csrio register-map editor for FPGA and SystemVerilog development"
     LANGUAGES CXX
 )
@@ -71,6 +71,33 @@ if(REGMAP_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
 endif()
+
+# Every executable using the core API locates the same renderer next to itself.
+# This also stages resources for selective target builds and multi-config builds.
+set(_xlsx_consumers)
+get_property(_xlsx_directories DIRECTORY PROPERTY SUBDIRECTORIES)
+foreach(_directory IN ITEMS src/cli src/app tests)
+    if("${PROJECT_SOURCE_DIR}/${_directory}" IN_LIST _xlsx_directories)
+        get_property(_targets DIRECTORY "${_directory}" PROPERTY BUILDSYSTEM_TARGETS)
+        foreach(_target IN LISTS _targets)
+            get_target_property(_type ${_target} TYPE)
+            if(_type STREQUAL "EXECUTABLE")
+                list(APPEND _xlsx_consumers ${_target})
+            endif()
+        endforeach()
+    endif()
+endforeach()
+add_custom_target(regmap_xlsx_runtime DEPENDS regmap_xlsx_renderer)
+foreach(_target IN LISTS _xlsx_consumers)
+    add_dependencies(${_target} regmap_xlsx_runtime)
+    add_custom_command(TARGET regmap_xlsx_runtime POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${_target}>/resources/xlsx"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:regmap_xlsx_renderer> "$<TARGET_FILE_DIR:${_target}>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${PROJECT_SOURCE_DIR}/thirdparty/noto-sans-sc/NotoSansSC.ttf"
+            "${PROJECT_SOURCE_DIR}/thirdparty/noto-sans-sc/OFL.txt"
+            "$<TARGET_FILE_DIR:${_target}>/resources/xlsx")
+endforeach()
 
 if(WIN32 AND REGMAP_BUILD_APP)
     include(RegMapPackaging)

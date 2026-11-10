@@ -755,11 +755,16 @@ bool GenerationResult::hasErrors() const noexcept
     });
 }
 
-GenerationResult generateArtifacts(const Workspace& workspace, const ProjectManifest& manifest, const GenerationObserver& observer)
+GenerationResult generateArtifacts(const Workspace& workspace, const ProjectManifest& manifest,
+                                   const GenerationObserver& observer, std::stop_token cancellation)
 {
     GenerationResult result;
     std::set<detail::PathIdentity> paths;
     for (const auto& target : manifest.targets) {
+        if (cancellation.stop_requested()) {
+            addDiagnostic(result.diagnostics, "RM4100", "Generation cancelled; no outputs were written.", {}, {});
+            break;
+        }
         GeneratedArtifact artifact;
         artifact.kind = target.kind;
         artifact.path = target.path.resolved;
@@ -793,7 +798,7 @@ GenerationResult generateArtifacts(const Workspace& workspace, const ProjectMani
 
         switch (target.kind) {
         case GenerationTargetKind::xlsx: {
-            auto workbook = exportReadOnlyWorkbook(workspace, option(target, "enum_tables", "full") == "consecutive");
+            auto workbook = exportReadOnlyWorkbook(workspace, option(target, "enum_tables", "full") == "consecutive", cancellation);
             artifact.binaryContent = std::move(workbook.bytes);
             std::move(workbook.diagnostics.begin(), workbook.diagnostics.end(),
                       std::back_inserter(result.diagnostics));

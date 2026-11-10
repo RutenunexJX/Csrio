@@ -47,6 +47,8 @@ class ProjectController final : public QObject {
 
 public:
     explicit ProjectController(QObject* parent = nullptr);
+    ~ProjectController() override;
+    [[nodiscard]] bool generationPending() const noexcept { return generationPending_; }
 
     bool createProject(const QString& manifestPath);
     [[nodiscard]] QString adoptedRevision() const;
@@ -185,6 +187,9 @@ private:
         std::vector<bool> current;
     };
     std::uint64_t artifactsRevision_{0};
+    std::uint64_t generationRequest_{0};
+    std::stop_source generationCancellation_;
+    bool generationPending_{false};
     std::optional<GeneratedStateSnapshot> generatedStateSnapshot_;
     std::vector<regmap::ModelChange> changes_;
     std::vector<regmap::ModelChange> savedChanges_;

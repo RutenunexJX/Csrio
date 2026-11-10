@@ -454,14 +454,30 @@ RtlParseResult parseManagedRtl(const std::filesystem::path& path)
     bool sawEnd = false;
     std::map<ObjectId, QJsonObject, std::less<>> objects;
     SourceLines sources;
+    struct ValueMarker {
+        QString json;
+        std::uint32_t line;
+    };
+    struct Declaration {
+        QString text;
+        std::vector<ValueMarker> markers;
+        bool terminated = false;
+    };
+    std::vector<Declaration> declarations;
+    std::optional<std::size_t> activeDeclaration;
+    std::optional<std::size_t> recentDeclaration;
+    bool blockComment = false;
+    bool quoted = false;
+    bool escaped = false;
     const QRegularExpression valuePattern(QStringLiteral(
-        R"(^\s*localparam\s+.+?\s+[A-Za-z_][A-Za-z0-9_$]*\s*=\s*([^;]+);\s*//\s*RMW:VALUE\s+(\{.*\})\s*$)"));
+        R"(^\s*localparam\s+(?:[^;=,]+\s+)?[A-Za-z_][A-Za-z0-9_$]*\s*=\s*([^;]+);\s*$)"));
+    const QRegularExpression valueMarkerPattern(QStringLiteral(R"(^RMW:VALUE\b(.*)$)"));
 
     for (qsizetype index = 0; index < lines.size(); ++index) {
         const QString line = lines[index];
         const QString trimmedLine = line.trimmed();
         const std::uint32_t lineNumber = static_cast<std::uint32_t>(index + 1);
-        if (trimmedLine ==
+        if (!blockComment && !quoted && trimmedLine ==
             QString::fromUtf8(beginMarker.data(), static_cast<qsizetype>(beginMarker.size()))) {
             if (inside || sawBegin) {
                 addDiagnostic(result.diagnostics, markerCode,
@@ -472,7 +488,7 @@ RtlParseResult parseManagedRtl(const std::filesystem::path& path)
             sawBegin = true;
             continue;
         }
-        if (trimmedLine ==
+        if (!blockComment && !quoted && trimmedLine ==
             QString::fromUtf8(endMarker.data(), static_cast<qsizetype>(endMarker.size()))) {
             if (!inside) {
                 addDiagnostic(result.diagnostics, markerCode,
@@ -481,15 +497,62 @@ RtlParseResult parseManagedRtl(const std::filesystem::path& path)
             }
             inside = false;
             sawEnd = true;
+            activeDeclaration.reset();
+            recentDeclaration.reset();
             continue;
         }
         if (!inside) {
             continue;
         }
 
-        const qsizetype objectMarker = line.indexOf(QStringLiteral("// RMW:OBJECT "));
-        if (objectMarker >= 0) {
-            const QByteArray json = line.mid(objectMarker + 14).trimmed().toUtf8();
+        // Scan statements, not physical lines. Keep comment/string boundaries so
+        // formatting cannot hide a value marker or attach it to an unrelated line.
+        QString comment;
+        for (qsizetype column = 0; column < line.size(); ++column) {
+            const QChar ch = line[column];
+            const QChar next = column + 1 < line.size() ? line[column + 1] : QChar{};
+            if (blockComment) {
+                if (ch == '*' && next == '/') {
+                    blockComment = false;
+                    ++column;
+                }
+                continue;
+            }
+            if (!quoted && ch == '/' && next == '/') {
+                comment = line.mid(column + 2).trimmed();
+                break;
+            }
+            if (!quoted && ch == '/' && next == '*') {
+                blockComment = true;
+                if (activeDeclaration) declarations[*activeDeclaration].text += ' ';
+                ++column;
+                continue;
+            }
+            if (!activeDeclaration && !ch.isSpace()) {
+                declarations.emplace_back();
+                activeDeclaration = declarations.size() - 1;
+                recentDeclaration = activeDeclaration;
+            }
+            if (!activeDeclaration) continue;
+            auto& declaration = declarations[*activeDeclaration];
+            declaration.text += ch;
+            if (quoted) {
+                if (escaped) escaped = false;
+                else if (ch == '\\') escaped = true;
+                else if (ch == '"') quoted = false;
+            } else if (ch == '"') {
+                quoted = true;
+            } else if (ch == ';') {
+                declaration.terminated = true;
+                activeDeclaration.reset();
+            }
+        }
+        if (activeDeclaration) declarations[*activeDeclaration].text += '\n';
+
+        if (comment.startsWith(QStringLiteral("RMW:OBJECT "))) {
+            activeDeclaration.reset();
+            recentDeclaration.reset();
+            const QByteArray json = comment.mid(11).trimmed().toUtf8();
             QJsonParseError error;
             const QJsonDocument document = QJsonDocument::fromJson(json, &error);
             if (error.error != QJsonParseError::NoError || !document.isObject()) {
@@ -511,12 +574,23 @@ RtlParseResult parseManagedRtl(const std::filesystem::path& path)
             continue;
         }
 
-        const QRegularExpressionMatch match = valuePattern.match(line);
-        if (!match.hasMatch()) {
-            continue;
+        const auto markerMatch = valueMarkerPattern.match(comment);
+        if (markerMatch.hasMatch()) {
+            if (!recentDeclaration) {
+                addDiagnostic(result.diagnostics, valueCode,
+                              "RMW:VALUE has no preceding localparam declaration.", path, lineNumber);
+            } else {
+                declarations[*recentDeclaration].markers.push_back({markerMatch.captured(1), lineNumber});
+            }
         }
+    }
+
+    for (const auto& declaration : declarations) {
+        if (declaration.markers.empty()) continue;
+        const auto& metadata = declaration.markers.front();
+        const auto lineNumber = metadata.line;
         QJsonParseError error;
-        const QJsonDocument marker = QJsonDocument::fromJson(match.captured(2).toUtf8(), &error);
+        const QJsonDocument marker = QJsonDocument::fromJson(metadata.json.toUtf8(), &error);
         if (error.error != QJsonParseError::NoError || !marker.isObject()) {
             addDiagnostic(result.diagnostics, valueCode, "Cannot parse RMW:VALUE metadata.", path,
                           lineNumber);
@@ -525,15 +599,25 @@ RtlParseResult parseManagedRtl(const std::filesystem::path& path)
         const ObjectId id = marker.object().value(QStringLiteral("id")).toString().toStdString();
         const std::string propertyName =
             marker.object().value(QStringLiteral("property")).toString().toStdString();
-        const auto parsedValue = parseSystemVerilogUnsigned(match.captured(1).toStdString());
         const auto object = objects.find(id);
-        if (object == objects.end() || propertyName.empty()) {
+        if (object == objects.end() ||
+            !isNumericProperty(object->second.value(QStringLiteral("kind")).toString().toStdString(), propertyName) ||
+            !object->second.value(QStringLiteral("properties")).toObject().contains(QString::fromStdString(propertyName))) {
             addDiagnostic(
                 result.diagnostics, valueCode,
                 "RMW:VALUE references an unknown object/property.",
                 path, lineNumber, id);
             continue;
         }
+        const auto match = valuePattern.match(declaration.text);
+        if (!declaration.terminated || !match.hasMatch() || declaration.markers.size() != 1 ||
+            sources.properties.contains({id, propertyName})) {
+            addDiagnostic(result.diagnostics, valueCode,
+                          "RMW:VALUE requires one complete localparam declaration and one unique object/property marker.",
+                          path, lineNumber, id);
+            continue;
+        }
+        const auto parsedValue = parseSystemVerilogUnsigned(match.captured(1).toStdString());
         if (!parsedValue) {
             addDiagnostic(
                 result.diagnostics, valueCode,

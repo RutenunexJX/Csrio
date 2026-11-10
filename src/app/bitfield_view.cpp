@@ -407,18 +407,23 @@ void BitfieldView::mousePressEvent(QMouseEvent* event)
     }
     const QString id =
         fieldIdAt(event->position().toPoint());
-    if (!id.isEmpty()) {
-        if (event->button() == Qt::LeftButton) {
+    if (!id.isEmpty() && register_) {
+        const auto contextId = register_->id;
+        const auto clickedBit = bitAtX(event->position().x());
+        const auto* pressedField = fieldById(id);
+        const auto pressedAnchor = pressedField && clickedBit > pressedField->lsb
+                                       ? clickedBit - pressedField->lsb : 0;
+        cancelDrag();
+        // Selection may synchronously rebuild this view. Start from the refreshed
+        // field, and never carry a gesture into a different register/container.
+        emit fieldActivated(id);
+        if (event->button() == Qt::LeftButton && register_ && register_->id == contextId) {
             if (const auto* field = fieldById(id)) {
                 const std::uint64_t width = field->width();
                 if (width > 0 && width <= register_->width) {
                     draggedFieldId_ = id;
                     draggedWidth_ = static_cast<std::uint32_t>(width);
-                    const std::uint32_t clickedBit = bitAtX(event->position().x());
-                    anchorFromLsb_ = clickedBit > field->lsb
-                                         ? std::min(clickedBit - field->lsb,
-                                                    draggedWidth_ - 1)
-                                         : 0;
+                    anchorFromLsb_ = std::min(pressedAnchor, draggedWidth_ - 1);
                     previewLsb_ = field->lsb;
                     dragStartPosition_ = event->position().toPoint();
                     dragPending_ = true;
@@ -426,7 +431,6 @@ void BitfieldView::mousePressEvent(QMouseEvent* event)
                 }
             }
         }
-        emit fieldActivated(id);
         setFocus(Qt::MouseFocusReason);
         event->accept();
         return;

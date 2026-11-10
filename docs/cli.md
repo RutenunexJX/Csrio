@@ -332,6 +332,21 @@ modified	register	reg-control	CONTROL_NEXT	Properties changed
 
 ## Check output status
 
+XLSX layout and diagrams are rendered by the adjacent `regmap-xlsx-render`
+executable using Qt's offscreen platform, a fixed 96 DPI context, and the bundled
+`resources/xlsx/NotoSansSC.ttf`. GUI and CLI send immutable in-memory model
+snapshots to this same renderer. Desktop scaling, GUI themes, `QT_QPA_PLATFORM`
+and caller font overrides do not select the export backend. Keep the renderer,
+font, and Qt offscreen plugin with the matching installation. A missing or
+incompatible dependency produces `RM4100` and retains existing output; restore
+the dependency and retry generation. No native-rendering fallback is used.
+
+GUI rendering runs in the background. Saving the model and generating derivative
+outputs are reported separately. Editing, switching projects, or closing the
+window cancels or discards obsolete results before they can replace outputs.
+The workbook declares Noto Sans SC; spreadsheet viewers may substitute a font if
+it is not installed on the viewing system. Csrio does not change system fonts.
+
 `status` compares each configured XLSX, C header, and Markdown file with the output that the
 current saved project would produce. It does not modify the project or any output:
 

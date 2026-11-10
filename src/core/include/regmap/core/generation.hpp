@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <stop_token>
 
 namespace regmap {
 
@@ -55,7 +56,7 @@ struct GeneratedArtifactInspection {
 
 [[nodiscard]] GenerationResult generateArtifacts(
     const Workspace& workspace,
-    const ProjectManifest& manifest, const GenerationObserver& observer = {});
+    const ProjectManifest& manifest, const GenerationObserver& observer = {}, std::stop_token cancellation = {});
 
 [[nodiscard]] GeneratedArtifactInspection inspectGeneratedArtifact(
     const GeneratedArtifact& artifact);
